@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">AiCode</string>
+    <string name="app_name">AiCode III</string>
 
     <!-- 设置页菜单标题 -->
     <string name="settings_title">设置</string>
@@ -1411,7 +1411,7 @@
     <string name="crash_restart">重启应用</string>
     <string name="crash_exit">退出应用</string>
     <string name="crash_log_hint">完整日志文件位置：%1$s</string>
-    <string name="crash_report_title">AiCode 崩溃报告</string>
+    <string name="crash_report_title">AiCode III 崩溃报告</string>
     <string name="crash_report_time">时间：%1$s</string>
     <string name="crash_report_version">版本：%1$s</string>
     <string name="crash_report_device">设备：%1$s</string>

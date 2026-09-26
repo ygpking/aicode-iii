@@ -1,5 +1,12 @@
-AiCode
-Copyright (C) 2026 AiCode contributors
+AiCode III
+Copyright (C) 2026 AiCode III contributors
+
+This is a modified version (fork) of AiCode (https://github.com/jieapi/aicode).
+Copyright of the original work belongs to the AiCode upstream contributors.
+Modifications made 2026-09-26: renamed to AiCode III, package changed to
+com.aicode.iii; removed bundled rtk; added first-launch Ubuntu container
+download (Alpine kept as fallback); update checks and remote data sources
+pointed at this fork. This modified version is not endorsed by upstream.
 
 This product is licensed under the GNU General Public License version 3.0
 (GPL-3.0). See the LICENSE file for the full license text.

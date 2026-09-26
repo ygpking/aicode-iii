@@ -24,7 +24,7 @@ hero:
       link: https://aicode.murk.top/download
     - theme: alt
       text: GitHub
-      link: https://github.com/jieapi/aicode
+      link: https://github.com/ygpking/aicode-iii
 
 features:
   - title: AI Agent

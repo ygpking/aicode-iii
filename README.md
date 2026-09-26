@@ -13,8 +13,8 @@
   <img src="https://img.shields.io/badge/Language-Kotlin-purple.svg" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4.svg" alt="Jetpack Compose UI" />
   <img src="https://img.shields.io/badge/MinSDK-26-orange.svg" alt="Min SDK 26 (Android 8.0)" />
-  <a href="https://github.com/jieapi/aicode/releases"><img src="https://img.shields.io/github/v/release/jieapi/aicode?display_name=tag&include_prereleases" alt="Latest Release" /></a>
-  <a href="https://github.com/jieapi/aicode/releases"><img src="https://img.shields.io/github/downloads/jieapi/aicode/total" alt="Total Downloads" /></a>
+  <a href="https://github.com/ygpking/aicode-iii/releases"><img src="https://img.shields.io/github/v/release/ygpking/aicode-iii?display_name=tag&include_prereleases" alt="Latest Release" /></a>
+  <a href="https://github.com/ygpking/aicode-iii/releases"><img src="https://img.shields.io/github/downloads/ygpking/aicode-iii/total" alt="Total Downloads" /></a>
 </p>
 
 <p align="center">
@@ -40,18 +40,16 @@
 
 ---
 
+> **本项目是 [jieapi/aicode](https://github.com/jieapi/aicode) 的修改版（fork）**，依据 GPL-3.0 协议分发。
+> 原项目版权归其贡献者所有；本修改版由 ygpking 维护，主要改动见下方〈本修改版的改动〉。
+
+---
+
 ## 简介
 
 AiCode 是运行在 Android 上的通用 AI Coding Agent，把一套完整的 Linux 开发环境装进手机：内置 Alpine Linux 容器与终端，AI Agent 能读写文件、执行 Shell 命令、运行构建工具，写代码、调试到构建都在手机本地完成；也可改用远程 SSH 服务器作为执行后端，把手机变成远程项目的移动工作站。
 
 上手无需任何准备：装上 App、在「AI 供应商」配好模型即可直接开发，不用电脑，也不用自己搭建环境。AiCode 不内置模型、不绑定供应商，支持 OpenAI / Anthropic / Gemini 三类协议与自定义供应商，模型、密钥与端点都由你自行配置。
-
-## 广告
-
-| 图标 | 描述 |
-|------|------|
-| <img src="https://opencode.ai/favicon-96x96-v3.png" width="24" alt="OpenCode" /> | **[OpenCode Go](https://opencode.ai/go?ref=8Q5GA5B1NY)** — 低价订阅，提供最强大开源模型的慷慨额度与可靠访问 |
-| <img src="https://www.rainyun.com/favicon.ico" width="24" alt="RainYun" /> | **[雨云](https://www.rainyun.com/logins_)** — 国产云服务商，主营云服务器与游戏云（Minecraft 等预装服务端一键开服），兼有裸金属物理机与对象存储，新用户优惠 |
 
 ## 功能特性
 
@@ -92,31 +90,31 @@ AiCode 是运行在 Android 上的通用 AI Coding Agent，把一套完整的 Li
 | 项目 | 说明 |
 |------|------|
 | 系统要求 | Android 8.0+（API 26），arm64-v8a / x86_64 |
-| 下载地址 | [GitHub Releases](https://github.com/jieapi/aicode/releases/latest)：真机选 `armsolo`、模拟器选 `x86solo`、通用选 `universal` 包 |
+| 下载地址 | [GitHub Releases](https://github.com/ygpking/aicode-iii/releases/latest)：真机选 `armsolo`、模拟器选 `x86solo`、通用选 `universal` 包 |
 | 快速上手 | 「设置 → AI 供应商」配模型 →「容器与镜像」选本地或 SSH → 新建会话开始对话 |
-| 更新记录 | [Releases](https://github.com/jieapi/aicode/releases)（历史版本与更新说明） |
+| 更新记录 | [Releases](https://github.com/ygpking/aicode-iii/releases)（历史版本与更新说明） |
 | 使用指南 | [在线文档](https://aicode.murk.top)：快速上手、功能手册与进阶教程（与 App 内置文档同源） |
 
 ## Star
 
-如果 AiCode 对你有帮助，欢迎 [Star](https://github.com/jieapi/aicode) 支持，让更多开发者看到这个项目。
+如果 AiCode 对你有帮助，欢迎 [Star](https://github.com/ygpking/aicode-iii) 支持，让更多开发者看到这个项目。
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=jieapi%2Faicode&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=ygpking%2Faicode-iii&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jieapi/aicode&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jieapi/aicode&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jieapi/aicode&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ygpking/aicode-iii&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ygpking/aicode-iii&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ygpking/aicode-iii&type=date&legend=top-left" />
  </picture>
 </a>
 
 ## 反馈与贡献
 
 - **交流群**：加入 [AiCode QQ 交流群](https://qm.qq.com/q/ByvqODJdIs)（群号：1107110698），交流使用心得、反馈问题
-- **Bug 反馈**：到 [Issues](https://github.com/jieapi/aicode/issues) 提交，附上复现步骤、设备型号与系统版本，便于定位
-- **功能建议**：想加新功能或改进，欢迎先在 [Issues](https://github.com/jieapi/aicode/issues) 讨论
-- **贡献代码**：欢迎提交 [Pull Request](https://github.com/jieapi/aicode/pulls)
+- **Bug 反馈**：到 [Issues](https://github.com/ygpking/aicode-iii/issues) 提交，附上复现步骤、设备型号与系统版本，便于定位
+- **功能建议**：想加新功能或改进，欢迎先在 [Issues](https://github.com/ygpking/aicode-iii/issues) 讨论
+- **贡献代码**：欢迎提交 [Pull Request](https://github.com/ygpking/aicode-iii/pulls)
 
 ## 致谢
 
@@ -127,3 +125,15 @@ AiCode 是运行在 Android 上的通用 AI Coding Agent，把一套完整的 Li
 ## 开源协议
 
 本项目基于 [GPL-3.0](LICENSE) 协议开源。
+
+### 关于本修改版（GPL-3.0 §5 要求的声明）
+
+- **来源**：本项目是 [jieapi/aicode](https://github.com/jieapi/aicode) 的修改版，原始版权归 AiCode 上游贡献者所有。
+- **修改内容**（2026-09-26）：
+  1. 应用名改为 AiCode III，包名（applicationId）改为 `com.aicode.iii`；
+  2. 移除内置的 rtk（Rust Token Killer）组件及其全部代码路径；
+  3. 新增首次启动自动下载 Ubuntu 24.04 作为默认容器（内置 Alpine 保留为离线兜底）；
+  4. 更新检查与远程数据源改指向本仓库。
+- **许可**：本修改版整体仍以 GPL-3.0 分发，未改变许可证。
+- **无背书声明**：本修改版为独立分支，非上游官方版本，未获上游任何形式的背书或担保。
+- **源码获取**：本修改版的完整源码见本仓库；上游源码见 https://github.com/jieapi/aicode 。

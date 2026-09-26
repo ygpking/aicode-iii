@@ -13,8 +13,8 @@
   <img src="https://img.shields.io/badge/Language-Kotlin-purple.svg" alt="Kotlin" />
   <img src="https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4.svg" alt="Jetpack Compose UI" />
   <img src="https://img.shields.io/badge/MinSDK-26-orange.svg" alt="Min SDK 26 (Android 8.0)" />
-  <a href="https://github.com/jieapi/aicode/releases"><img src="https://img.shields.io/github/v/release/jieapi/aicode?display_name=tag&include_prereleases" alt="Latest Release" /></a>
-  <a href="https://github.com/jieapi/aicode/releases"><img src="https://img.shields.io/github/downloads/jieapi/aicode/total" alt="Total Downloads" /></a>
+  <a href="https://github.com/ygpking/aicode-iii/releases"><img src="https://img.shields.io/github/v/release/ygpking/aicode-iii?display_name=tag&include_prereleases" alt="Latest Release" /></a>
+  <a href="https://github.com/ygpking/aicode-iii/releases"><img src="https://img.shields.io/github/downloads/ygpking/aicode-iii/total" alt="Total Downloads" /></a>
 </p>
 
 <p align="center">
@@ -45,13 +45,6 @@
 AiCode is a universal AI coding agent that runs on Android, packing a full Linux development environment into your phone: it bundles an Alpine Linux container and terminal, and the AI agent can read and write files, run shell commands and run build tools, so writing, debugging and building all happen on-device. A remote SSH server can also serve as the execution backend, turning your phone into a mobile workstation for remote projects.
 
 There is nothing to set up beforehand: install the app, configure a model under AI Providers, and you can start coding — no computer, no environment to build yourself. AiCode ships no models and locks you into no vendor: it supports the OpenAI / Anthropic / Gemini protocols plus custom providers, with models, keys and endpoints all configured by you.
-
-## Advertisement
-
-| Icon | Description |
-|------|-------------|
-| <img src="https://opencode.ai/favicon-96x96-v3.png" width="24" alt="OpenCode" /> | **[OpenCode Go](https://opencode.ai/go?ref=8Q5GA5B1NY)** — Low-cost subscription with generous limits and reliable access to the most capable open-source models |
-| <img src="https://www.rainyun.com/favicon.ico" width="24" alt="RainYun" /> | **[RainYun](https://www.rainyun.com/logins_)** — Chinese cloud provider specializing in VPS and game hosting (one-click Minecraft and other game servers), plus bare-metal machines and object storage; discounts for new users |
 
 ## Features
 
@@ -92,31 +85,31 @@ There is nothing to set up beforehand: install the app, configure a model under 
 | Item | Description |
 |------|-------------|
 | System requirements | Android 8.0+ (API 26), arm64-v8a / x86_64 |
-| Download | [GitHub Releases](https://github.com/jieapi/aicode/releases/latest): pick `armsolo` for real devices, `x86solo` for emulators, `universal` for both |
+| Download | [GitHub Releases](https://github.com/ygpking/aicode-iii/releases/latest): pick `armsolo` for real devices, `x86solo` for emulators, `universal` for both |
 | Quick start | Settings → AI Providers to add a model → Container & Image to pick local or SSH → new session and chat |
-| Changelog | [Releases](https://github.com/jieapi/aicode/releases) (all versions & notes) |
+| Changelog | [Releases](https://github.com/ygpking/aicode-iii/releases) (all versions & notes) |
 | User guide | [Online docs](https://aicode.murk.top): quick start, feature manual and advanced guides (same content as the in-app docs) |
 
 ## Star
 
-If AiCode is helpful to you, give it a [Star](https://github.com/jieapi/aicode) — it helps more developers discover the project.
+If AiCode is helpful to you, give it a [Star](https://github.com/ygpking/aicode-iii) — it helps more developers discover the project.
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=jieapi%2Faicode&type=date&legend=top-left">
+<a href="https://www.star-history.com/?repos=ygpking%2Faicode-iii&type=date&legend=top-left">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=jieapi/aicode&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=jieapi/aicode&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=jieapi/aicode&type=date&legend=top-left" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ygpking/aicode-iii&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ygpking/aicode-iii&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ygpking/aicode-iii&type=date&legend=top-left" />
  </picture>
 </a>
 
 ## Feedback & Contribution
 
 - **QQ group**: join the [AiCode QQ group](https://qm.qq.com/q/ByvqODJdIs) (group number: 1107110698) to share tips and feedback
-- **Bug reports**: open an [Issue](https://github.com/jieapi/aicode/issues) with reproduction steps, device model and OS version
-- **Feature requests**: discuss your ideas in [Issues](https://github.com/jieapi/aicode/issues)
-- **Contributing**: submit a [Pull Request](https://github.com/jieapi/aicode/pulls)
+- **Bug reports**: open an [Issue](https://github.com/ygpking/aicode-iii/issues) with reproduction steps, device model and OS version
+- **Feature requests**: discuss your ideas in [Issues](https://github.com/ygpking/aicode-iii/issues)
+- **Contributing**: submit a [Pull Request](https://github.com/ygpking/aicode-iii/pulls)
 
 ## Acknowledgements
 
@@ -127,3 +120,15 @@ If AiCode is helpful to you, give it a [Star](https://github.com/jieapi/aicode) 
 ## License
 
 This project is licensed under [GPL-3.0](LICENSE).
+
+### About this modified version (notice required by GPL-3.0 §5)
+
+- **Origin**: This is a modified version (fork) of [jieapi/aicode](https://github.com/jieapi/aicode). Copyright of the original work belongs to the AiCode upstream contributors.
+- **Modifications** (2026-09-26):
+  1. Renamed the app to AiCode III and changed the package name (applicationId) to `com.aicode.iii`;
+  2. Removed the bundled rtk (Rust Token Killer) component and all of its code paths;
+  3. Added automatic download of Ubuntu 24.04 as the default container on first launch (built-in Alpine kept as an offline fallback);
+  4. Pointed update checks and remote data sources at this repository.
+- **License**: This modified version is distributed under GPL-3.0 as a whole; the license has not been changed.
+- **No endorsement**: This is an independent fork, not an official upstream release, and carries no endorsement or warranty from upstream.
+- **Source**: Full source of this modified version is in this repository; upstream source is at https://github.com/jieapi/aicode .

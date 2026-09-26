@@ -1,11 +1,11 @@
 Categories:
   - Development
 License: GPL-3.0-only
-AuthorName: jieapi
-WebSite: https://github.com/jieapi/aicode
-SourceCode: https://github.com/jieapi/aicode
-IssueTracker: https://github.com/jieapi/aicode/issues
-Changelog: https://github.com/jieapi/aicode/releases
+AuthorName: ygpking
+WebSite: https://github.com/ygpking/aicode-iii
+SourceCode: https://github.com/ygpking/aicode-iii
+IssueTracker: https://github.com/ygpking/aicode-iii/issues
+Changelog: https://github.com/ygpking/aicode-iii/releases
 
 Name: AiCode
 Summary: AI coding agent with terminal, Linux container and Git
@@ -24,8 +24,8 @@ Description: |-
   * MCP (Model Context Protocol) client support
 
 RepoType: git
-Repo: https://github.com/jieapi/aicode.git
-Binaries: https://github.com/jieapi/aicode/releases/download/v%v/aicode-universal-%v.apk
+Repo: https://github.com/ygpking/aicode-iii.git
+Binaries: https://github.com/ygpking/aicode-iii/releases/download/v%v/aicode-universal-%v.apk
 
 Builds:
   - versionName: 1.9.0
