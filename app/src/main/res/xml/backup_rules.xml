@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  备份排除规则：App 的凭据（API Key、git token、SSH 密码/口令）以明文存于 Room 数据库、
+  SharedPreferences 与 filesDir/aicode 中，绝不能进入 adb backup / Google 自动备份的产物。
+  这里排除承载凭据的全部位置；工作区项目文件也不进备份（体积大且非配置）。
+-->
+<full-backup-content>
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="file" path="aicode" />
+    <exclude domain="file" path="projects" />
+    <exclude domain="file" path="rootfs" />
+    <exclude domain="file" path="logs" />
+</full-backup-content>

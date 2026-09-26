@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.AICode" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">@color/primary</item>
+    </style>
+
+    <!-- 冷启动闪屏主题：以 App 图标与应用表面底色作为系统 Window 启动背景，杜绝冷启动刺眼纯白 -->
+    <style name="Theme.AICode.Splash" parent="Theme.AICode">
+        <item name="android:windowBackground">@drawable/splash_background</item>
+    </style>
+
+    <color name="primary">#007ACC</color>
+    <color name="splash_background_color">#F9FAFA</color>
+</resources>
