@@ -671,6 +671,7 @@
     <string name="container_extra_proot_args">proot 参数</string>
     <string name="container_importing">正在复制镜像文件…</string>
     <string name="container_not_ready_hint">容器尚未初始化，请先进入终端页面完成初始化后再执行命令</string>
+    <string name="container_not_provisioned_hint">容器基础工具尚未安装完成，请先进入终端页面完成初始化（App 也会在后台自动安装）</string>
     <string name="container_file_selected">已选择文件</string>
     <string name="container_select_image_file">选择 tar.gz / tgz / tar.xz / txz 镜像文件</string>
     <string name="container_mount_local">本地目录</string>
@@ -1099,9 +1100,9 @@
     <string name="perm_promote_to_global">提升为全局</string>
     <string name="perm_safety_group">安全防护</string>
     <string name="perm_disable_safety_interception">禁用安全拦截</string>
-    <string name="perm_disable_safety_interception_desc">开启后 AUTO 模式下不再拦截灾难性删除，Shizuku 也不再逐次确认</string>
+    <string name="perm_disable_safety_interception_desc">开启后 AUTO 模式下不再拦截灾难性删除，Shizuku 也不再逐次确认（Shizuku 硬红线不受此开关影响）</string>
     <string name="perm_safety_confirm_title">确认禁用安全拦截？</string>
-    <string name="perm_safety_confirm_message">禁用后，AUTO 模式下连灾难性删除也不再拦截，Shizuku 工具也不再逐次确认。请谨慎操作。</string>
+    <string name="perm_safety_confirm_message">禁用后，AUTO 模式下连灾难性删除也不再拦截，Shizuku 工具也不再逐次确认。注意：Shizuku 的四类硬红线（删系统/他人数据、改系统或应用状态、外发数据、读其他应用私有数据）仍会被拦截，该开关无法绕过。请谨慎操作。</string>
     <string name="perm_safety_confirm_action">确认（%1$d）</string>
     <string name="perm_safety_confirm_action_ready">确认</string>
 

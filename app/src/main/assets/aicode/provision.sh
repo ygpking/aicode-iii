@@ -128,6 +128,35 @@ if [ "$1" = "--env" ]; then
     exit 0
 fi
 
+# ══ 入口 3：`provision.sh --auto`：非交互自动安装基础工具（供 App 在容器就绪后自动调用）══
+# 与入口 1 的区别：不弹菜单、不询问，自动探测镜像源并安装 BASE_PKGS（bash/curl/ripgrep/git），
+# 成功后写标记。用于「容器已解压就绪但用户还没进过终端」时自动补齐基础工具，避免 git 等命令缺失
+# （进 Git 页报 `git: not found`、退出码 127）。只装基础工具、不装运行时（Node/Python/Java 等
+# 仍由用户在终端里按需装），保证后台执行足够快。已有标记则秒退。
+if [ "$1" = "--auto" ]; then
+    plog "provision.sh --auto 启动：PMGR=${PMGR:-未识别}"
+    if [ -f "$MARKER" ]; then
+        state=$(cat "$MARKER" 2>/dev/null)
+        if [ "$state" = "$PROVISION_VERSION" ] || [ "$state" = "$PROVISION_SKIPPED" ]; then
+            plog "--auto：已有标记（$state），跳过"
+            exit 0
+        fi
+    fi
+    if [ -z "$PMGR" ]; then
+        echo "未识别的包管理器（apk/apt-get/dnf/yum/pacman），无法安装依赖。" >&2
+        exit 1
+    fi
+    # 与菜单路径的 ask_mirror 不同：这里不可交互，用 pick_mirror 自动探测可用镜像。
+    pick_mirror
+    setup_mirror
+    pkg_update || { echo "更新软件包列表失败。" >&2; exit 1; }
+    pkg_add $BASE_PKGS || { echo "安装基础工具失败。" >&2; exit 1; }
+    git_config
+    echo "$PROVISION_VERSION" > "$MARKER"
+    plog "--auto：基础工具安装完成，写入标记 $PROVISION_VERSION"
+    exit 0
+fi
+
 # ══ 入口 1：首次进入终端的初始化流程 ══
 plog "provision.sh 启动：version=$PROVISION_VERSION HOME=$HOME uid=$(id -u 2>/dev/null) PATH=$PATH"
 
