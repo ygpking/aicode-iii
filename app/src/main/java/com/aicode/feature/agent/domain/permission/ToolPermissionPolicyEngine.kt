@@ -37,7 +37,11 @@ class ToolPermissionPolicyEngine @Inject constructor(
         const val SHIZUKU_TOOL = "Shizuku"
 
         const val REASON_SHIZUKU =
-            "Shizuku 直接以 adb shell 身份操作宿主 Android 系统，权限高危，仅支持单次放行，不可记忆"
+            "Shizuku 直接操作宿主 Android 系统，权限高危，仅支持单次放行，不可记忆"
+
+        /** Shizuku 红线命令的拒绝原因。红线优先于一切，仅 `elevate` 可单次提权。 */
+        const val REASON_SHIZUKU_RED_LINE =
+            "安全防护：该 Shizuku 命令命中硬红线，禁止自动执行"
 
         /**
          * 合并后的终端会话工具：其 `start` 动作承载 shell 命令，需走指令级前缀匹配；
@@ -123,6 +127,21 @@ class ToolPermissionPolicyEngine @Inject constructor(
     )
 
     suspend fun evaluate(tool: AgentTool?, toolName: String, args: Map<String, JsonElement>, mode: com.aicode.feature.agent.domain.model.AgentMode): EvalResult {
+        // Shizuku 红线优先于一切模式判定：即便 BUILD/PLAN、即便开了「禁用安全拦截」，也一律拦。
+        // 仅凭 `elevate` 参数降级为单次提权确认。
+        if (toolName == SHIZUKU_TOOL) {
+            val command = (args["command"] as? JsonPrimitive)?.content
+            if (command != null) {
+                val cls = ShizukuCommandClassifier.classify(command)
+                if (cls.verdict == ShizukuCommandClassifier.Verdict.RED_LINE) {
+                    return elevationOrDeny(
+                        catastrophicReason = "$REASON_SHIZUKU_RED_LINE（${cls.reason}）",
+                        args = args
+                    )
+                }
+            }
+        }
+
         val capabilities = tool?.effectiveCapabilities(args).orEmpty()
         if (mode == com.aicode.feature.agent.domain.model.AgentMode.PLAN && isDangerousTool(toolName, args, capabilities)) {
             return EvalResult(Verdict.DENY, emptyList(), denyReason = "当前处于 PLAN（计划）模式，系统物理沙盒已禁止修改系统状态或执行写操作。请在计划模式下仅调用只读工具探索代码，不要尝试修改文件或执行命令。")
@@ -145,7 +164,15 @@ class ToolPermissionPolicyEngine @Inject constructor(
                 }
             }
             // Shizuku 直接操作宿主系统，AUTO 下也不自动放行，仍需逐次确认（除非已开启「禁用安全拦截」）。
+            // 例外：命令经分级属只读安全档（如 pm list / dumpsys / getprop）时自动放行，避免每次弹窗。
+            // 红线已在 evaluate 开头拦下，不会走到这里。
             if (toolName == SHIZUKU_TOOL && !safetyDisabled) {
+                val command = (args["command"] as? JsonPrimitive)?.content
+                if (command != null &&
+                    ShizukuCommandClassifier.classify(command).verdict == ShizukuCommandClassifier.Verdict.SAFE
+                ) {
+                    return EvalResult(Verdict.ALLOW, emptyList())
+                }
                 return EvalResult(Verdict.ASK, emptyList(), rememberDisabledReason = REASON_SHIZUKU)
             }
             return EvalResult(Verdict.ALLOW, emptyList())

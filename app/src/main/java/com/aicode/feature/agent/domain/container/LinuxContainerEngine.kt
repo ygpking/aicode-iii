@@ -165,6 +165,12 @@ class LinuxContainerEngine @Inject constructor(
          * provision-script-skipped），App 端仅读它判断是否完成。
          */
         private const val PROVISION_VERSION = "provision-script-v9"
+
+        /**
+         * 自动执行 `provision.sh --auto` 的超时（毫秒）。只装 bash/curl/ripgrep/git 四个包，
+         * 正常几十秒内完成；给 10 分钟容纳慢网络，避免无网时无限等。
+         */
+        private const val PROVISION_AUTO_TIMEOUT_MS = 10 * 60 * 1000L
     }
 
     /** 标记基础包已按 [PROVISION_VERSION] 配置完成（内容为版本号，或用户手动安装的跳过标记），按当前 profile 的 rootfs 目录存放（内置/自定义各自独立）。 */
@@ -489,10 +495,20 @@ class LinuxContainerEngine @Inject constructor(
      */
     override fun notReadyHint(): String? = notReadyHintFor(currentProfile)
 
-    /** 按指定 profile 判断容器是否就绪（MCP 按运行时容器启动前检查用）。 */
+    /**
+     * 按指定 profile 判断容器是否就绪（MCP 按运行时容器启动前检查用）。
+     *
+     * 两层判定：
+     * 1. rootfs 未解压 → 提示去终端页初始化；
+     * 2. rootfs 已解压但基础工具未配置（未跑过 provision）→ 同样提示，因为此时 git/curl 等
+     *    尚不存在，命令会以 `git: not found`（退出码 127）失败【在 Git 页表现为「初始化失败」。】
+     * 远程 SSH 不做第二层判定：工具链由用户在服务器上自行保证（与 [isProvisionedFor] 的语义一致）。
+     */
     fun notReadyHintFor(profile: ContainerProfile): String? {
-        if (containerInstaller.isInstalledFor(profile)) return null
-        return context.getString(R.string.container_not_ready_hint)
+        if (!containerInstaller.isInstalledFor(profile)) return context.getString(R.string.container_not_ready_hint)
+        if (profile.mode == ExecutionMode.REMOTE_SSH) return null
+        if (!isProvisionedFor(profile)) return context.getString(R.string.container_not_provisioned_hint)
+        return null
     }
 
     /**
@@ -529,6 +545,8 @@ class LinuxContainerEngine @Inject constructor(
         if (containerInstaller.isInstalledFor(profile)) {
             // 旧 rootfs（如已导入的 Ubuntu 26.04）不会重新解压，这里兜底巡检修复已知兼容性问题
             containerInstaller.repairRootfsCompatibility(containerInstaller.rootfsDirFor(profile))
+            // rootfs 就绪但基础工具还没装（用户没进过终端）：自动补装，否则 git 等命令缺失
+            ensureProvisioned(profile)
             _initProgress.value = ContainerInitState.Ready
             refreshContainerHome()
             detectAndCacheOsIfNeeded(profile)
@@ -555,6 +573,7 @@ class LinuxContainerEngine @Inject constructor(
         // 等待完成；若调用方（终端页）被取消，join 抛 CancellationException，但后台 job 继续执行。
         job.join()
         if (containerInstaller.isInstalledFor(profile)) {
+            ensureProvisioned(profile)
             _initProgress.value = ContainerInitState.Ready
             refreshContainerHome()
             detectAndCacheOsIfNeeded(profile)
@@ -567,6 +586,45 @@ class LinuxContainerEngine @Inject constructor(
             _initProgress.value = ContainerInitState.Failed(reason)
             throw IllegalStateException(reason)
         }
+    }
+
+    /**
+     * 确保基础工具已安装（幂等）。
+     *
+     * 背景：provision.sh 原先只挂在「交互式终端标签」的启动命令上，而 Git 页、AI 命令等其他
+     * 入口都不会触发它。用户若从未进过终端就打开 Git 页，容器里没有 git，每条命令都以
+     * `git: not found`（退出码 127）失败，报「初始化失败」。
+     *
+     * 故在容器就绪后自动跑一次 `provision.sh --auto`（非交互，只装 BASE_PKGS：bash/curl/
+     * ripgrep/git），成功写 .provisioned 标记后不会再跑。
+     *
+     * 关键实现细节：
+     * - 走 [execCaptured] 而非 [runCommandSync]：[notReadyHintFor] 现在会在「未配置」时拦截命令，
+     *   若走公共入口会把本自动安装自己也拦掉，形成死锁。
+     * - 失败只告警不抛：自动安装失败（如无网）不应阻断进入终端，用户仍可手动进终端完成初始化。
+     *   此时 [notReadyHintFor] 会给出对应提示。
+     * - 远程 SSH 无本地 rootfs，直接返回。
+     */
+    private suspend fun ensureProvisioned(profile: ContainerProfile) {
+        if (profile.mode == ExecutionMode.REMOTE_SSH) return
+        if (isProvisionedFor(profile)) return
+        runCatching {
+            FileLogger.i(TAG, "基础工具未配置，自动执行 provision.sh --auto（profile=${profile.id}）")
+            val script = "/root/.aicode/provision.sh"
+            val result = execCaptured(
+                "[ -f $script ] && sh $script --auto || echo '[aicode] provision.sh 缺失，跳过自动配置'",
+                projectPath = null,
+                timeoutMs = PROVISION_AUTO_TIMEOUT_MS
+            )
+            if (isProvisionedFor(profile)) {
+                FileLogger.i(TAG, "自动配置完成（退出码 ${result.exitCode}）")
+            } else {
+                FileLogger.w(
+                    TAG,
+                    "自动配置未成功写入标记（退出码 ${result.exitCode}），用户可进终端手动完成：${result.output.take(500)}"
+                )
+            }
+        }.onFailure { FileLogger.w(TAG, "自动执行 provision.sh --auto 异常", it) }
     }
 
     /**

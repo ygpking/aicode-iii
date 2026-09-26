@@ -671,6 +671,7 @@
     <string name="container_extra_proot_args">Proot args</string>
     <string name="container_importing">Copying image file…</string>
     <string name="container_not_ready_hint">Container is not initialized yet. Please open the Terminal page to complete initialization first.</string>
+    <string name="container_not_provisioned_hint">Container base tools are not fully installed yet. Please open the Terminal page to complete initialization (the app also installs them automatically in the background).</string>
     <string name="container_file_selected">File selected</string>
     <string name="container_select_image_file">Select tar.gz / tgz / tar.xz / txz image file</string>
     <string name="container_mount_local">Local path</string>
@@ -1099,9 +1100,9 @@
     <string name="perm_promote_to_global">Promote to global</string>
     <string name="perm_safety_group">Safety</string>
     <string name="perm_disable_safety_interception">Disable safety interception</string>
-    <string name="perm_disable_safety_interception_desc">When on, AUTO mode stops blocking catastrophic deletes and Shizuku prompts</string>
+    <string name="perm_disable_safety_interception_desc">When on, AUTO mode stops blocking catastrophic deletes and Shizuku prompts (Shizuku red lines are unaffected)</string>
     <string name="perm_safety_confirm_title">Disable safety interception?</string>
-    <string name="perm_safety_confirm_message">Once disabled, AUTO mode no longer blocks catastrophic deletes and no longer prompts for the Shizuku tool. Proceed with caution.</string>
+    <string name="perm_safety_confirm_message">Once disabled, AUTO mode no longer blocks catastrophic deletes and no longer prompts for the Shizuku tool. Note: the four Shizuku red lines (deleting system/other apps\' data, changing system or app state, exfiltrating data, reading other apps\' private data) are still blocked and cannot be bypassed by this switch. Proceed with caution.</string>
     <string name="perm_safety_confirm_action">Confirm (%1$d)</string>
     <string name="perm_safety_confirm_action_ready">Confirm</string>
 
