@@ -359,6 +359,37 @@ class ToolPermissionPolicyEngineTest {
     }
 
     @Test
+    fun autoMode_redirectToNonProtected_allowed() = runTest {
+        // 写日志到 /tmp、写框架自身的根目录标记文件属正常操作，不再因「含 >」被拦。
+        val e = engine()
+        assertEquals(
+            ToolPermissionPolicyEngine.Verdict.ALLOW,
+            e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "Bash", bash("echo hello > /tmp/x"), AgentMode.AUTO).verdict
+        )
+        assertEquals(
+            ToolPermissionPolicyEngine.Verdict.ALLOW,
+            e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "Bash", bash("./gradlew test > /tmp/test.log 2>&1"), AgentMode.AUTO).verdict
+        )
+        assertEquals(
+            ToolPermissionPolicyEngine.Verdict.ALLOW,
+            e.evaluate(
+                tool(ToolCapability.EXECUTE_COMMANDS), "Bash",
+                bash("printf 'provision-script-v9\\n' > /.provisioned"), AgentMode.AUTO
+            ).verdict
+        )
+    }
+
+    @Test
+    fun autoMode_redirectToProtected_denied() = runTest {
+        // 写入系统关键目录仍拦下：目标落在受保护范围。
+        val e = engine()
+        assertEquals(
+            ToolPermissionPolicyEngine.Verdict.DENY,
+            e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "Bash", bash("echo hi > /usr/local/bin/x"), AgentMode.AUTO).verdict
+        )
+    }
+
+    @Test
     fun autoMode_safetyDisabled_unanalyzable_allowed() = runTest {
         val e = engine(safetyDisabled = true)
         assertEquals(

@@ -15,6 +15,8 @@ package com.aicode.feature.agent.domain.permission
  *     · 输出重定向到**绝对路径**（`> /...`、`>> /...`，含引号包裹的绝对路径）——可绕过 cwd 写到工作区外；
  *     · 未闭合的引号。
  *   相对重定向（落在 cwd=工作区内）视为安全。输入重定向 `<` 不触发（读取风险较低）。
+ * - 输出重定向的目标路径另经 [Analysis.redirectTargets] 带出，供调用方按「目标是否落在受保护范围」
+ *   做更细的裁决（绝对重定向本身仍标不可静态判定，语义不变）；fd 复制（`>&1`、`2>&1`）不是文件目标，不入列。
  * - 匹配按**字面首 token**：`/usr/bin/node` 不会被 `node` 规则命中（宁可多问，不误放）。
  * - 段首的环境赋值（`FOO=bar cmd`）在取程序名/匹配时被跳过，使 `FOO=bar git ...` 仍按 `git` 处理。
  */
@@ -23,10 +25,12 @@ object ShellCommandParser {
     /**
      * @param segments 顶层每一段的 token 列表（已去引号、按空白分词；重定向算子不入 token）。
      * @param analyzable 是否可静态判定；false 表示永不自动放行/记忆，只能单次放行。
+     * @param redirectTargets 输出重定向（`>`/`>>`）的目标 token（已去引号）；`>&1` 等 fd 复制不入列。
      */
     data class Analysis(
         val segments: List<List<String>>,
-        val analyzable: Boolean
+        val analyzable: Boolean,
+        val redirectTargets: List<String> = emptyList()
     )
 
     private const val NONE = 0
@@ -38,6 +42,7 @@ object ShellCommandParser {
 
     fun analyze(command: String): Analysis {
         val segments = mutableListOf<List<String>>()
+        val redirectTargets = mutableListOf<String>()
         var current = mutableListOf<String>()
         val token = StringBuilder()
         var tokenStarted = false
@@ -52,6 +57,7 @@ object ShellCommandParser {
             if (tokenStarted) {
                 val t = token.toString()
                 if (expectRedirectTarget) {
+                    redirectTargets.add(t)
                     if (t.startsWith("/")) analyzable = false
                     expectRedirectTarget = false
                 }
@@ -104,6 +110,12 @@ object ShellCommandParser {
                         }
                         // 顶层段分隔符。
                         c == '\n' || c == ';' -> { flushSegment(); i++ }
+                        // `>&1` / `2>&1`：fd 复制不是文件目标，清了待取标记并跳过后面的 fd 数字。
+                        c == '&' && expectRedirectTarget -> {
+                            expectRedirectTarget = false
+                            i++
+                            while (i < n && command[i].isDigit()) i++
+                        }
                         c == '&' -> { flushSegment(); i += if (i + 1 < n && command[i + 1] == '&') 2 else 1 }
                         c == '|' -> { flushSegment(); i += if (i + 1 < n && command[i + 1] == '|') 2 else 1 }
                         // 重定向：算子本身不入 token；输出重定向标记，待目标 token 判定是否绝对路径。
@@ -117,7 +129,7 @@ object ShellCommandParser {
         }
         if (quote != NONE) analyzable = false // 未闭合引号：不可信
         flushSegment()
-        return Analysis(segments, analyzable)
+        return Analysis(segments, analyzable, redirectTargets)
     }
 
     /** 跳过段首环境赋值后的有效 token（用于取程序名与匹配）。 */
