@@ -129,10 +129,21 @@ object AILogger {
         write(sessionId, text)
     }
 
+    /**
+     * 记录 UI 侧的状态跳变（仅在变化时调用，避免每帧写盘拖慢流式）。
+     *
+     * 单独开方法而不复用 [logResponseStream] 等：这是「事件的观测」而非「模型交互」，
+     * 语义不同、也不需要参与 REQUEST/RESPONSE 的序号配对。写入同一个会话文件，
+     * 便于把「模型吐了什么」与「界面变成了什么」放在一条时间线上对照。
+     */
+    fun logUiEvent(sessionId: String?, event: String) {
+        write(sessionId, "${now()}  UI  $event\n")
+    }
+
     private fun counter(sessionId: String?): AtomicInteger =
         counters.getOrPut(sessionId ?: "unknown") { AtomicInteger(0) }
 
-    /** 返回当前所有会话日志文件，按文件名排序，供占用统计与清理使用。 */
+    /** 返回当前所有会话日志文件（含轮转归档的 .1），按文件名排序，供占用统计与清理使用。 */
     fun listLogFiles(): List<File> {
         val dir = logDir ?: return emptyList()
         return dir.listFiles { f -> f.isFile && f.name.startsWith("session-") }
@@ -214,16 +225,31 @@ object AILogger {
         ioExecutor.execute {
             runCatching {
                 val file = File(dir, "session-$safeId.log")
-                if (file.length() > MAX_FILE_BYTES) {
-                    // 超上限则截断重开，避免单文件无限增长。
-                    file.writeText("--- AI 会话日志超过 ${MAX_FILE_BYTES / 1024 / 1024}MB 已重置 ---\n")
-                }
+                if (file.length() > MAX_FILE_BYTES) rotate(file, safeId)
                 file.appendText(text)
             }.onFailure { Log.e(TAG, "写入 AI 会话日志失败", it) }
         }
     }
 
-    /** 删除超过 [MAX_AGE_DAYS] 天未更新的会话日志文件。 */
+    /**
+     * 单会话日志超上限时**轮转**而不是清零。
+     *
+     * 原先的做法是 `writeText` 覆盖重开，代价是整段历史消失——排查问题时最需要的恰恰是
+     * 「出错前发生了什么」，而被覆盖的正是那一段。改为保留上一份为 `.1`（只留一代，避免无界增长），
+     * 使「当前 + 上一轮」两段历史都可用于回溯。
+     */
+    private fun rotate(file: File, safeId: String) {
+        val previous = File(file.parentFile, "session-$safeId.log.1")
+        // 先删旧档再改名：rename 到已存在的目标在部分文件系统上会失败
+        runCatching { previous.delete() }
+        runCatching { file.renameTo(previous) }.onFailure {
+            // 改名失败（跨挂载点等）时兜底截断，至少不让单文件无限增长
+            Log.w(TAG, "日志轮转失败，退化为截断", it)
+            runCatching { file.delete() }
+        }
+    }
+
+    /** 删除超过 [MAX_AGE_DAYS] 天未更新的会话日志文件（含轮转归档的 .1）。 */
     private fun cleanupOldLogs(dir: File) {
         val cutoff = System.currentTimeMillis() - MAX_AGE_DAYS * 24L * 60 * 60 * 1000
         dir.listFiles { f -> f.isFile && f.name.startsWith("session-") }?.forEach { file ->
