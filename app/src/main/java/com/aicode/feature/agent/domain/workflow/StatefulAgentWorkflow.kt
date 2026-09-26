@@ -72,6 +72,7 @@ import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonElement
@@ -134,10 +135,12 @@ class StatefulAgentWorkflow @Inject constructor(
          * 靠 [TurnGovernor] 兜底。
          */
         const val TURN_ROUNDS_PER_SEGMENT = 10
-        /** 允许的续跑段数；总轮次 = (续跑段数 + 1) × 每段轮数。 */
-        const val TURN_MAX_CONTINUATIONS = 4
-        /** 本轮请求的 LLM 总轮次上限（与旧单段硬上限等值，保持总预算不变）。 */
-        const val TURN_TOTAL_LLM_ROUNDS = (TURN_MAX_CONTINUATIONS + 1) * TURN_ROUNDS_PER_SEGMENT
+        /**
+         * 由总轮次推导续跑段数：段数 = ceil(总轮次 / 每段轮数) - 1。
+         * 保证总预算恰好不减（向上取整的那一段由 [TurnGovernor] 的剩余轮数保护自然浪费）。
+         */
+        fun continuationsFor(totalRounds: Int): Int =
+            ((totalRounds + TURN_ROUNDS_PER_SEGMENT - 1) / TURN_ROUNDS_PER_SEGMENT - 1).coerceAtLeast(0)
         /** 段尾软收敛提示：提示模型先总结中间结论再进入下一段。 */
         const val TURN_WRAP_UP_NOTICE =
             "轮次预算已用去一段。请先收束：用一小段总结当前已完成的工作、仍待解决的事项与下一步计划，然后继续推进；不要开启与本任务无关的新工作。"
@@ -505,9 +508,11 @@ class StatefulAgentWorkflow @Inject constructor(
         val actionQueue = ArrayDeque<AgentAction>()
         // 循环治理三闸：轮次预算（跑多久）/ 连续失败熔断（一直失败就别再烧）/ 死循环哨兵（重复模式）。
         // 三者均为「本次请求内」有状态对象，随 run 新建。
+        // 轮次总预算取自偏好设置（默认 50），由设置页可调。
+        val totalLlmRounds = generalSettingsRepository.turnTotalLlmRoundsFlow.first()
         val turnGovernor = TurnGovernor(
             roundsPerSegment = TURN_ROUNDS_PER_SEGMENT,
-            maxContinuations = TURN_MAX_CONTINUATIONS
+            maxContinuations = continuationsFor(totalLlmRounds)
         )
         val circuitBreaker = FailureCircuitBreaker()
         val loopSentinel = ToolLoopSentinel()
@@ -553,7 +558,7 @@ class StatefulAgentWorkflow @Inject constructor(
                             is TurnVerdict.HardStop -> {
                                 state = state.copy(
                                     isFinished = true,
-                                    error = "本轮达到最大迭代上限（共 $TURN_TOTAL_LLM_ROUNDS 轮），已自动停止以避免无限循环。"
+                                    error = "本轮达到最大迭代上限（共 $totalLlmRounds 轮），已自动停止以避免无限循环。"
                                 )
                                 continue
                             }

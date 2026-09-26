@@ -60,6 +60,8 @@ internal fun GeneralSettingsSection(
     onSetCompactionThresholdPercent: (Int) -> Unit,
     sendFileMaxSizeMb: Int,
     onSetSendFileMaxSizeMb: (Int) -> Unit,
+    turnTotalLlmRounds: Int,
+    onSetTurnTotalLlmRounds: (Int) -> Unit,
     deleteExternalWorkspaceSessions: Boolean,
     onToggleDeleteExternalWorkspaceSessions: (Boolean) -> Unit
 ) {
@@ -69,6 +71,7 @@ internal fun GeneralSettingsSection(
     var editingMaxNetworkRetries by remember { mutableStateOf(false) }
     var editingCompactionThreshold by remember { mutableStateOf(false) }
     var editingSendFileMaxSize by remember { mutableStateOf(false) }
+    var editingTurnTotalRounds by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -199,6 +202,20 @@ internal fun GeneralSettingsSection(
         SettingsGroup {
             SettingsRow(
                 icon = null,
+                title = stringResource(R.string.settings_turn_total_rounds),
+                subtitle = stringResource(R.string.settings_turn_total_rounds_desc),
+                onClick = { editingTurnTotalRounds = true },
+                trailing = {
+                    Text(
+                        text = stringResource(R.string.settings_rounds_value, turnTotalLlmRounds),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.semanticColors.subtleText
+                    )
+                }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = null,
                 title = stringResource(R.string.settings_sendfile_max_size),
                 subtitle = stringResource(R.string.settings_sendfile_max_size_desc),
                 onClick = { editingSendFileMaxSize = true },
@@ -275,6 +292,21 @@ internal fun GeneralSettingsSection(
                 editingCompactionThreshold = false
             },
             onDismiss = { editingCompactionThreshold = false }
+        )
+    }
+
+    if (editingTurnTotalRounds) {
+        NumberInputDialog(
+            title = stringResource(R.string.settings_turn_total_rounds),
+            initialValue = turnTotalLlmRounds,
+            hint = stringResource(R.string.settings_turn_total_rounds_input_hint),
+            minValue = 10,
+            maxValue = 500,
+            onConfirm = {
+                onSetTurnTotalLlmRounds(it)
+                editingTurnTotalRounds = false
+            },
+            onDismiss = { editingTurnTotalRounds = false }
         )
     }
 

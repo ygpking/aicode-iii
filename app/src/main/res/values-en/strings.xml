@@ -44,6 +44,10 @@
     <string name="settings_sendfile_max_size_desc">Per-file size cap; exceeding it fails the whole batch</string>
     <string name="settings_mb_value">%1$d MB</string>
     <string name="settings_sendfile_max_size_input_hint">MB, an integer greater than 0</string>
+    <string name="settings_turn_total_rounds">Max tool rounds per task</string>
+    <string name="settings_turn_total_rounds_desc">Maximum tool-calling rounds the AI may run in a single request before stopping to prevent loops</string>
+    <string name="settings_rounds_value">%1$d rounds</string>
+    <string name="settings_turn_total_rounds_input_hint">An integer from 10 to 500</string>
     <string name="settings_vision_model">Vision Model</string>
     <string name="settings_compaction_model">Compaction Model</string>
     <string name="settings_title_model">Title Model</string>

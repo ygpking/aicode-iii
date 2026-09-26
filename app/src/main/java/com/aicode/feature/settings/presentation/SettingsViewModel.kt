@@ -499,6 +499,9 @@ class SettingsViewModel @Inject constructor(
     private val _sendFileMaxSizeMb = MutableStateFlow(100)
     val sendFileMaxSizeMb: StateFlow<Int> = _sendFileMaxSizeMb.asStateFlow()
 
+    private val _turnTotalLlmRounds = MutableStateFlow(50)
+    val turnTotalLlmRounds: StateFlow<Int> = _turnTotalLlmRounds.asStateFlow()
+
     private val _deleteExternalWorkspaceSessions = MutableStateFlow(false)
     val deleteExternalWorkspaceSessions: StateFlow<Boolean> = _deleteExternalWorkspaceSessions.asStateFlow()
 
@@ -822,6 +825,12 @@ class SettingsViewModel @Inject constructor(
             launch {
                 generalSettingsRepository.sendFileMaxSizeMbFlow.collectLatest {
                     _sendFileMaxSizeMb.value = it
+                }
+            }
+
+            launch {
+                generalSettingsRepository.turnTotalLlmRoundsFlow.collectLatest {
+                    _turnTotalLlmRounds.value = it
                 }
             }
 
@@ -1525,6 +1534,13 @@ class SettingsViewModel @Inject constructor(
     fun setSendFileMaxSizeMb(mb: Int) {
         viewModelScope.launch {
             generalSettingsRepository.setSendFileMaxSizeMb(mb)
+        }
+    }
+
+    /** 单次任务允许的最大工具轮次（由设置页调整）。 */
+    fun setTurnTotalLlmRounds(rounds: Int) {
+        viewModelScope.launch {
+            generalSettingsRepository.setTurnTotalLlmRounds(rounds)
         }
     }
 

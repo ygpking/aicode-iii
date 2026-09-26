@@ -52,6 +52,7 @@ class GeneralSettingsRepository @Inject constructor(
         val COMPACTION_THRESHOLD_PERCENT_KEY = intPreferencesKey("compaction_threshold_percent")
         val SENDFILE_MAX_SIZE_MB_KEY = intPreferencesKey("sendfile_max_size_mb")
         val DELETE_EXTERNAL_WORKSPACE_SESSIONS_KEY = booleanPreferencesKey("delete_external_workspace_sessions")
+        val TURN_TOTAL_LLM_ROUNDS_KEY = intPreferencesKey("turn_total_llm_rounds")
 
         /** 首字超时默认 5 分钟，与原硬编码值一致。 */
         const val DEFAULT_FIRST_BYTE_TIMEOUT_SEC = 300
@@ -64,6 +65,15 @@ class GeneralSettingsRepository @Inject constructor(
 
         /** sendFile 单个文件大小上限默认 100MB，与原硬编码值一致。 */
         const val DEFAULT_SENDFILE_MAX_SIZE_MB = 100
+
+        /** 单次任务最大工具轮次默认 50，与旧硬编码值（10 轮 × 5 段）一致。 */
+        const val DEFAULT_TURN_TOTAL_LLM_ROUNDS = 50
+
+        /** 轮次上限下限（与每段 10 轮的粒度对齐，避免向上取整偏差）。 */
+        const val MIN_TURN_TOTAL_LLM_ROUNDS = 10
+
+        /** 轮次上限上限。 */
+        const val MAX_TURN_TOTAL_LLM_ROUNDS = 500
     }
 
     /** 拉取模型后自动对齐本地列表的开关流；未设置时回退到 true（默认开启）。 */
@@ -216,4 +226,21 @@ class GeneralSettingsRepository @Inject constructor(
     suspend fun deleteExternalWorkspaceSessionsSnapshot(): Boolean = deleteExternalWorkspaceSessionsFlow.first()
 
     suspend fun restoreDeleteExternalWorkspaceSessions(enabled: Boolean) = setDeleteExternalWorkspaceSessions(enabled)
+
+    /** 单次任务允许的最大工具调用轮次；默认 50，限定 5..500。 */
+    val turnTotalLlmRoundsFlow: Flow<Int> = context.generalDataStore.data.map {
+        (it[TURN_TOTAL_LLM_ROUNDS_KEY] ?: DEFAULT_TURN_TOTAL_LLM_ROUNDS)
+            .coerceIn(MIN_TURN_TOTAL_LLM_ROUNDS, MAX_TURN_TOTAL_LLM_ROUNDS)
+    }
+
+    suspend fun setTurnTotalLlmRounds(rounds: Int) {
+        context.generalDataStore.edit {
+            it[TURN_TOTAL_LLM_ROUNDS_KEY] = rounds.coerceIn(MIN_TURN_TOTAL_LLM_ROUNDS, MAX_TURN_TOTAL_LLM_ROUNDS)
+        }
+    }
+
+    /** 备份快照：单次任务最大轮次。 */
+    suspend fun turnTotalLlmRoundsSnapshot(): Int = turnTotalLlmRoundsFlow.first()
+
+    suspend fun restoreTurnTotalLlmRounds(rounds: Int) = setTurnTotalLlmRounds(rounds)
 }

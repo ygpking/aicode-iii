@@ -336,6 +336,7 @@ class BackupManagerImpl @Inject constructor(
         enterToSend = if (options.appSettings) generalSettingsRepository.enterToSendSnapshot() else false,
         compactionThresholdPercent = if (options.appSettings) generalSettingsRepository.compactionThresholdPercentSnapshot() else 90,
         sendFileMaxSizeMb = if (options.appSettings) generalSettingsRepository.sendFileMaxSizeMbSnapshot() else 100,
+        turnTotalLlmRounds = if (options.appSettings) generalSettingsRepository.turnTotalLlmRoundsSnapshot() else 50,
         deleteExternalWorkspaceSessions = if (options.appSettings) generalSettingsRepository.deleteExternalWorkspaceSessionsSnapshot() else false,
         logLevel = if (options.appSettings) logSettingsRepository.snapshot() else null,
         visionProviderId = if (options.appSettings) visionModelSettingsRepository.getVisionProviderId() else "",
@@ -640,6 +641,7 @@ class BackupManagerImpl @Inject constructor(
         generalSettingsRepository.restoreEnterToSend(meta.enterToSend)
         generalSettingsRepository.restoreCompactionThresholdPercent(meta.compactionThresholdPercent)
         generalSettingsRepository.restoreSendFileMaxSizeMb(meta.sendFileMaxSizeMb)
+        generalSettingsRepository.restoreTurnTotalLlmRounds(meta.turnTotalLlmRounds)
         generalSettingsRepository.restoreDeleteExternalWorkspaceSessions(meta.deleteExternalWorkspaceSessions)
         logSettingsRepository.restore(meta.logLevel)
         if (meta.visionProviderId.isNotBlank() || meta.visionModel.isNotBlank()) {
