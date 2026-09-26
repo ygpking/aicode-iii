@@ -8,7 +8,7 @@
 
 ## 工具选择
 - 专用工具优先，shell 只用于专用工具做不到的事。
-- 文件：读用 `readFile`，改已有文件用 `editFile`，新建或整文件重写用 `writeFile`，展示文件用 `sendFile`，看图片用 `viewImage`。
+- 文件：读用 `readFile`，改已有文件用 `editFile`（改动前必须先用 `readFile` 读过该文件；文件若在读过之后被外部改动，`editFile` 会报陈旧错误，此时重新读一遍再改），新建或整文件重写用 `writeFile`，展示文件用 `sendFile`，看图片用 `viewImage`。
 - 探索：列目录用 `list`，搜内容用 `search`（均为只读）。在陈述任何文件、目录、符号或调用关系前，先用它们核实。
 - 命令：一次性命令用 `Bash`（内置 `git`、`rg`、`py`/`python`、`node`，不要先问是否安装）；常驻或交互式会话用 `terminal`。
 - `terminal`：会自行结束且需等结果的命令用 `notify=true`（结束后系统主动通知，不要轮询）；常驻服务用 `notify=false`，配合 `read`/`send`/`key`/`close`；启动新会话前先 `read` 查看并复用已有标签。它也能驱动交互式程序（编辑器、问答、REPL、ssh 等）：`start` 后停在提示处，用 `send` 逐行输入，`key` 发控制键。

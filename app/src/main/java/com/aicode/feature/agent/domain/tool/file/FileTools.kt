@@ -1,6 +1,8 @@
 package com.aicode.feature.agent.domain.tool.file
 
-import com.aicode.feature.agent.domain.tool.AgentTool
+import com.aicode.feature.agent.domain.model.AgentContext
+import com.aicode.feature.agent.domain.tool.AbstractContextualTool
+import com.aicode.feature.agent.domain.tool.FileReadStateStore
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
 import com.aicode.feature.agent.domain.tool.ToolParameter
@@ -25,8 +27,9 @@ import javax.inject.Inject
 private const val TAG = "FileTools"
 
 class ReadFileTool @Inject constructor(
-    private val fileAccess: FileAccessProvider
-) : AgentTool() {
+    private val fileAccess: FileAccessProvider,
+    private val readStateStore: FileReadStateStore
+) : AbstractContextualTool() {
     override val name = "readFile"
     override val description = "读取指定路径的文件内容。支持工作区文件或容器绝对路径的系统文件。单次读取受文件大小限制，超大文件可通过 start_line 分段读取。"
     override val capabilities = setOf(ToolCapability.READ_WORKSPACE)
@@ -36,7 +39,10 @@ class ReadFileTool @Inject constructor(
         "end_line" to ToolParameter("end_line", ParameterType.INTEGER, "结束行号；与 start_line 的跨度最多 2000 行，超出按 2000 行截断。", required = false)
     )
 
-    override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
+    override suspend fun executeWithContext(
+        args: Map<String, JsonElement>,
+        context: AgentContext
+    ): ToolResult {
         return try {
             val path = args["path"]?.jsonPrimitive?.contentOrNull ?: run {
                 FileLogger.w(TAG, "read_file 缺少 path 参数")
@@ -99,6 +105,14 @@ class ReadFileTool @Inject constructor(
             }
 
             FileLogger.v(TAG, "read_file 成功 path=$path total=$totalLines emitted=$emittedLines bytes=$byteCount truncated=$truncated")
+            // 记录已读：editFile 据此判定「未读即改」并做新鲜度比对。忽略读取失败/异常路径。
+            runCatching {
+                readStateStore.record(
+                    sessionKey = context.sessionId.orEmpty(),
+                    pathKey = fileAccess.toDisplayPath(path),
+                    mtime = fileAccess.lastModified(path)
+                )
+            }
             val resultMap = mutableMapOf<String, JsonElement>(
                 "content" to JsonPrimitive(sb.toString()),
                 "total_lines" to JsonPrimitive(totalLines),
@@ -130,8 +144,9 @@ class ReadFileTool @Inject constructor(
  * overwrite=false 且目标已存在时报错，可用于安全地新建文件。
  */
 class WriteFileTool @Inject constructor(
-    private val fileAccess: FileAccessProvider
-) : AgentTool() {
+    private val fileAccess: FileAccessProvider,
+    private val readStateStore: FileReadStateStore
+) : AbstractContextualTool() {
     override val name = "writeFile"
     override val description = "向指定路径写入完整文件内容。若文件存在则根据 overwrite 决定是否覆盖。支持写入工作区文件或容器系统文件。局部修改推荐使用 editFile。"
     override val permissionPolicy = ToolPermissionPolicy.ASK
@@ -160,7 +175,10 @@ class WriteFileTool @Inject constructor(
         )
     }
 
-    override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
+    override suspend fun executeWithContext(
+        args: Map<String, JsonElement>,
+        context: AgentContext
+    ): ToolResult {
         return try {
             val path = args["path"]?.jsonPrimitive?.contentOrNull ?: run {
                 FileLogger.w(TAG, "write_file 缺少 path 参数")
@@ -197,6 +215,14 @@ class WriteFileTool @Inject constructor(
             ))
 
             FileLogger.v(TAG, "write_file 成功 path=$path created=${!existed} lines=${content.lines().size} (+$added -$removed)")
+            // 写后记录：写入即等于该文件当前内容已知，后续 editFile 只需比对新鲜度。
+            runCatching {
+                readStateStore.record(
+                    sessionKey = context.sessionId.orEmpty(),
+                    pathKey = fileAccess.toDisplayPath(path),
+                    mtime = fileAccess.lastModified(path)
+                )
+            }
             ToolResult.Success(
                 JsonObject(mapOf(
                     "path" to JsonPrimitive(fileAccess.toDisplayPath(path)),

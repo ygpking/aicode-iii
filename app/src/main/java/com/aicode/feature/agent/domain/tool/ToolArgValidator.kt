@@ -58,7 +58,7 @@ internal fun <T> partitionByRoundLimit(calls: List<T>, limit: Int): Pair<List<T>
 internal fun unknownToolGuidance(name: String, allNames: Set<String>): String {
     val threshold = maxOf(2, name.length / 3)
     val candidates = allNames
-        .map { it to editDistance(name, it) }
+        .map { it to TextSimilarity.editDistance(name, it) }
         .sortedBy { it.second }
         .filter { it.second <= threshold }
         .take(3)
@@ -71,21 +71,4 @@ internal fun unknownToolGuidance(name: String, allNames: Set<String>): String {
     }
 }
 
-/** 标准 Levenshtein 编辑距离。 */
-private fun editDistance(a: String, b: String): Int {
-    if (a == b) return 0
-    if (a.isEmpty()) return b.length
-    if (b.isEmpty()) return a.length
 
-    var prev = IntArray(b.length + 1) { it }
-    var cur = IntArray(b.length + 1)
-    for (i in 1..a.length) {
-        cur[0] = i
-        for (j in 1..b.length) {
-            val cost = if (a[i - 1] == b[j - 1]) 0 else 1
-            cur[j] = minOf(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost)
-        }
-        val tmp = prev; prev = cur; cur = tmp
-    }
-    return prev[b.length]
-}

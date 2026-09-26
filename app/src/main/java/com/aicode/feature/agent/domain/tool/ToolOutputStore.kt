@@ -143,9 +143,12 @@ class ToolOutputStore @Inject constructor(
         } else {
             "完整内容保存失败"
         }
+        // 被截掉的中间段里夹着的报错/栈帧往往比头尾更有诊断价值，单独挑回来附在截断说明前。
+        val salient = buildSalientBlock(text, toolName)
         return when (spillBudget.headTailDirection(toolName)) {
             Direction.HEAD -> buildString {
                 append(text.take(MAX_INLINE_CHARS))
+                append(salient)
                 append("\n\n...[输出过长，已省略其后 ")
                 append(omitted)
                 append(" 个字符；")
@@ -157,11 +160,14 @@ class ToolOutputStore @Inject constructor(
                 append(omitted)
                 append(" 个字符；")
                 append(storageHint)
-                append("]...\n\n")
+                append("]...")
+                append(salient)
+                append('\n')
                 append(text.takeLast(MAX_INLINE_CHARS))
             }
             Direction.HEAD_TAIL -> buildString {
                 append(text.take(HEAD_CHARS))
+                append(salient)
                 append("\n\n...[输出过长，已省略中间 ")
                 append(omitted)
                 append(" 个字符；")
@@ -170,6 +176,20 @@ class ToolOutputStore @Inject constructor(
                 append(text.takeLast(TAIL_CHARS))
             }
         }
+    }
+
+    /**
+     * 只对保留头部的方向提取显著行（尾部方向本就看得到末尾报错，再插会重复）。
+     * 显著行来自被截掉的那一段，避免与已展示的头尾重复。
+     */
+    private fun buildSalientBlock(text: String, toolName: String): String {
+        val middle = when (spillBudget.headTailDirection(toolName)) {
+            Direction.HEAD -> text.drop(MAX_INLINE_CHARS)
+            Direction.HEAD_TAIL -> text.drop(HEAD_CHARS).dropLast(TAIL_CHARS)
+            Direction.TAIL -> return ""
+        }
+        val salient = SalientLines.extract(middle) ?: return ""
+        return "\n\n...[已省略段落中的关键行]...\n$salient"
     }
 
     @Synchronized

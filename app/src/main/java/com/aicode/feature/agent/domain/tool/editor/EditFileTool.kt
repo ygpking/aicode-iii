@@ -1,14 +1,16 @@
 package com.aicode.feature.agent.domain.tool.editor
 
-import com.aicode.feature.agent.domain.tool.AgentTool
-import com.aicode.feature.agent.domain.tool.ParameterType
-import com.aicode.feature.agent.domain.tool.PendingToolPermission
-import com.aicode.feature.agent.domain.tool.ToolParameter
-import com.aicode.feature.agent.domain.tool.ToolCapability
-import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
-import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LineDiff
+import com.aicode.feature.agent.domain.model.AgentContext
+import com.aicode.feature.agent.domain.tool.AbstractContextualTool
+import com.aicode.feature.agent.domain.tool.FileReadStateStore
+import com.aicode.feature.agent.domain.tool.ParameterType
+import com.aicode.feature.agent.domain.tool.PendingToolPermission
+import com.aicode.feature.agent.domain.tool.ToolCapability
+import com.aicode.feature.agent.domain.tool.ToolParameter
+import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
+import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -23,7 +25,7 @@ import javax.inject.Inject
 private const val TAG = "EditFileTool"
 
 /**
- * 基于「精确字符串匹配」的文件编辑工具，取代旧的按行号 insert/replace/delete 三件套。
+ * 基于「多级降级字符串匹配」的文件编辑工具，取代旧的按行号 insert/replace/delete 三件套。
  *
  * 选择字符串匹配而非行号的原因：连续编辑时，第一次修改会让后续所有行号发生漂移，
  * 行号方案因此天然脆弱。字符串匹配只依赖内容本身，且一个工具即可覆盖三种语义：
@@ -31,20 +33,26 @@ private const val TAG = "EditFileTool"
  *   - 删除：new_string 传空串
  *   - 插入：把某段替换为「它自身 + 新内容」
  *
+ * 匹配不要求逐字节相同：模型给出的 `old_string` 常有智能引号、多余行号前缀、转义失真或缩进
+ * 不齐等细微出入，故按可信度逐级降级查找（见 [EditMatcher]）。命中后回写的是**原文真实区间**，
+ * 未触碰的行按原字节保留。
+ *
  * 一次调用可对同一个文件进行多处编辑：传入 edits 数组，按数组顺序依次应用，
  * 每个编辑都在前一个编辑的结果之上匹配。整批编辑是「全有或全无」的——只要有任何
  * 一个编辑匹配失败（找不到或匹配多处而未开 replace_all），整次调用都不写盘并报错，
  * 文件不会处于改了一半的状态。
  *
  * 为保证安全，默认要求每个 old_string 在当前内容中唯一；若有多处匹配，需提供更长的
- * 上下文，或对该编辑显式设置 replace_all=true 才会全部替换。
+ * 上下文，或对该编辑显式设置 replace_all=true 才会全部替换（此时只用精确匹配）。
+ * 另要求编辑前 AI 已读过该文件且文件未被外部改动（见 [FileReadStateStore]）。
  */
 class EditFileTool @Inject constructor(
-    private val fileAccess: FileAccessProvider
-) : AgentTool() {
+    private val fileAccess: FileAccessProvider,
+    private val readStateStore: FileReadStateStore
+) : AbstractContextualTool() {
     override val name = "editFile"
     override val description =
-        "通过精确的字符串匹配替换修改已存在的文件内容。作为局部修改文件的首选工具。支持通过 edits 数组一次性应用多处修改，整批编辑是原子的——任一处匹配失败将整批回滚，文件不会处于改了一半的状态。整文件重写请用 writeFile。"
+        "通过字符串匹配替换修改已存在的文件内容。作为局部修改文件的首选工具。支持通过 edits 数组一次性应用多处修改，整批编辑是原子的——任一处匹配失败将整批回滚，文件不会处于改了一半的状态。匹配不要求逐字节相同：智能引号、多余行号前缀、转义失真、缩进不齐都会被自动容错；改前需已读过该文件。整文件重写请用 writeFile。"
     override val permissionPolicy = ToolPermissionPolicy.ASK
     override val capabilities = setOf(ToolCapability.WRITE_WORKSPACE)
 
@@ -103,7 +111,10 @@ class EditFileTool @Inject constructor(
         )
     }
 
-    override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
+    override suspend fun executeWithContext(
+        args: Map<String, JsonElement>,
+        context: AgentContext
+    ): ToolResult {
         return try {
             val path = args["path"]?.jsonPrimitive?.contentOrNull
                 ?: return ToolResult.Error("路径参数缺失", "MISSING_PATH")
@@ -126,45 +137,42 @@ class EditFileTool @Inject constructor(
                 FileLogger.w(TAG, "edit_file 文件不存在: $path")
                 return ToolResult.Error("文件不存在: $path", "FILE_NOT_FOUND")
             }
+            checkReadState(path, context)?.let { return it }
 
             // 先在内存里顺序应用所有编辑；任一失败立刻返回、绝不写盘（全有或全无）。
             var content = fileAccess.readFile(path)
             val hunks = ArrayList<Hunk>(edits.size)
             var totalReplacements = 0
+            val fuzzyLevels = LinkedHashSet<EditMatcher.Level>()
 
             edits.forEachIndexed { i, e ->
-                val occurrences = content.split(e.oldString).size - 1
-                if (occurrences == 0) {
-                    FileLogger.w(TAG, "edit_file 第 ${i + 1} 个编辑未匹配: $path")
-                    return ToolResult.Error(
-                        "第 ${i + 1} 个编辑未在文件中找到 old_string，请确认内容（含缩进/换行）与当前文件完全一致",
-                        "NO_MATCH"
-                    )
+                val match = when (e.replaceAll) {
+                    true -> resolveReplaceAll(content, e, i)
+                    false -> resolveUnique(content, e, i)
                 }
-                if (occurrences > 1 && !e.replaceAll) {
-                    FileLogger.w(TAG, "edit_file 第 ${i + 1} 个编辑匹配 $occurrences 处且非 replace_all: $path")
-                    return ToolResult.Error(
-                        "第 ${i + 1} 个编辑的 old_string 在文件中匹配到 $occurrences 处，请提供更长的唯一上下文，或对该编辑设置 replace_all=true",
-                        "MULTIPLE_MATCHES"
-                    )
-                }
+                if (match is MatchResolution.Failure) return match.result
+                val resolved = (match as MatchResolution.Ok)
+                fuzzyLevels += resolved.level
 
-                // 变更在「应用本编辑前」内容中的起始行号（1 基）。因为内容已包含此前所有编辑的结果，
-                // 这个行号已经反映了前序编辑造成的行漂移，对自上而下的常规编辑顺序是准确的。
-                val matchIndex = content.indexOf(e.oldString)
-                val startLine = if (matchIndex >= 0) content.substring(0, matchIndex).count { it == '\n' } + 1 else 1
-
-                val diff = LineDiff.toUnified(e.oldString, e.newString)
+                val startLine = content.substring(0, resolved.match.start).count { it == '\n' } + 1
+                val diff = LineDiff.toUnified(resolved.match.text, e.newString)
                 val added = diff.lines().count { it.startsWith("+") }
                 val removed = diff.lines().count { it.startsWith("-") }
                 hunks.add(Hunk(startLine = startLine, added = added, removed = removed, diff = diff))
 
-                content = if (e.replaceAll) content.replace(e.oldString, e.newString)
-                else content.replaceFirst(e.oldString, e.newString)
-                totalReplacements += if (e.replaceAll) occurrences else 1
+                content = resolved.replacement
+                totalReplacements += resolved.count
             }
 
             fileAccess.writeFile(path, content, overwrite = true)
+            // 写后刷新记录：文件当前内容由本次改写决定，后续编辑只需比对新鲜度。
+            runCatching {
+                readStateStore.record(
+                    sessionKey = context.sessionId.orEmpty(),
+                    pathKey = fileAccess.toDisplayPath(path),
+                    mtime = fileAccess.lastModified(path)
+                )
+            }
 
             val addedTotal = hunks.sumOf { it.added }
             val removedTotal = hunks.sumOf { it.removed }
@@ -177,7 +185,8 @@ class EditFileTool @Inject constructor(
                 ))
             })
 
-            FileLogger.v(TAG, "edit_file 成功 path=$path edits=${edits.size} replacements=$totalReplacements")
+            val fuzzyNote = fuzzyLevels.filter { it != EditMatcher.Level.EXACT }
+            FileLogger.v(TAG, "edit_file 成功 path=$path edits=${edits.size} replacements=$totalReplacements fuzzy=$fuzzyNote")
             ToolResult.Success(
                 JsonObject(mapOf(
                     "status" to JsonPrimitive("edited"),
@@ -187,6 +196,7 @@ class EditFileTool @Inject constructor(
                     "total_lines" to JsonPrimitive(content.lines().size),
                     "added_lines" to JsonPrimitive(addedTotal),
                     "removed_lines" to JsonPrimitive(removedTotal),
+                    "fuzzy_matches" to JsonPrimitive(fuzzyNote.size),
                     "hunks" to hunksJson
                 ))
             )
@@ -194,6 +204,102 @@ class EditFileTool @Inject constructor(
             FileLogger.e(TAG, "edit_file 异常", e)
             ToolResult.Error(e.message ?: "编辑文件失败", "EDIT_ERROR")
         }
+    }
+
+    /** 单个编辑的匹配与替换结果。 */
+    private sealed interface MatchResolution {
+        /** [replacement] 为本编辑应用后的完整内容，[count] 为替换处数。 */
+        data class Ok(
+            val match: EditMatcher.Match,
+            val level: EditMatcher.Level,
+            val replacement: String,
+            val count: Int
+        ) : MatchResolution
+
+        data class Failure(val result: ToolResult.Error) : MatchResolution
+    }
+
+    private fun resolveUnique(content: String, edit: Edit, index: Int): MatchResolution =
+        when (val r = EditMatcher.findUnique(content, edit.oldString, allowFuzzy = true)) {
+            is EditMatcher.Result.Found -> MatchResolution.Ok(
+                match = r.match,
+                level = r.level,
+                replacement = content.substring(0, r.match.start) + edit.newString + content.substring(r.match.end),
+                count = 1
+            )
+            is EditMatcher.Result.Ambiguous -> {
+                FileLogger.w(TAG, "edit_file 第 ${index + 1} 个编辑匹配 ${r.count} 处且非 replace_all")
+                MatchResolution.Failure(
+                    ToolResult.Error(
+                        "第 ${index + 1} 个编辑的 old_string 在文件中匹配到 ${r.count} 处，请提供更长的唯一上下文，或对该编辑设置 replace_all=true",
+                        "MULTIPLE_MATCHES"
+                    )
+                )
+            }
+            EditMatcher.Result.NotFound -> {
+                FileLogger.w(TAG, "edit_file 第 ${index + 1} 个编辑未匹配")
+                MatchResolution.Failure(
+                    ToolResult.Error(
+                        "第 ${index + 1} 个编辑未在文件中找到 old_string（已尝试智能引号/行号/转义/缩进容错），请先 readFile 确认当前内容",
+                        "NO_MATCH"
+                    )
+                )
+            }
+        }
+
+    /**
+     * replace_all：只接受精确匹配，避免宽匹配放大误替换。命中多处时逐一替换并保持区间顺序。
+     */
+    private fun resolveReplaceAll(content: String, edit: Edit, index: Int): MatchResolution {
+        val ranges = EditMatcher.findAllExact(content, edit.oldString)
+        if (ranges.isEmpty()) {
+            FileLogger.w(TAG, "edit_file 第 ${index + 1} 个编辑（replace_all）未精确匹配")
+            return MatchResolution.Failure(
+                ToolResult.Error(
+                    "第 ${index + 1} 个编辑（replace_all=true）未在文件中精确匹配到 old_string；replace_all 不支持容错匹配，请先用 readFile 确认内容",
+                    "NO_MATCH"
+                )
+            )
+        }
+        val sb = StringBuilder(content.length)
+        var cursor = 0
+        ranges.forEach { r ->
+            sb.append(content, cursor, r.start)
+            sb.append(edit.newString)
+            cursor = r.end
+        }
+        sb.append(content, cursor, content.length)
+        return MatchResolution.Ok(
+            match = ranges.first(),
+            level = EditMatcher.Level.EXACT,
+            replacement = sb.toString(),
+            count = ranges.size
+        )
+    }
+
+    /**
+     * 写前校验：要求本会话已读过该文件，且读后未被外部改动。
+     * 文件时间戳不可用时只校验「是否已读」，不误报新鲜度——宁可少拦一次，也不阻碍一次正当编辑。
+     */
+    private fun checkReadState(path: String, context: AgentContext): ToolResult.Error? {
+        val sessionKey = context.sessionId.orEmpty()
+        val pathKey = fileAccess.toDisplayPath(path)
+        if (!readStateStore.wasRead(sessionKey, pathKey)) {
+            FileLogger.w(TAG, "edit_file 未读即改: $pathKey")
+            return ToolResult.Error(
+                "编辑前需先用 readFile 读取 $pathKey 的当前内容，确认要替换的原文无误后再改",
+                "NOT_READ"
+            )
+        }
+        val currentMtime = runCatching { fileAccess.lastModified(path) }.getOrDefault(-1L)
+        if (!readStateStore.isFresh(sessionKey, pathKey, currentMtime)) {
+            FileLogger.w(TAG, "edit_file 文件已被外部改动: $pathKey")
+            return ToolResult.Error(
+                "$pathKey 在读取后已被外部改动，为避免覆盖他人的修改，请先用 readFile 重新读取再编辑",
+                "STALE_CONTENT"
+            )
+        }
+        return null
     }
 
     /**
