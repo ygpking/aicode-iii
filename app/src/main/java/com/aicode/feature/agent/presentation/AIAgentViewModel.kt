@@ -13,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import com.aicode.MainActivity
 import com.aicode.R
 import com.aicode.core.util.FileLogger
+import com.aicode.core.util.EventTrace
 import com.aicode.core.util.RuntimeLifecycleSupervisor
 import com.aicode.core.util.GitIgnoreMatcher
 import com.aicode.core.util.toUserMessage
@@ -58,6 +59,7 @@ import com.aicode.core.watch.asDirtySignal
 import com.aicode.feature.agent.domain.subagent.SubAgentEventType
 import com.aicode.feature.agent.domain.workflow.AgentWorkflow
 import com.aicode.feature.agent.domain.workflow.AgentEvent
+import com.aicode.feature.agent.domain.workflow.AgentEventTracer
 import com.aicode.feature.terminal.domain.TabFinishedEvent
 import com.aicode.feature.terminal.domain.TerminalKeepaliveService
 import com.aicode.feature.terminal.domain.TerminalSessionManager
@@ -1382,6 +1384,11 @@ class AIAgentViewModel @Inject constructor(
         // 同时让预览窗被关闭的状态复位，使本轮的浏览器操作能重新弹出预览。
         browserManager.clearOperations()
 
+        // 事件轨迹回合：开启后每个 AgentEvent 都会记一行（受日志等级控制，关闭时无开销）。
+        // 必须声明在 try **之前**：finally 会引用它，而 try 内 beginTurn 之前就可能抛异常，
+        // 那时变量尚未初始化，Kotlin 不允许在 finally 里读取未初始化的 local val。
+        val turnId = EventTrace.beginTurn(sessionId)
+
         try {
             var failed = false
             // 必须在插入本次用户消息之前读取历史：workflow 会自己 add(userRequest)，避免重复。
@@ -1435,11 +1442,15 @@ class AIAgentViewModel @Inject constructor(
                 else -> allTools.filterNot { it.name == AgentDefinition.PARENT_MESSAGE_TOOL }
             }
 
+            val history = messagePersistenceUseCase.buildHistory(sessionId, SessionUseCase.PENDING_TOOL_MARKER)
             agentWorkflow.executeEvents(
                 userRequest = modelRequest,
                 context = agentContext,
                 tools = tools
             ).collect { event ->
+                // 事件轨迹：在事件的唯一消费出口统一记录，不侵入下面 13 个分支。
+                // 轨迹默认关闭（受日志等级控制），关闭时 onEvent 内部直接返回，无额外开销。
+                AgentEventTracer.onEvent(turnId, event)
                 when (event) {
                     is AgentEvent.AssistantDelta -> {
                         setRetryState(sessionId, null)
@@ -1631,6 +1642,7 @@ class AIAgentViewModel @Inject constructor(
             val cancelledState = _agentStates.value[sessionId]
             val isOwnJob = sessionJobs[sessionId] == coroutineContext[Job]
             FileLogger.d(TAG, "stream cancelled: sid=$sessionId isOwnJob=$isOwnJob state=$cancelledState")
+            EventTrace.endTurn(turnId, "cancelled")
             // durable 账本：主动取消/停止置 CANCELLED（区别于崩溃残留：明确终态不会被恢复扫描命中）。
             if (isOwnJob) durableTaskRepository.finish(durableTaskId, TaskEvent.CANCEL)
             if (isOwnJob &&
@@ -1642,11 +1654,13 @@ class AIAgentViewModel @Inject constructor(
         } catch (e: Exception) {
              FileLogger.e(TAG, "executeAgentRequestStream 失败: request=$request", e)
              setAgentState(sessionId, AgentUIState.Error(e.toUserMessage()))
+             EventTrace.endTurn(turnId, "error: ${e.message?.take(120)}")
              // durable 账本：异常失败置终态，避免被误判为崩溃残留。
              durableTaskRepository.finish(durableTaskId, TaskEvent.FAIL)
         } finally {
             val isOwnJob = sessionJobs[sessionId] == coroutineContext[Job]
             FileLogger.d(TAG, "stream finally: sid=$sessionId isOwnJob=$isOwnJob state=${_agentStates.value[sessionId]}")
+            EventTrace.endTurn(turnId, "finished state=${_agentStates.value[sessionId]}")
             if (isOwnJob) {
                 sessionJobs.remove(sessionId)
             }

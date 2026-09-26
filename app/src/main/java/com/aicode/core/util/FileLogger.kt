@@ -180,8 +180,16 @@ object FileLogger {
                     writer = FileOutputStream(file, true).bufferedWriter()
                     writerDate = date
                 } else if (file.length() > MAX_FILE_BYTES) {
+                    // 超上限则**轮转归档**而不是清零。原先 writeText 覆盖重开会让当天已写的日志整个消失，
+                    // 而排查问题时最需要的正是「出错前那一刻」的记录。保留上一代为 .1，只留一代避免无界增长。
                     writer?.close()
-                    file.writeText("--- 日志文件超过 ${MAX_FILE_BYTES / 1024 / 1024}MB 已重置 ---\n")
+                    val previous = File(dir, "log-$date.txt.1")
+                    runCatching { previous.delete() }
+                    if (!file.renameTo(previous)) {
+                        // 改名失败（跨挂载点等）时兜底截断，至少不让单文件无界增长
+                        Log.w(TAG, "日志轮转失败，退化为截断")
+                        file.delete()
+                    }
                     writer = FileOutputStream(file, true).bufferedWriter()
                 }
                 writer?.append(line)
