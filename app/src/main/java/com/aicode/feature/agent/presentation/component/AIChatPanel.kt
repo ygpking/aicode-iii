@@ -781,40 +781,47 @@ fun AIChatPanel(
     }
 
     val lastMsg = messages.lastOrNull()
-    // 本轮助手消息是否已经在消息列表中正式就位渲染：
-    // 只有末尾消息是 ASSISTANT 且正文与思考前缀吻合，才代表本轮输出已落库进 messages 列表
-    val isAssistantSettled = lastMsg?.role == MessageRole.ASSISTANT && run {
-        val currentText = streamingText ?: retainedStreamingText
-        val currentReasoning = streamingReasoning ?: retainedStreamingReasoning
-        val textSettled = if (currentText.isNullOrBlank()) {
-            true
-        } else {
-            val prefix = currentText.trimStart().take(20)
-            prefix.isEmpty() || lastMsg.content.trimStart().startsWith(prefix)
-        }
-        val reasoningSettled = if (currentReasoning.isNullOrBlank()) {
-            true
-        } else {
-            val prefix = currentReasoning.trimStart().take(20)
-            prefix.isEmpty() || (lastMsg.reasoning?.trimStart()?.startsWith(prefix) == true)
-        }
-        textSettled && reasoningSettled
-    }
+    // 本轮助手消息是否已经在消息列表中正式就位渲染。
+    //
+    // 判据只看「末尾是不是 ASSISTANT」，**不比对内容前缀**。原因：模型常有「只吐思考、不吐正文」
+    // 的轮次（推理模型思考完直接调工具），此时落库的助手消息 content 为空串，而
+    // `"".startsWith(prefix)` 恒为 false，会让本标志永远为 false —— 后果是 retained 永不清空，
+    // 上一轮的正文一直粘在尾巴上，与本轮正在输出的思考同屏（表现为「思考与消息串台/乱序」）。
+    //
+    // 代价：流式尚未结束但助手消息已落库的极短窗口内，可能出现一帧「尾巴与落库气泡并存」。
+    // 但流式结束事件（AssistantText）本就先清 streaming 状态再落库，此窗口实际不可见；
+    // 相比之下，串台是必现的用户可见缺陷，两害相权取此。
+    //
+    // 额外要求「当前无流式在跑」：工具被用户拒绝时不落库 TOOL 消息，末尾仍是那条 ASSISTANT，
+    // 但回合会继续流式输出；此时若只看角色，会把正在输出的新正文当成「已落库」而隐藏掉。
+    val isAssistantSettled = lastMsg?.role == MessageRole.ASSISTANT &&
+        streamingText == null && streamingReasoning == null
 
-    LaunchedEffect(streamingText, isAssistantSettled) {
-        val st = streamingText
-        if (st != null && st.hasVisibleContent()) {
-            retainedStreamingText = st
-        } else if (isAssistantSettled) {
+    // 强制重置（重试 / 切 key / 开始压缩）时必须连 retained 一起清：这三个事件会在 ViewModel 里
+    // 清空当前流式文本，但 retained 是 UI 本地副本，不同步就会残留旧内容。
+    // 典型后果：重试后新轮的思考到达时，旧的 retained 正文还在——「旧正文 + 新思考」同屏。
+    LaunchedEffect(retryState, keySwitchState, isCompacting) {
+        if (retryState != null || keySwitchState != null || isCompacting) {
             retainedStreamingText = null
+            retainedStreamingReasoning = null
         }
     }
 
-    LaunchedEffect(streamingReasoning, isAssistantSettled) {
+    // 保留值只在「当前确实在流式」时更新；流式已清空（streamingText/Reasoning 都为 null）且
+    // 末尾已是 ASSISTANT 时一并清空。
+    //
+    // 关键：两个 retained 必须**同生同灭**。若只清其中一个，就会出现「这轮的思考 + 上轮的正文」
+    // 这种跨轮串台——这正是本文件此前两个独立 LaunchedEffect 各管一半时的问题。
+    LaunchedEffect(streamingText, streamingReasoning, isAssistantSettled) {
+        val st = streamingText
         val sr = streamingReasoning
-        if (sr != null && sr.hasVisibleContent()) {
-            retainedStreamingReasoning = sr
+        val streamingNow = st != null || sr != null
+        if (streamingNow) {
+            if (st != null && st.hasVisibleContent()) retainedStreamingText = st
+            if (sr != null && sr.hasVisibleContent()) retainedStreamingReasoning = sr
         } else if (isAssistantSettled) {
+            // 本轮已落库且无流式在跑：两个一起清，不留任何一个旧值
+            retainedStreamingText = null
             retainedStreamingReasoning = null
         }
     }
