@@ -405,12 +405,30 @@ class ToolPermissionPolicyEngineTest {
     }
 
     @Test
-    fun shizuku_autoMode_asks() = runTest {
+    fun shizuku_autoMode_asksForNonSafe() = runTest {
         val e = engine()
-        val r = e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "Shizuku", shizuku("pm list packages"), AgentMode.AUTO)
+        // 非只读安全档（写系统状态类）在 AUTO 下仍需逐次确认。
+        val r = e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "Shizuku", shizuku("am start -n com.example/.Main"), AgentMode.AUTO)
         assertEquals(ToolPermissionPolicyEngine.Verdict.ASK, r.verdict)
         assertTrue(r.rememberablePatterns.isEmpty())
         assertNotNull(r.rememberDisabledReason)
+    }
+
+    @Test
+    fun shizuku_autoMode_allowsSafeReadOnly() = runTest {
+        val e = engine()
+        // 只读查询类（pm list）经分级属 SAFE，AUTO 下自动放行，不再逐次弹窗。
+        val r = e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "Shizuku", shizuku("pm list packages"), AgentMode.AUTO)
+        assertEquals(ToolPermissionPolicyEngine.Verdict.ALLOW, r.verdict)
+    }
+
+    @Test
+    fun shizuku_redLineDeniedEvenInAuto() = runTest {
+        val e = engine(safetyDisabled = true)
+        // 红线优先于一切：即便 AUTO + 已关闭安全拦截，仍硬拒。
+        val r = e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "Shizuku", shizuku("pm uninstall com.example"), AgentMode.AUTO)
+        assertEquals(ToolPermissionPolicyEngine.Verdict.DENY, r.verdict)
+        assertNotNull(r.denyReason)
     }
 
     @Test

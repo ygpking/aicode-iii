@@ -70,8 +70,8 @@ object ShizukuCommandClassifier {
         "mount -o remount", "mount -o rw", "setenforce"
     )
 
-    /** 外发数据的参数特征：-d/--data/-F/--form/-T/--upload-file 或 -X POST/PUT。 */
-    private val UPLOAD_FLAGS = Regex("(^|\\s)(-d|--data|--data-raw|--data-binary|-F|--form|-T|--upload-file)(\\s|=|$)")
+    /** 外发数据的参数特征：-d/--data/-F/--form/-T/--upload-file 或 wget 的 --post-file/--post-data。 */
+    private val UPLOAD_FLAGS = Regex("(^|\\s)(-d|--data|--data-raw|--data-binary|-F|--form|-T|--upload-file|--post-file|--post-data)(\\s|=|$)")
 
     /** 外发数据的程序：curl/wget/nc 带上传参数，scp/rsync 上传。 */
     private val UPLOAD_PROGRAMS = setOf("curl", "wget", "nc", "ncat", "netcat", "scp", "rsync")
