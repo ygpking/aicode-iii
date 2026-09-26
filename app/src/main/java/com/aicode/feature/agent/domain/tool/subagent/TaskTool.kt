@@ -25,7 +25,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
-import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -229,7 +228,7 @@ class TaskTool @Inject constructor(
                 put("id", subSessionId)
                 put("state", "running")
                 definition?.let { put("agent", it.name) }
-                if (writePaths.isNotEmpty()) put("write_paths", buildJsonArray { writePaths.forEach { add(it) } })
+                if (writePaths.isNotEmpty()) put("write_paths", JsonArray(writePaths.map { JsonPrimitive(it) }))
                 put("message", "子代理已创建并开始执行，任务完成后会通知。可用 task(action=\"read\", id=...) 读取输出，task(action=\"stop\", id=...) 主动关闭。")
             }
         )
