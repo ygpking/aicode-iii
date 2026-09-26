@@ -10,6 +10,7 @@ import androidx.work.Configuration
 import androidx.hilt.work.HiltWorkerFactory
 import com.aicode.core.net.AppProxy
 import com.aicode.core.util.AILogger
+import com.aicode.core.util.EventTrace
 import com.aicode.core.util.FileLogger
 import net.schmizz.sshj.common.SecurityUtils
 import com.aicode.feature.agent.domain.container.ContainerInstaller
@@ -102,6 +103,7 @@ class AIEditorApp : Application(), Configuration.Provider {
         // 会不留任何痕迹，故把日志与全局崩溃处理器提到 attachBaseContext 最前。
         FileLogger.init(base)
         AILogger.init(base)
+        EventTrace.init(base)
         installCrashHandler()
         // 全局代理入口：必须在任何 Hilt 注入 / OkHttpClient 构建之前设置，
         // 使 App 侧全部 HTTP 链路（对话、MCP、更新检查等）按需走全局/提供商代理。

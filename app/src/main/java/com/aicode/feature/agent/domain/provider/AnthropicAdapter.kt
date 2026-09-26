@@ -373,6 +373,8 @@ class AnthropicAdapter @Inject constructor(
             throw enriched
         } finally {
             // 无论成功/失败/取消，把已收到的原始 SSE 落盘（重试时会从上次中断处续写）。
+            // 先收尾：超过累积上限时补一行「后续 N 字节未记录」，避免把截断误读为服务端未发。
+            AILogger.finalizeRawSse(rawSse)
             AILogger.logResponseStream(logSessionId, "Anthropic", rawSse.toString(), seq)
         }
     }.flowOn(Dispatchers.IO)

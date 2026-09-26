@@ -25,6 +25,7 @@ import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.dao.TodoItemDao
 import com.aicode.feature.agent.domain.model.TodoItem
+import com.aicode.feature.agent.domain.model.TodoStatus
 import com.aicode.feature.agent.data.local.entity.ChatSessionEntity
 import com.aicode.feature.agent.domain.container.ContainerInitState
 import com.aicode.feature.agent.domain.container.LinuxContainerEngine
@@ -1383,6 +1384,12 @@ class AIAgentViewModel @Inject constructor(
         // 新一轮请求：清空上一轮的浏览器操作时间线（本次任务独立），
         // 同时让预览窗被关闭的状态复位，使本轮的浏览器操作能重新弹出预览。
         browserManager.clearOperations()
+        // 清掉上一轮遗留的「已全部完成」待办。
+        // 为什么在这里清而不是在回合结束时：待办面板的价值在于任务跑完后仍能看到完成清单，
+        // 回合末尾就清会让用户看不到结果。但若一直不清，面板会永久悬在输入框上方——
+        // 因为清理需要 AI 主动调 todo(空数组)，而提示词并未给它这个义务，实际几乎不会发生。
+        // 折中：保留到用户发下一条消息为止，此时上一轮的清单已经看过、再无价值。
+        clearStaleCompletedTodos(sessionId)
 
         // 事件轨迹回合：开启后每个 AgentEvent 都会记一行（受日志等级控制，关闭时无开销）。
         // 必须声明在 try **之前**：finally 会引用它，而 try 内 beginTurn 之前就可能抛异常，
@@ -1449,7 +1456,7 @@ class AIAgentViewModel @Inject constructor(
             ).collect { event ->
                 // 事件轨迹：在事件的唯一消费出口统一记录，不侵入下面 13 个分支。
                 // 轨迹默认关闭（受日志等级控制），关闭时 onEvent 内部直接返回，无额外开销。
-                AgentEventTracer.onEvent(turnId, event)
+                AgentEventTracer.onEvent(turnId, sessionId, event)
                 when (event) {
                     is AgentEvent.AssistantDelta -> {
                         setRetryState(sessionId, null)
@@ -1641,7 +1648,7 @@ class AIAgentViewModel @Inject constructor(
             val cancelledState = _agentStates.value[sessionId]
             val isOwnJob = sessionJobs[sessionId] == coroutineContext[Job]
             FileLogger.d(TAG, "stream cancelled: sid=$sessionId isOwnJob=$isOwnJob state=$cancelledState")
-            EventTrace.endTurn(turnId, "cancelled")
+            EventTrace.endTurn(turnId, sessionId, "cancelled")
             // durable 账本：主动取消/停止置 CANCELLED（区别于崩溃残留：明确终态不会被恢复扫描命中）。
             if (isOwnJob) durableTaskRepository.finish(durableTaskId, TaskEvent.CANCEL)
             if (isOwnJob &&
@@ -1653,13 +1660,18 @@ class AIAgentViewModel @Inject constructor(
         } catch (e: Exception) {
              FileLogger.e(TAG, "executeAgentRequestStream 失败: request=$request", e)
              setAgentState(sessionId, AgentUIState.Error(e.toUserMessage()))
-             EventTrace.endTurn(turnId, "error: ${e.message?.take(120)}")
+             EventTrace.endTurn(turnId, sessionId, "error: ${e.message?.take(120)}")
              // durable 账本：异常失败置终态，避免被误判为崩溃残留。
              durableTaskRepository.finish(durableTaskId, TaskEvent.FAIL)
         } finally {
             val isOwnJob = sessionJobs[sessionId] == coroutineContext[Job]
             FileLogger.d(TAG, "stream finally: sid=$sessionId isOwnJob=$isOwnJob state=${_agentStates.value[sessionId]}")
-            EventTrace.endTurn(turnId, "finished state=${_agentStates.value[sessionId]}")
+            // 收尾清点：主动记录「回合结束时还剩下什么」。
+            // 为什么必须主动清点：“任务完成但面板不消失”这类缺陷的本质是**该清理的没被清理**——
+            // 没有任何代码会产生日志，被动记录永远看不见。只能在这里主动回读一遍状态，
+            // 把它写进日志，事后再遇到时才能一眼看出「全完成却仍有记录」。
+            EventTrace.snapshot(sessionId, "LEFTOVER", leftoverStateOf(sessionId))
+            EventTrace.endTurn(turnId, sessionId, "finished state=${_agentStates.value[sessionId]}")
             if (isOwnJob) {
                 sessionJobs.remove(sessionId)
             }
@@ -2221,6 +2233,43 @@ class AIAgentViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * 清掉上一轮已全部完成的待办；有未完成项时保留整个清单（活还没干完）。
+     *
+     * 只读一行 DAO 判定 + 偶尔一次删除，开销可忽略；失败不影响请求主流程。
+     */
+    private suspend fun clearStaleCompletedTodos(sessionId: String) {
+        runCatching {
+            val todos = todoItemDao.getBySessionOnce(sessionId)
+            if (todos.isEmpty()) return@runCatching
+            val done = todos.count { it.status == TodoStatus.COMPLETED.name }
+            if (done != todos.size) return@runCatching
+            todoItemDao.deleteBySession(sessionId)
+            EventTrace.snapshot(sessionId, "TODO", "清理上一轮遗留的 $done 项全完成待办")
+        }.onFailure { FileLogger.w(TAG, "清理遗留待办失败: ${it.message}") }
+    }
+
+    /**
+     * 回合收尾时的遗留状态清点：只读，不改任何状态。
+     *
+     * 重点盯「已全部完成却仍存在」的东西——它们是「该清未清」的信号。
+     * 读库失败不抛异常（诊断不应影响主流程），失败时在日志里写明。
+     */
+    private suspend fun leftoverStateOf(sessionId: String): String {
+        return runCatching {
+            val todos = todoItemDao.getBySessionOnce(sessionId)
+            val total = todos.size
+            val done = todos.count { it.status == TodoStatus.COMPLETED.name }
+            val todoPart = when {
+                total == 0 -> "todos=0"
+                done == total -> "todos=$total 全完成($done/$total) 仍留在库"
+                else -> "todos=$total 进行中($done/$total)"
+            }
+            val running = _runningTools.value[sessionId]?.size ?: 0
+            "$todoPart runningTools=$running"
+        }.getOrElse { "读取失败: ${it.message?.take(80)}" }
     }
 
     /** 重命名会话标题。仅更新 title，不改 updatedAt，列表顺序保持不变。 */

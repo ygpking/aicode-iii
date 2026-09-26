@@ -66,7 +66,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
-import com.aicode.core.util.AILogger
+import com.aicode.core.util.EventTrace
 import com.aicode.core.ui.ImageViewerHost
 import com.aicode.core.ui.LocalImageViewer
 import com.aicode.core.ui.readableContentMaxWidth
@@ -834,13 +834,13 @@ fun AIChatPanel(
     val showReasoning = displayStreamingReasoning?.hasVisibleContent() == true
 
     // 流式状态跳变观测：只在值变化时打点，不每帧写盘。
-    // 动机：此前 UI 侧零日志，出现「思考与消息串台」这类问题时无法从日志验证界面到底变成了什么，
-    // 只能靠读源码推断。这里把「决定用户看到什么」的几个状态记入同一会话日志，
-    // 与模型交互同一条时间线，便于事后对照。
+    // 动机：此前 UI 侧零日志，遇到「思考与消息串台」这类问题时无法从日志验证界面到底变成了什么，
+    // 只能靠读源码推断。走统一的 EventTrace，与模型事件同一条时间线，事后可直接对照。
     LaunchedEffect(currentSessionId, showReasoning, showStreaming, isAssistantSettled) {
-        AILogger.logUiEvent(
+        EventTrace.recordFor(
             currentSessionId,
-            "tail reasoning=$showReasoning streaming=$showStreaming settled=$isAssistantSettled " +
+            "UI",
+            "尾巴 reasoning=$showReasoning streaming=$showStreaming settled=$isAssistantSettled " +
                 "retainedText=${retainedStreamingText?.length ?: 0} retainedReasoning=${retainedStreamingReasoning?.length ?: 0}"
         )
     }

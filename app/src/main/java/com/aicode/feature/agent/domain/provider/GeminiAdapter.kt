@@ -330,6 +330,7 @@ class GeminiAdapter @Inject constructor(
             AILogger.logError(logSessionId, "Gemini", enriched, seq)
             throw enriched
         } finally {
+            AILogger.finalizeRawSse(rawSse)
             AILogger.logResponseStream(logSessionId, "Gemini", rawSse.toString(), seq)
         }
     }.flowOn(Dispatchers.IO)
@@ -544,6 +545,7 @@ class GeminiAdapter @Inject constructor(
             AILogger.logError(logSessionId, "Gemini", enriched, seq)
             throw enriched
         } finally {
+            AILogger.finalizeRawSse(rawSse)
             AILogger.logResponseStream(logSessionId, "Gemini", rawSse.toString(), seq)
         }
     }

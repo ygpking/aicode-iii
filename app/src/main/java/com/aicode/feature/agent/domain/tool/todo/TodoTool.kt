@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.tool.todo
 
+import com.aicode.core.util.EventTrace
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.TodoItemDao
 import com.aicode.feature.agent.data.local.entity.TodoItemEntity
@@ -128,6 +129,22 @@ class TodoTool @Inject constructor(
             todoItemDao.upsertAll(entities)
         }
         FileLogger.d(TAG, "todo replace: 同步了 ${entities.size} 项待办")
+        // 待办快照：记录「此刻清单长什么样」。
+        // 这是「面板创建 / 全部完成」这类事实的唯一发生地——此前这里不记日志，
+        // 导致「5 项全完成但面板不消失」在日志里完全不可见（只能看到工具调用成功、看不到内容）。
+        // 带上 status 分布，是为了在事后一眼看出「已完成数为总数」这个关键状态。
+        val statusSummary = entities
+            .groupingBy { it.status }
+            .eachCount()
+            .entries
+            .joinToString(" ") { "${it.key.lowercase()}=${it.value}" }
+            .ifEmpty { "空" }
+        EventTrace.snapshot(
+            sessionId,
+            "TODO",
+            "写入 ${entities.size} 项 [$statusSummary]" +
+                if (entities.isNotEmpty() && entities.all { it.status == TodoStatus.COMPLETED.name }) " 已全部完成" else ""
+        )
 
         return listTodos(sessionId)
     }

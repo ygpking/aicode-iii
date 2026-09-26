@@ -19,11 +19,11 @@ internal object AgentEventTracer {
      * 记录一次事件。
      *
      * @param turnId 本回合 id；为 null 时不记录（调用方未开启轨迹）。
-     * @param seq 上一事件的轨迹序号，用作本条 [EventTrace.record] 的因果引用。
+     * @param scope 作用域（通常是 sessionId），用于日志里区分会话。
      */
-    fun onEvent(turnId: String?, event: AgentEvent) {
+    fun onEvent(turnId: String?, scope: String?, event: AgentEvent) {
         if (turnId == null) return
-        EventTrace.record(turnId, "EVENT", describe(event))
+        EventTrace.record(turnId, scope, "EVENT", describe(event))
     }
 
     /** 事件 → 一行摘要。新增 [AgentEvent] 子类时此处会因 `when` 不穷尽而编译失败。 */

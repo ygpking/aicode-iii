@@ -107,16 +107,50 @@ object AILogger {
      * 把一行原始 SSE 追加到 [sb]，超过 [MAX_RAW_SSE_CHARS] 后停止累积。
      *
      * 原始 SSE 仅用于离线诊断；若整段无上限累积，最后 `toString()` 会在移动端 OOM（曾致 release 崩溃）。
+     *
+     * 截断后**不静默丢弃**：置上 [isTruncated] 标记并在末尾写明「自此后未记录 N 字节」，
+     * 因为静默截断会让读日志的人把「没记到」误判为「服务端没发」。
+     * 本轮的真实结束标记（finish_reason / usage）通常就在尾部，被截掉时必须以显式提示告知，
+     * 否则无法判断这轮是正常结束还是被截断。
      */
     fun appendRawSse(sb: StringBuilder, line: String) {
-        if (sb.length >= MAX_RAW_SSE_CHARS) return
+        val overflow = pendingOverflow(sb)
+        if (overflow > 0) {
+            overflowCounter(sb).addAndGet(line.length.toLong() + 1)
+            return
+        }
         val room = MAX_RAW_SSE_CHARS - sb.length
         if (line.length + 1 <= room) {
             sb.append(line).append('\n')
         } else {
             sb.append(line, 0, maxOf(room - TRUNCATED_SSE_MARKER.length, 0))
             sb.append(TRUNCATED_SSE_MARKER)
+            overflowCounter(sb).addAndGet(line.length.toLong() + 1 - room)
         }
+    }
+
+    /**
+     * 若缓冲区已触顶，返回剩余可写空间（≤0 表示已满）。
+     * 用独立方法表达这个判定，避免在 [appendRawSse] 里重复计算。
+     */
+    private fun pendingOverflow(sb: StringBuilder): Int = MAX_RAW_SSE_CHARS - sb.length
+
+    /** 每个缓冲区对应一个溢出字节计数器，用于收尾时报告被丢弃量。 */
+    private val overflowCounters = java.util.WeakHashMap<StringBuilder, java.util.concurrent.atomic.AtomicLong>()
+
+    private fun overflowCounter(sb: StringBuilder): java.util.concurrent.atomic.AtomicLong =
+        synchronized(overflowCounters) {
+            overflowCounters.getOrPut(sb) { java.util.concurrent.atomic.AtomicLong(0) }
+        }
+
+    /**
+     * 收尾：若本缓冲区发生过截断，在末尾追加一行明确的丢弃量说明。
+     * 调用方在把 [sb] 交给 [logResponseStream] **之前**调用，保证日志里能直接看到截断事实。
+     */
+    fun finalizeRawSse(sb: StringBuilder) {
+        val dropped = synchronized(overflowCounters) { overflowCounters.remove(sb)?.get() } ?: return
+        if (dropped <= 0) return
+        sb.append("\n--- 原始 SSE 已超 ${MAX_RAW_SSE_CHARS / 1024}KB 上限，后续 $dropped 字节未记录 ---\n")
     }
 
     /** 记录一次请求失败（取消不算失败，不应走到这里）。[seq] 必须来自对应 [logRequest] 的返回值。 */
@@ -127,17 +161,6 @@ object AILogger {
             append(throwable.javaClass.name).append(": ").append(throwable.message ?: "").append('\n')
         }
         write(sessionId, text)
-    }
-
-    /**
-     * 记录 UI 侧的状态跳变（仅在变化时调用，避免每帧写盘拖慢流式）。
-     *
-     * 单独开方法而不复用 [logResponseStream] 等：这是「事件的观测」而非「模型交互」，
-     * 语义不同、也不需要参与 REQUEST/RESPONSE 的序号配对。写入同一个会话文件，
-     * 便于把「模型吐了什么」与「界面变成了什么」放在一条时间线上对照。
-     */
-    fun logUiEvent(sessionId: String?, event: String) {
-        write(sessionId, "${now()}  UI  $event\n")
     }
 
     private fun counter(sessionId: String?): AtomicInteger =

@@ -459,6 +459,7 @@ class OpenAIAdapter @Inject constructor(
             throw enriched
         } finally {
             // 无论成功/失败/取消，把已收到的原始 SSE 落盘（重试时会从上次中断处续写）。
+            AILogger.finalizeRawSse(rawSse)
             AILogger.logResponseStream(logSessionId, "OpenAI", rawSse.toString(), seq)
         }
     }.flowOn(Dispatchers.IO)
@@ -580,6 +581,7 @@ class OpenAIAdapter @Inject constructor(
             AILogger.logError(logSessionId, "OpenAI", enriched, seq)
             throw enriched
         } finally {
+            AILogger.finalizeRawSse(rawSse)
             AILogger.logResponseStream(logSessionId, "OpenAI", rawSse.toString(), seq)
         }
     }
