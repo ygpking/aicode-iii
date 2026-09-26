@@ -103,7 +103,7 @@ internal object EditMatcher {
     }
 
     /** 先对 [oldString] 施加 [transform] 再在原文中精确查找；变换无效果时跳过该档。 */
-    private inline fun transformedRanges(
+    private fun transformedRanges(
         content: String,
         oldString: String,
         transform: (String) -> String
@@ -113,7 +113,8 @@ internal object EditMatcher {
         return exactRanges(content, transformed)
     }
 
-    private inline fun lineRanges(
+    /** 行窗口映射：调用方传入谓词，命中多处即交给上层判为歧义。 */
+    private fun lineRanges(
         index: LineIndex,
         patternLines: List<String>,
         predicate: (contentWindow: List<String>, patternLines: List<String>) -> Boolean
