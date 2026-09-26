@@ -588,6 +588,8 @@
     <string name="checkpoint_restore_conversation_desc">Keep current code, truncate conversation to this point</string>
     <string name="checkpoint_restore_code">Restore code only</string>
     <string name="checkpoint_restore_code_desc">Revert code to snapshot before this point, keep conversation</string>
+    <string name="checkpoint_fork_branch">Fork to new branch</string>
+    <string name="checkpoint_fork_branch_desc">Copy the conversation before this point into a new session; the original stays intact (reversible)</string>
 
     <!-- Chat Message Bubbles -->
     <string name="chat_copied">Copied</string>

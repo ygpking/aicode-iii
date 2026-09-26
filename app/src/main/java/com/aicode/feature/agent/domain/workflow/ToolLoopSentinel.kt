@@ -16,11 +16,15 @@ internal enum class LoopReason { REPEATED_FAILURE, NO_PROGRESS_IDLE, PERIODIC_OS
  *
  * 三层判定：
  * 1. **同工具同参连续失败** ≥ [repeatFailureLimit] → SuspectedLoop；
- * 2. **无进展空转**：连续调用（无论成功失败）的指纹完全重复 ≥ [idleLimit] → SuspectedLoop；
+ * 2. **无进展空转**：连续调用（无论成功失败）的工具名、参数指纹**与输出指纹**都重复 ≥ [idleLimit]
+ *    → SuspectedLoop；
  * 3. **周期震荡**：最近 [oscillationWindow] 次调用呈 A,B,A,B… 周期 ≤ [maxPeriod] 重复 ≥ 3 周期 → SuspectedLoop。
  *
  * 参数指纹由调用方提供（应已做键排序等规范化，保证「同集合不同顺序」得到同一指纹）。
  * 达到 [blockThreshold] 次 SuspectedLoop 后升级为 [LoopVerdict.Blocked]。
+ *
+ * 第 2 层额外要求输出指纹相同，是为了放过**同参但输出在变的合法轮询**（如反复查看构建日志、
+ * 轮询后台任务状态）——只比参数会把这类正常等待误判为空转。
  *
  * 与 [FailureCircuitBreaker] 的分工：熔断看「全失败」，哨兵看「重复模式」（含成功但不推进的空转）。
  */
@@ -31,13 +35,24 @@ internal class ToolLoopSentinel(
     private val maxPeriod: Int = 2,
     private val blockThreshold: Int = 2,
 ) {
-    private data class Step(val tool: String, val fingerprint: String, val failed: Boolean)
+    private data class Step(
+        val tool: String,
+        val fingerprint: String,
+        val failed: Boolean,
+        /** 输出内容指纹；null 表示调用方未提供（此时退回只比参数的老行为）。 */
+        val outputHash: Int?,
+    )
 
     private val history = ArrayDeque<Step>()
     private var suspicionCount = 0
 
-    fun observe(toolName: String, argsFingerprint: String, failed: Boolean): LoopVerdict {
-        history.addLast(Step(toolName, argsFingerprint, failed))
+    fun observe(
+        toolName: String,
+        argsFingerprint: String,
+        failed: Boolean,
+        outputHash: Int? = null,
+    ): LoopVerdict {
+        history.addLast(Step(toolName, argsFingerprint, failed, outputHash))
         while (history.size > oscillationWindow * 2 + 8) history.removeFirst()
 
         val reason = detectRepeatedFailure()
@@ -69,10 +84,14 @@ internal class ToolLoopSentinel(
         return if (allFailed && sameTarget) LoopReason.REPEATED_FAILURE else null
     }
 
+    /**
+     * 无进展空转：工具名 + 参数指纹 + 输出指纹全同才算。
+     * 输出指纹缺失（null）时退回只比参数，保持对未传该参数的调用方的兼容。
+     */
     private fun detectIdle(): LoopReason? {
         if (history.size < idleLimit) return null
         val tail = history.toList().takeLast(idleLimit)
-        val distinct = tail.map { it.tool to it.fingerprint }.distinct().size
+        val distinct = tail.map { Triple(it.tool, it.fingerprint, it.outputHash) }.distinct().size
         return if (distinct == 1) LoopReason.NO_PROGRESS_IDLE else null
     }
 

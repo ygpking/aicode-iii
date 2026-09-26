@@ -431,5 +431,17 @@ tasks.register<Exec>("checkMigrations") {
     workingDir(rootProject.projectDir)
 }
 
+// 架构约定检查：本地手动跑 `./gradlew checkArchitecture`，并挂到 preBuild 让每次构建都拦。
+// 把 CLAUDE.md 的「优先使用项目自定义组件」等约定从「靠自觉」变成「构建期硬拦」。
+// 纯文本扫描、零依赖，耗时 < 1 秒，只拦增量（存量违规在白名单里豁免）。
+tasks.register<Exec>("checkArchitecture") {
+    commandLine("python3", "scripts/check_architecture.py")
+    workingDir(rootProject.projectDir)
+}
+
 // assets 合并前必须先生成文档，否则首次构建（或 clean 后）APK 里会没有 docs/。
-tasks.named("preBuild") { dependsOn(syncAiDocs) }
+// 同时先跑架构检查：违规即中止构建，不让约定腐化到 CI 之后。
+tasks.named("preBuild") {
+    dependsOn(syncAiDocs)
+    dependsOn("checkArchitecture")
+}

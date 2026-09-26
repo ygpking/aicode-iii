@@ -2199,6 +2199,14 @@ class AIAgentViewModel @Inject constructor(
                     checkpointManager.restoreCodeToCheckpoint(sessionId, checkpoint.id)
                 }
             }
+            RewindOption.FORK_TO_NEW_BRANCH -> {
+                // 派生新分支：原会话不动，新会话拿到目标轮之前的对话，用户可在新分支继续。
+                // 回退失败（原会话不存在或锚点前无消息）时不改任何状态，对话保持原样。
+                val forkedId = sessionUseCase.forkSessionBefore(sessionId, targetMsgEntity.timestamp)
+                if (forkedId != null) {
+                    selectSession(forkedId)
+                }
+            }
         }
     }
 

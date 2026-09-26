@@ -63,6 +63,28 @@ class ToolLoopSentinelTest {
     }
 
     @Test
+    fun idleNotFlaggedWhenOutputKeepsChanging() {
+        // 同工具同参但输出在变：合法轮询（如反复查看构建日志），不得误判为空转。
+        val s = ToolLoopSentinel(repeatFailureLimit = 99, idleLimit = 4, oscillationWindow = 99, blockThreshold = 2)
+        s.observe("terminal", "read", false, outputHash = 1)
+        s.observe("terminal", "read", false, outputHash = 2)
+        s.observe("terminal", "read", false, outputHash = 3)
+        assertEquals(LoopVerdict.Ok, s.observe("terminal", "read", false, outputHash = 4))
+    }
+
+    @Test
+    fun idleFlaggedWhenParamsAndOutputAllIdentical() {
+        // 参数与输出都一模一样，才是真正的空转。
+        val s = ToolLoopSentinel(repeatFailureLimit = 99, idleLimit = 4, oscillationWindow = 99, blockThreshold = 2)
+        s.observe("terminal", "read", false, outputHash = 7)
+        s.observe("terminal", "read", false, outputHash = 7)
+        s.observe("terminal", "read", false, outputHash = 7)
+        val v = s.observe("terminal", "read", false, outputHash = 7)
+        assertTrue(v is LoopVerdict.SuspectedLoop)
+        assertEquals(LoopReason.NO_PROGRESS_IDLE, (v as LoopVerdict.SuspectedLoop).reason)
+    }
+
+    @Test
     fun distinctCallsAreOk() {
         val s = ToolLoopSentinel()
         assertEquals(LoopVerdict.Ok, s.observe("readFile", "a", false))

@@ -588,6 +588,8 @@
     <string name="checkpoint_restore_conversation_desc">保持当前代码，将对话截断回滚至此点</string>
     <string name="checkpoint_restore_code">仅恢复代码</string>
     <string name="checkpoint_restore_code_desc">恢复代码至此点之前的快照，保持对话历史</string>
+    <string name="checkpoint_fork_branch">回退到新分支</string>
+    <string name="checkpoint_fork_branch_desc">复制此点之前的对话到新会话，原会话保留不动（可逆）</string>
 
     <!-- Chat Message Bubbles -->
     <string name="chat_copied">已复制</string>

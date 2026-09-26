@@ -25,13 +25,20 @@ import com.aicode.R
 import com.aicode.core.theme.Spacing
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.FileText
+import compose.icons.feathericons.GitBranch
 import compose.icons.feathericons.MessageSquare
 import compose.icons.feathericons.RotateCcw
 
 enum class RewindOption {
     RESTORE_CODE_AND_CONVERSATION,
     RESTORE_CONVERSATION,
-    RESTORE_CODE
+    RESTORE_CODE,
+
+    /**
+     * 派生新分支：把目标轮之前的对话复制到一个新会话，原会话保留不动。
+     * 与 RESTORE_CONVERSATION 的区别是**可逆**——原地撤回会丢弃后续消息，本项不丢。
+     */
+    FORK_TO_NEW_BRANCH
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -97,6 +104,16 @@ fun RewindOptionsBottomSheet(
                 description = stringResource(R.string.checkpoint_restore_code_desc),
                 onClick = {
                     onOptionSelected(RewindOption.RESTORE_CODE)
+                    onDismissRequest()
+                }
+            )
+
+            OptionRow(
+                icon = FeatherIcons.GitBranch,
+                title = stringResource(R.string.checkpoint_fork_branch),
+                description = stringResource(R.string.checkpoint_fork_branch_desc),
+                onClick = {
+                    onOptionSelected(RewindOption.FORK_TO_NEW_BRANCH)
                     onDismissRequest()
                 }
             )

@@ -11,6 +11,7 @@ import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LineDiff
+import com.aicode.feature.agent.domain.subagent.SubAgentWriteLease
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -145,7 +146,8 @@ class ReadFileTool @Inject constructor(
  */
 class WriteFileTool @Inject constructor(
     private val fileAccess: FileAccessProvider,
-    private val readStateStore: FileReadStateStore
+    private val readStateStore: FileReadStateStore,
+    private val writeLease: SubAgentWriteLease
 ) : AbstractContextualTool() {
     override val name = "writeFile"
     override val description = "向指定路径写入完整文件内容。若文件存在则根据 overwrite 决定是否覆盖。支持写入工作区文件或容器系统文件。局部修改推荐使用 editFile。"
@@ -188,6 +190,15 @@ class WriteFileTool @Inject constructor(
             val overwrite = args["overwrite"]?.jsonPrimitive?.booleanOrNull ?: true
 
             FileLogger.d(TAG, "write_file path=$path (${content.length} 字符, overwrite=$overwrite)")
+            // 写租约闸门：子代理只允许写自己声明的路径（未声明租约的会话直接放行）。
+            // 用原始路径比较，与租约声明（同样来自模型参数）保持同源。
+            if (!writeLease.isWithinLease(context.sessionId.orEmpty(), path)) {
+                FileLogger.w(TAG, "write_file 超出写租约: $path")
+                return ToolResult.Error(
+                    "$path 不在本会话声明的写路径内（write_paths），为避免与其它子代理冲突已拒绝写入。",
+                    "WRITE_LEASE_DENIED"
+                )
+            }
             val existed = fileAccess.exists(path)
             if (existed && !overwrite) {
                 FileLogger.w(TAG, "write_file 文件已存在且 overwrite=false: $path")

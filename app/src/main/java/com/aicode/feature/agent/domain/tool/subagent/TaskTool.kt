@@ -11,6 +11,7 @@ import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.SubAgentEvent
 import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
 import com.aicode.feature.agent.domain.subagent.SubAgentEventType
+import com.aicode.feature.agent.domain.subagent.SubAgentWriteLease
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.ToolCapability
@@ -20,6 +21,7 @@ import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.agent.presentation.MessageRole
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
@@ -53,6 +55,7 @@ class TaskTool @Inject constructor(
     private val chatSessionDao: ChatSessionDao,
     private val agentMessageDao: AgentMessageDao,
     private val eventBus: SubAgentEventBus,
+    private val writeLease: SubAgentWriteLease,
     private val agentDefinitionRepository: AgentDefinitionRepository,
     private val aiProviderRepository: AIProviderRepository
 ) : AbstractContextualTool() {
@@ -114,6 +117,15 @@ class TaskTool @Inject constructor(
             type = ParameterType.STRING,
             description = "发给子代理的消息正文（send 必填）。可反复调用；运行中的子代理会尽快收到，已完成的会被重新唤醒",
             required = false
+        ),
+        "write_paths" to ToolParameter(
+            name = "write_paths",
+            type = ParameterType.ARRAY,
+            description = "该子代理要写入的文件或目录路径（create 可选）。多个子代理并行时用于避免同时改同一批文件：" +
+                "与运行中的子代理写路径冲突会被拒绝。只读任务应省略此参数（不占租约、不受限制）；" +
+                "确需独占整个工作区时传 [\"*\"]",
+            required = false,
+            itemsSchema = mapOf("type" to "string")
         )
     )
 
@@ -153,6 +165,24 @@ class TaskTool @Inject constructor(
             ?.take(TASK_DESCRIPTION_MAX)
             ?: "子代理任务"
 
+        // 写租约：并行子代理写同一批文件会互相覆盖，故在创建前做一次冲突检查。
+        // 只读任务（未传 write_paths）不占租约、不受任何限制。
+        val writePaths = (args["write_paths"] as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim() }
+            ?.filter { it.isNotEmpty() }
+            .orEmpty()
+        if (writePaths.isNotEmpty()) {
+            val conflicts = writeLease.findConflict(writePaths)
+            if (conflicts.isNotEmpty()) {
+                val names = conflicts.joinToString(", ")
+                return ToolResult.Error(
+                    "写路径与运行中的子代理冲突（$names）。同一文件不能由多个子代理同时写，" +
+                        "请等它们完成，或改用不同的 write_paths。",
+                    "WRITE_LEASE_CONFLICT"
+                )
+            }
+        }
+
         // 指定 agent 时必须能找到定义：写错名字就报错并列出可用名，不静默回退成通用子代理，
         // 否则会拿着错的工具集与提示词跑完整个任务。
         val agentName = (args["agent"] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotBlank() }
@@ -181,6 +211,7 @@ class TaskTool @Inject constructor(
         )
         sessionUseCase.upsertSession(subSession)
         val subSessionId = subSession.id
+        writeLease.acquire(subSessionId, writePaths)
 
         // 通知 ViewModel 在子会话上启动 AI 工作流
         eventBus.emit(
@@ -198,6 +229,7 @@ class TaskTool @Inject constructor(
                 put("id", subSessionId)
                 put("state", "running")
                 definition?.let { put("agent", it.name) }
+                if (writePaths.isNotEmpty()) put("write_paths", buildJsonArray { writePaths.forEach { add(it) } })
                 put("message", "子代理已创建并开始执行，任务完成后会通知。可用 task(action=\"read\", id=...) 读取输出，task(action=\"stop\", id=...) 主动关闭。")
             }
         )
@@ -277,11 +309,22 @@ class TaskTool @Inject constructor(
             else -> "（子代理会话为空）"
         }
         val last = runCatching { messages.lastOrNull()?.timestamp ?: 0L }.getOrDefault(0L)
+        // 完成判定：父代理只看得到最后一条输出，无法区分「干完了」与「停摆了」。
+        // 这里给出结构化终止原因，让父代理能据此决定是复用结果还是重派任务。
+        val running = eventBus.activeSubSessionIds.value.contains(subSessionId)
+        val termination = when {
+            running -> "RUNNING"
+            messages.none { it.role == MessageRole.ASSISTANT.name && it.content.isNotBlank() } -> "FAILED"
+            messages.lastOrNull { it.role == MessageRole.TOOL.name }?.isError == true -> "FAILED"
+            content.startsWith("（子代理尚未回复）") -> "FAILED"
+            else -> "COMPLETED"
+        }
         return ToolResult.Success(
             buildJsonObject {
                 put("id", subSessionId)
                 put("title", sub.title)
                 put("updatedAt", last)
+                put("termination", termination)
                 put("lastOutput", content)
             }
         )
@@ -336,6 +379,7 @@ class TaskTool @Inject constructor(
             )
         }
         sessionUseCase.deleteSession(subSessionId)
+        writeLease.release(subSessionId)
         FileLogger.i(TAG, "子代理已删除: session=$subSessionId parent=${context.sessionId}")
         return ToolResult.Success(
             buildJsonObject {

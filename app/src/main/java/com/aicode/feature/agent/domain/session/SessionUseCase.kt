@@ -26,6 +26,8 @@ class SessionUseCase @Inject constructor(
         /** 历史版本停止 emoji 前缀；UI 剥离结果文本时兼容。 */
         const val LEGACY_STOPPED_TOOL_MARKER = "\u23F9"
         const val INTERRUPTED_TOOL_TEXT = "执行被中断（应用已关闭）"
+        /** 派生的回退分支标题后缀。 */
+        const val FORK_TITLE_SUFFIX = " · 回退分支"
     }
 
     /** 冷启动收尾：上次进程被杀时若有工具正在执行，其占位行会永久显示「执行中」。 */
@@ -194,4 +196,47 @@ class SessionUseCase @Inject constructor(
     suspend fun isSessionEmpty(sessionId: String): Boolean {
         return !agentMessageDao.hasMessages(sessionId)
     }
+
+    /**
+     * 把 [sourceSessionId] 中 [cutoffTimestamp] 之前的消息派生到一个新会话（“回退到新分支”）。
+     *
+     * 与 `deleteMessagesFromTimestamp` 的原地删除不同，**原会话一字不动**：新会话复制锚点前的
+     * 消息（id 重新生成，避免主键冲突），用户可在新分支继续对话，旧分支完整保留——撤回因此是可逆的。
+     *
+     * 派生会话用 `parentId` 指向源会话标记血绿关系，并继承其工作区/模式/provider/模型/思考强度；
+     * `subagentType` 留空，因为它是普通回退分支而非子代理。
+     *
+     * @param cutoffTimestamp 锚点消息的时间戳；该时间戳**及之后**的消息不进入新会话。
+     * @return 新会话 id；源会话不存在或锚点前无消息时返回 null。
+     */
+    suspend fun forkSessionBefore(sessionId: String, cutoffTimestamp: Long): String? {
+        val source = chatSessionDao.getById(sessionId) ?: return null
+        val kept = agentMessageDao.getMessagesBySessionOnce(sessionId)
+            .filter { it.timestamp < cutoffTimestamp }
+        // 锚点前无内容：无意义的分支，调用方应回退到原行为
+        if (kept.isEmpty()) return null
+
+        val forked = ChatSessionEntity(
+            id = UUID.randomUUID().toString(),
+            title = deriveForkTitle(source.title),
+            workspacePath = source.workspacePath,
+            createdAt = System.currentTimeMillis(),
+            updatedAt = System.currentTimeMillis(),
+            mode = source.mode,
+            modeBeforePlan = source.modeBeforePlan,
+            reasoningEffort = source.reasoningEffort,
+            providerId = source.providerId,
+            model = source.model,
+            parentId = sessionId
+        )
+        chatSessionDao.upsert(forked)
+        // id 必须重生成：message id 是全局主键，沿用会覆盖原会话的消息
+        agentMessageDao.insertAll(kept.map { it.copy(id = UUID.randomUUID().toString(), sessionId = forked.id) })
+        FileLogger.i(TAG, "派生回退分支: $sessionId -> ${forked.id}（复制 ${kept.size} 条消息）")
+        return forked.id
+    }
+
+    /** 派生分支的标题：保留原名并加后缀，过长时截断，避免标题撑破列表布局。 */
+    private fun deriveForkTitle(sourceTitle: String): String =
+        (sourceTitle + FORK_TITLE_SUFFIX).take(TITLE_MAX + FORK_TITLE_SUFFIX.length)
 }

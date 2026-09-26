@@ -1366,7 +1366,7 @@ class StatefulAgentWorkflow @Inject constructor(
         var stopReason: String? = null
         toolCalls.forEachIndexed { index, toolCall ->
             val br = batchResults.getOrNull(index) ?: return@forEachIndexed
-            when (val verdict = sentinel.observe(toolCall.name, toolCallFingerprint(toolCall), br.isError)) {
+            when (val verdict = sentinel.observe(toolCall.name, toolCallFingerprint(toolCall), br.isError, br.result.hashCode())) {
                 is LoopVerdict.Blocked -> if (stopReason == null) {
                     stopReason = "检测到工具调用进入死循环（${verdict.reason}），已自动停止。"
                 }

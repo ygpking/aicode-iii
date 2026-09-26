@@ -11,6 +11,7 @@ import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolParameter
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolResult
+import com.aicode.feature.agent.domain.subagent.SubAgentWriteLease
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -48,7 +49,8 @@ private const val TAG = "EditFileTool"
  */
 class EditFileTool @Inject constructor(
     private val fileAccess: FileAccessProvider,
-    private val readStateStore: FileReadStateStore
+    private val readStateStore: FileReadStateStore,
+    private val writeLease: SubAgentWriteLease
 ) : AbstractContextualTool() {
     override val name = "editFile"
     override val description =
@@ -138,6 +140,7 @@ class EditFileTool @Inject constructor(
                 return ToolResult.Error("文件不存在: $path", "FILE_NOT_FOUND")
             }
             checkReadState(path, context)?.let { return it }
+            checkWriteLease(path, context)?.let { return it }
 
             // 先在内存里顺序应用所有编辑；任一失败立刻返回、绝不写盘（全有或全无）。
             var content = fileAccess.readFile(path)
@@ -274,6 +277,23 @@ class EditFileTool @Inject constructor(
             level = EditMatcher.Level.EXACT,
             replacement = sb.toString(),
             count = ranges.size
+        )
+    }
+
+    /**
+     * 写租约闸门：子代理只允许写自己在 `task(create)` 里声明的路径。
+     * 未声明租约的会话（主代理、只读子代理）返回 null 直接放行，保持原有行为不变。
+     *
+     * 比较用**原始路径**而非 `toDisplayPath`：租约声明也来自模型的同一个参数，同源才能对齐；
+     * `toDisplayPath` 会把它转成容器绝对路径，反而两边对不上。
+     */
+    private fun checkWriteLease(path: String, context: AgentContext): ToolResult.Error? {
+        val sessionKey = context.sessionId.orEmpty()
+        if (writeLease.isWithinLease(sessionKey, path)) return null
+        FileLogger.w(TAG, "edit_file 超出写租约: $path")
+        return ToolResult.Error(
+            "$path 不在本会话声明的写路径内（write_paths），为避免与其它子代理冲突已拒绝写入。",
+            "WRITE_LEASE_DENIED"
         )
     }
 
