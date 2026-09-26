@@ -50,6 +50,21 @@ class ShellCommandParserTest {
     }
 
     @Test
+    fun redirectTargets_areCollected() {
+        // 绝对目标入列，供调用方按目标是否受保护做细裁决。
+        assertEquals(
+            listOf("/tmp/test.log"),
+            ShellCommandParser.analyze("./gradlew test > /tmp/test.log 2>&1").redirectTargets
+        )
+        // `>&1` 是 fd 复制、非文件目标，不入列。
+        assertTrue(ShellCommandParser.analyze("echo hi >&1").redirectTargets.isEmpty())
+        // 相对目标也带出（调用方自行判定是否受保护）。
+        assertEquals(listOf("out.txt"), ShellCommandParser.analyze("echo hi > out.txt").redirectTargets)
+        // 无重定向时为空。
+        assertTrue(ShellCommandParser.analyze("ls -la").redirectTargets.isEmpty())
+    }
+
+    @Test
     fun operatorsInsideQuotes_areNotSplit() {
         val a = ShellCommandParser.analyze("echo \"a && b | c\"")
         assertTrue(a.analyzable)

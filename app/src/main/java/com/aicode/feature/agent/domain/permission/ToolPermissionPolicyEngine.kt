@@ -156,9 +156,9 @@ class ToolPermissionPolicyEngine @Inject constructor(
                 if (command != null) {
                     val analysis = ShellCommandParser.analyze(command)
                     checkCatastrophicRm(analysis.segments)?.let { return elevationOrDeny(it, args) }
-                    // 命令替换/子 shell/绝对路径重定向等无法静态判定的构造，删除目标不可知；
+                    // 命令替换/子 shell 等无法静态判定的构造，或重定向写入受保护目录时，删除/写入目标不可知；
                     // 若同时疑似破坏性，宁可拦下（可提权），避免绕过安全防护。
-                    if (!analysis.analyzable && looksDestructive(command)) {
+                    if (!analysis.analyzable && looksDestructive(command, analysis)) {
                         return elevationOrDeny(REASON_UNANALYZABLE_DESTRUCTIVE, args)
                     }
                 }
@@ -250,11 +250,33 @@ class ToolPermissionPolicyEngine @Inject constructor(
         (args[ELEVATE_ARG] as? JsonPrimitive)?.content?.trim()?.lowercase() == "true"
 
     /**
-     * 该命令是否疑似破坏性（仅在命令不可静态判定时使用）：含输出重定向、`-delete`
-     * 或常见破坏性程序名。宁可多问，不误放。
+     * 该命令是否疑似破坏性（仅在命令不可静态判定时使用）：命中破坏性程序名/`-delete`，
+     * 或输出重定向写入受保护目录。宁可多问，不误放。
+     *
+     * 不再把「命令里出现 `>`」一律视为破坏性：写日志到 `/tmp` 等非受保护位置属正常操作，
+     * 只按重定向**目标是否落在受保护范围**裁决（[isProtectedWriteTarget]）。
      */
-    private fun looksDestructive(command: String): Boolean =
-        command.contains('>') || command.contains("-delete") || DESTRUCTIVE_PROGRAM.containsMatchIn(command)
+    private fun looksDestructive(command: String, analysis: ShellCommandParser.Analysis): Boolean =
+        command.contains("-delete") ||
+            DESTRUCTIVE_PROGRAM.containsMatchIn(command) ||
+            analysis.redirectTargets.any { isProtectedWriteTarget(it) }
+
+    /**
+     * 输出重定向目标是否落在受保护范围：系统关键目录及子路径、`/` 自身、用户主目录整体、
+     * 工作区根。`/tmp`、`/dev/null`（黑洞设备，写入无副作用）与根目录下的普通文件
+     * （如框架自身的 `/.provisioned`）视为安全；`/dev` 下其它设备仍受保护。
+     */
+    private fun isProtectedWriteTarget(rawPath: String): Boolean {
+        val path = normalizePath(rawPath.trim())
+        if (path.isEmpty()) return false
+        if (path == "/") return true
+        if (path == "/dev/null") return false
+        if (path == HOME_DIR || path == "$HOME_DIR/*") return true
+        if (path in WORKSPACE_ROOT_TARGETS) return true
+        if (path.startsWith("$HOME_DIR/workspace/")) return true
+        if (path == "/tmp" || path.startsWith("/tmp/")) return false
+        return PROTECTED_SYSTEM_DIRS.any { path == it || path.startsWith("$it/") }
+    }
 
     /**
      * 灾难性删除的裁决：携带提权参数时降级为一次性用户授权（ASK），否则硬拒绝（DENY）
