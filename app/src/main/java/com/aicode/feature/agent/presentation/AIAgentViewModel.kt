@@ -1442,7 +1442,6 @@ class AIAgentViewModel @Inject constructor(
                 else -> allTools.filterNot { it.name == AgentDefinition.PARENT_MESSAGE_TOOL }
             }
 
-            val history = messagePersistenceUseCase.buildHistory(sessionId, SessionUseCase.PENDING_TOOL_MARKER)
             agentWorkflow.executeEvents(
                 userRequest = modelRequest,
                 context = agentContext,
