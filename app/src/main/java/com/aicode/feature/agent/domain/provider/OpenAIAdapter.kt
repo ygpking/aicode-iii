@@ -81,7 +81,9 @@ class OpenAIAdapter @Inject constructor(
         systemPrompt: String,
         messages: List<AgentMessage>,
         tools: List<AgentTool>,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        // 忽略：OpenAI 的 prompt_cache_key 仅作路由提示，不产生缓存写入费用。
+        disablePromptCaching: Boolean
     ): AIResponse {
         if (useResponseApi) return completeViaResponses(systemPrompt, messages, tools, reasoningEffort)
 

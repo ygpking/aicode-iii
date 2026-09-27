@@ -66,9 +66,12 @@ class AnthropicAdapter @Inject constructor(
         systemPrompt: String,
         messages: List<AgentMessage>,
         tools: List<AgentTool>,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        disablePromptCaching: Boolean
     ): AIResponse {
-        val anthropicMessages = convertToAnthropicMessages(messages, cacheBreakpointsEnabled)
+        // 一次性请求（如上下文压缩）关掉缓存断点：其输入不会被后续请求复用，写缓存只多花钱。
+        val cacheEnabled = cacheBreakpointsEnabled && !disablePromptCaching
+        val anthropicMessages = convertToAnthropicMessages(messages, cacheEnabled)
 
         val toolDefs = tools.takeIf { it.isNotEmpty() }?.mapIndexed { index, tool ->
             AnthropicToolDefinition(
@@ -76,7 +79,7 @@ class AnthropicAdapter @Inject constructor(
                 description = tool.description,
                 input_schema = tool.toJsonSchema(),
                 // 断点预算有限（每请求最多 4 个），tools 只打最后一个。
-                cache_control = if (cacheBreakpointsEnabled && index == tools.lastIndex) CACHE_BREAKPOINT else null
+                cache_control = if (cacheEnabled && index == tools.lastIndex) CACHE_BREAKPOINT else null
             )
         }
 
@@ -85,7 +88,7 @@ class AnthropicAdapter @Inject constructor(
         val request = AnthropicMessageRequest(
             model = model,
             messages = anthropicMessages,
-            system = buildSystemPayload(systemPrompt),
+            system = buildSystemPayload(systemPrompt, cacheEnabled),
             max_tokens = resolveMaxTokens(thinking),
             temperature = if (thinking != null) null else temperature,
             thinking = thinking,
@@ -165,7 +168,7 @@ class AnthropicAdapter @Inject constructor(
         val request = AnthropicMessageRequest(
             model = model,
             messages = anthropicMessages,
-            system = buildSystemPayload(systemPrompt),
+            system = buildSystemPayload(systemPrompt, cacheBreakpointsEnabled),
             max_tokens = resolveMaxTokens(thinking),
             temperature = if (thinking != null) null else temperature,
             thinking = thinking,
@@ -589,9 +592,9 @@ class AnthropicAdapter @Inject constructor(
     }
 
     /** 显式缓存断点值：Anthropic ephemeral prompt caching。 */
-    private fun buildSystemPayload(systemPrompt: String): Any? {
+    private fun buildSystemPayload(systemPrompt: String, cacheEnabled: Boolean): Any? {
         if (systemPrompt.isBlank()) return null
-        if (!cacheBreakpointsEnabled) return systemPrompt
+        if (!cacheEnabled) return systemPrompt
         return listOf(
             mapOf(
                 "type" to "text",

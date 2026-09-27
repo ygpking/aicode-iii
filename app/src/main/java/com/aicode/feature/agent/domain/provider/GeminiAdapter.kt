@@ -66,7 +66,9 @@ class GeminiAdapter @Inject constructor(
         systemPrompt: String,
         messages: List<AgentMessage>,
         tools: List<AgentTool>,
-        reasoningEffort: String?
+        reasoningEffort: String?,
+        // 忽略：Gemini 为服务端隐式缓存，无显式写入费用。
+        disablePromptCaching: Boolean
     ): AIResponse {
         if (useResponseApi) {
             return completeViaInteractions(systemPrompt, messages, tools, reasoningEffort)

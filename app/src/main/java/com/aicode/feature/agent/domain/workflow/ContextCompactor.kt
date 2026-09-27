@@ -20,6 +20,8 @@ import com.aicode.feature.settings.data.repository.GeneralSettingsRepository
 import com.aicode.feature.settings.domain.model.ModelContextPolicy
 import com.aicode.feature.settings.domain.model.ProviderType
 import android.os.SystemClock
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -115,6 +117,8 @@ class ContextCompactor @Inject constructor(
         val head = messages.subList(0, splitIndex)
         val tail = messages.subList(splitIndex, messages.size)
         val previousSummary = extractPreviousSummary(messages)
+        // 文件清单在移除旧摘要配对之前提取，否则上一轮累积的清单会随配对一起丢掉。
+        val fileOps = CompactionFileTracker.extract(messages)
         val summaryWindowTokens = summaryMetadata.contextTokens.takeIf { it > 0 }
             ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
         val headForSummary = removeCompactionPairs(head).truncateForSummaryWindow(summaryWindowTokens)
@@ -141,7 +145,9 @@ class ContextCompactor @Inject constructor(
             val response = aiProvider.complete(
                 systemPrompt = "你是一个上下文压缩引擎。本次请求中的对话历史仅作为输入材料，不要继续其中任何任务，不要调用任何工具，只输出接手摘要。",
                 messages = summaryRequestMessages,
-                tools = emptyList()
+                tools = emptyList(),
+                // 摘要请求是一次性的、不会被后续请求复用，禁用显式缓存断点以免白付缓存写入费。
+                disablePromptCaching = true
             )
             callUsage = response
             callCompleted = true
@@ -178,7 +184,11 @@ class ContextCompactor @Inject constructor(
             )
         }
 
-        FileLogger.i(TAG, "上下文压缩完成，摘要长度：${summaryResponse.length}")
+        val summaryText = CompactionFileTracker.append(summaryResponse, fileOps)
+        if (!fileOps.isEmpty) {
+            FileLogger.i(TAG, "摘要已附加文件清单：读 ${fileOps.read.size} 个、改 ${fileOps.modified.size} 个")
+        }
+        FileLogger.i(TAG, "上下文压缩完成，摘要长度：${summaryText.length}")
 
         val markerId = UUID.randomUUID().toString()
         val compactedId = UUID.randomUUID().toString()
@@ -188,7 +198,7 @@ class ContextCompactor @Inject constructor(
         )
         val compactedMessage = AgentMessage.AssistantMessage(
             id = compactedId,
-            content = summaryResponse,
+            content = summaryText,
             toolCalls = emptyList()
         )
 
@@ -445,4 +455,71 @@ class ContextCompactor @Inject constructor(
         }
         return truncated
     }
+}
+
+/**
+ * 压缩摘要的文件清单累积器。
+ *
+ * 文件清单**不交给摘要模型回忆**——模型会漏。改为从工具调用里机械提取：读过的（readFile）
+ * 与改过的（writeFile / editFile）分别成集，改过的再从「读过」里剔除（与 Pi 的
+ * `readFiles excludes files also modified` 一致）；并解析既有摘要里的清单块，使清单跨轮累积。
+ *
+ * 局限：[AgentMessage.ToolResultMessage] 不带 toolCallId，无法与具体调用精确配对，
+ * 故按「调用意图」统计，失败或空操作的调用同样计入。
+ */
+internal object CompactionFileTracker {
+
+    private val READ_BLOCK = Regex("(?s)<read-files>(.*?)</read-files>")
+    private val MODIFIED_BLOCK = Regex("(?s)<modified-files>(.*?)</modified-files>")
+
+    private val READ_TOOLS = setOf("readFile")
+    private val MODIFY_TOOLS = setOf("writeFile", "editFile")
+
+    internal data class FileOps(
+        val read: List<String> = emptyList(),
+        val modified: List<String> = emptyList()
+    ) {
+        val isEmpty: Boolean get() = read.isEmpty() && modified.isEmpty()
+    }
+
+    fun extract(messages: List<AgentMessage>): FileOps {
+        val read = LinkedHashSet<String>()
+        val modified = LinkedHashSet<String>()
+        for (message in messages) {
+            // 只从 assistant 消息取：用户消息里出现同样字样的文本属巧合，不该被当元数据。
+            if (message !is AgentMessage.AssistantMessage) continue
+            for (call in message.toolCalls) {
+                val path = call.arguments["path"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
+                if (path.isEmpty()) continue
+                when (call.name) {
+                    in READ_TOOLS -> read.add(path)
+                    in MODIFY_TOOLS -> modified.add(path)
+                }
+            }
+            READ_BLOCK.findAll(message.content).forEach { read.addAll(parseBlock(it.groupValues[1])) }
+            MODIFIED_BLOCK.findAll(message.content).forEach { modified.addAll(parseBlock(it.groupValues[1])) }
+        }
+        read.removeAll(modified)
+        return FileOps(read.toList(), modified.toList())
+    }
+
+    fun append(summary: String, ops: FileOps): String {
+        if (ops.isEmpty) return summary
+        return buildString {
+            append(summary.trimEnd())
+            if (ops.read.isNotEmpty()) {
+                append("\n\n<read-files>\n")
+                ops.read.forEach { append(it).append('\n') }
+                append("</read-files>")
+            }
+            if (ops.modified.isNotEmpty()) {
+                append("\n\n<modified-files>\n")
+                ops.modified.forEach { append(it).append('\n') }
+                append("</modified-files>")
+            }
+        }
+    }
+
+    private fun parseBlock(body: String): List<String> =
+        body.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
 }

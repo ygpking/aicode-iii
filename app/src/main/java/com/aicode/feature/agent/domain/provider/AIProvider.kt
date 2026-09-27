@@ -208,12 +208,17 @@ interface AIProvider {
      * 模型若决定调用工具，结果会出现在返回的 [AIResponse.toolCalls] 中。
      * [reasoningEffort] 为思考强度（"low"/"medium"/"high"），仅 OpenAI 系生效；
      * Anthropic/Gemini 与不支持该参数的模型忽略。
+     *
+     * [disablePromptCaching] 用于**一次性请求**（如上下文压缩的摘要生成）：这类请求的结果不会被复用，
+     * 写入服务端缓存徒增费用（Anthropic 的 cache_creation 按高于普通输入的单价计费）。
+     * 仅 Anthropic 的显式缓存断点受影响；OpenAI 的 cache key 只作路由提示、Gemini 为服务端隐式缓存，均无写入成本。
      */
     suspend fun complete(
         systemPrompt: String,
         messages: List<AgentMessage>,
         tools: List<AgentTool> = emptyList(),
-        reasoningEffort: String? = null
+        reasoningEffort: String? = null,
+        disablePromptCaching: Boolean = false
     ): AIResponse
 
     /**

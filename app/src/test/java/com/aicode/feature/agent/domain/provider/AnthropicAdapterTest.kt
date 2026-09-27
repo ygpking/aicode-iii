@@ -8,9 +8,14 @@ import com.aicode.feature.agent.data.remote.anthropic.AnthropicMessageResponse
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicStopDetails
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicUsage
 import com.aicode.feature.agent.domain.model.AgentMessage
+import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ToolCall
+import com.aicode.feature.agent.domain.tool.ToolParameter
+import com.aicode.feature.agent.domain.tool.ToolResult
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import okhttp3.ResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -73,6 +78,13 @@ class AnthropicAdapterTest {
     }
 
     private fun toolCall(id: String) = ToolCall(id = id, name = "readFile", arguments = JsonObject(emptyMap()))
+
+    private class FakeTool(override val name: String = "readFile") : AgentTool() {
+        override val description = "desc"
+        override val parameters = emptyMap<String, ToolParameter>()
+        override suspend fun execute(args: Map<String, JsonElement>): ToolResult =
+            ToolResult.Success(JsonPrimitive("ok"))
+    }
 
     @Test
     fun max_tokens_uses_model_metadata_output_limit() = runTest {
@@ -249,5 +261,42 @@ class AnthropicAdapterTest {
         @Suppress("UNCHECKED_CAST")
         val blocks = user.content as List<AnthropicContentBlock>
         assertEquals("ephemeral", blocks.last().cache_control?.get("type"))
+    }
+
+    @Test
+    fun disablePromptCaching_strips_all_breakpoints() = runTest {
+        // 一次性请求（上下文压缩）不能写缓存：写入费按高于普通输入的单价计，而该输入不会被复用。
+        val api = FakeApi(response())
+        adapter(api).complete(
+            "sys",
+            listOf(AgentMessage.UserMessage(content = "hi")),
+            tools = listOf(FakeTool()),
+            disablePromptCaching = true
+        )
+
+        val request = api.lastRequest!!
+        assertEquals("system 段应回退为纯文本、不带 cache_control", "sys", request.system)
+        assertTrue(
+            "工具定义不应再带断点，实际=${request.tools?.map { it.cache_control }}",
+            request.tools.orEmpty().all { it.cache_control == null }
+        )
+        val user: AnthropicMessage = request.messages.last { it.role == "user" }
+        @Suppress("UNCHECKED_CAST")
+        val blocks = user.content as? List<AnthropicContentBlock>
+        val breakpoints = blocks.orEmpty().mapNotNull { it.cache_control }
+        assertTrue("消息断点应全部移除，实际=$breakpoints", breakpoints.isEmpty())
+    }
+
+    @Test
+    fun promptCachingEnabled_keeps_tool_breakpoint() = runTest {
+        // 对照组：默认（非一次性）请求仍应在最后一个工具上打点，否则缓存能力被误关。
+        val api = FakeApi(response())
+        adapter(api).complete(
+            "sys",
+            listOf(AgentMessage.UserMessage(content = "hi")),
+            tools = listOf(FakeTool())
+        )
+
+        assertEquals("ephemeral", api.lastRequest?.tools?.last()?.cache_control?.get("type"))
     }
 }
