@@ -5,6 +5,7 @@ import com.aicode.feature.agent.domain.container.CommandEngine
 import com.aicode.feature.agent.domain.container.CommandEvent
 import com.aicode.feature.agent.domain.container.sanitizeCommandForLog
 import com.aicode.feature.agent.domain.container.ContainerBuildGuard
+import com.aicode.feature.agent.domain.container.HostMemoryProbe
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ParameterType
@@ -37,7 +38,8 @@ import javax.inject.Inject
  */
 class ExecuteCommandTool @Inject constructor(
     private val commandEngine: CommandEngine,
-    private val workspaceRepository: WorkspaceRepository
+    private val workspaceRepository: WorkspaceRepository,
+    private val memoryProbe: HostMemoryProbe
 ) : AgentTool(), StreamingAgentTool {
     private companion object {
         const val TAG = "ExecuteCommandTool"
@@ -75,9 +77,27 @@ class ExecuteCommandTool @Inject constructor(
         )
     )
 
-    /** 把内存保护的改写说明附在输出末尾，让模型知道自己跑的不是原命令，避免困惑于参数差异。 */
-    private fun appendGuardNote(output: String, note: String?): String =
-        if (note == null) output else "$output\n\n[$note]"
+    /**
+     * 把内存保护的改写说明与内存水位警告附在输出末尾。
+     * 两者都是「让模型知晓执行环境实情」的信息，不打进日志而回给模型，
+     * 它才能在后续步骤里主动调整（拆小任务 / 提醒用户释放内存）。
+     */
+    private fun appendGuardNote(output: String, note: String?, memoryWarning: String?): String {
+        if (note == null && memoryWarning == null) return output
+        return buildString {
+            append(output)
+            if (note != null) append("\n\n[$note]")
+            if (memoryWarning != null) append("\n\n[内存警告] $memoryWarning")
+        }
+    }
+
+    /**
+     * 仅对「被识别为构建命令」的调用采样内存：普通命令（ls/grep）开销小，多一次查询没必要。
+     * 采样失败或内存充足时返回 null。
+     * 必须**执行前**调用：任务已在跑时才知道内存不足已经来不及阻止。
+     */
+    private fun memoryWarningFor(isBuildCommand: Boolean): String? =
+        if (isBuildCommand) memoryProbe.warnIfLow("构建命令") else null
 
     /** 解析 timeout（秒）参数并钳到合法范围，返回毫秒；缺省用默认值。 */
     private fun resolveTimeoutMs(args: Map<String, JsonElement>): Long {
@@ -113,9 +133,11 @@ class ExecuteCommandTool @Inject constructor(
             val guarded = ContainerBuildGuard.guard(command)
             if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
             FileLogger.d(TAG, "execute_command (timeout=${timeoutMs}ms): ${sanitizeCommandForLog(guarded.command)}")
+            // 执行前采样：事后采样无法提前预警，就失去了意义
+            val memWarning = memoryWarningFor(guarded.rewritten)
             val output = commandEngine.runCommandSync(guarded.command, workdir, timeoutMs)
             FileLogger.v(TAG, "execute_command 完成，输出 ${output.length} 字符")
-            ToolResult.Success(JsonPrimitive(appendGuardNote(output, guarded.note)))
+            ToolResult.Success(JsonPrimitive(appendGuardNote(output, guarded.note, memWarning)))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -147,6 +169,8 @@ class ExecuteCommandTool @Inject constructor(
             val guarded = ContainerBuildGuard.guard(command)
             if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
             FileLogger.d(TAG, "execute_command(流式, timeout=${timeoutMs}ms): ${sanitizeCommandForLog(guarded.command)}")
+            // 执行前采样：事后采样无法提前预警，就失去了意义
+            val memWarning = memoryWarningFor(guarded.rewritten)
             commandEngine.runCommandStream(guarded.command, workdir, timeoutMs).collect { event ->
                 when (event) {
                     is CommandEvent.Line -> {
@@ -158,7 +182,7 @@ class ExecuteCommandTool @Inject constructor(
                 }
             }
             FileLogger.v(TAG, "execute_command(流式) 完成，输出 ${accumulated.totalChars} 字符")
-            emit(ToolStreamEvent.Completed(ToolResult.Success(JsonPrimitive(appendGuardNote(accumulated.build(), guarded.note)))))
+            emit(ToolStreamEvent.Completed(ToolResult.Success(JsonPrimitive(appendGuardNote(accumulated.build(), guarded.note, memWarning)))))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
