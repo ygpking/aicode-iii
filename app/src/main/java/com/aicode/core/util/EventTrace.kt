@@ -164,6 +164,36 @@ object EventTrace {
         return dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }?.sortedBy { it.name } ?: emptyList()
     }
 
+    /** 轨迹占用字节数（含轮转归档）；供存储统计使用。 */
+    fun totalBytes(): Long = listTraceFiles().sumOf { it.length() }
+
+    /**
+     * 清空轨迹文件（含轮转归档），返回释放的字节数。
+     *
+     * 只删轨迹，不动 [MARKER_FILE]：它是「上次是否正常退出」的唯一依据，删了会让下次启动误报被杀。
+     * 删除必须排到 [ioExecutor] 上并**先关闭写入句柄**（同 [FileLogger.clearLogs]）：当天的文件正被
+     * [writer] 持有，不关就删的话，后续写入会继续落进已删除的 inode——文件看不见却仍占空间。
+     */
+    fun clearTraceFiles(): Long {
+        val dir = logDir ?: return 0L
+        val freed = java.util.concurrent.atomic.AtomicLong(0)
+        val latch = java.util.concurrent.CountDownLatch(1)
+        ioExecutor.execute {
+            runCatching {
+                writer?.close()
+                writer = null
+                writerDay = null
+                listTraceFiles().forEach { file ->
+                    val size = file.length()
+                    if (file.delete()) freed.addAndGet(size)
+                }
+            }.onFailure { Log.e(TAG, "清空事件轨迹失败", it) }
+            latch.countDown()
+        }
+        runCatching { latch.await(5, java.util.concurrent.TimeUnit.SECONDS) }
+        return freed.get()
+    }
+
     /**
      * 开启一个新回合，返回回合 id（形如 `t1`、`t2`…，按 [key] 独立自增）。
      *

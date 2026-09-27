@@ -151,7 +151,7 @@
     <string name="storage_clean_caches">缓存文件</string>
     <string name="storage_clean_caches_desc">临时文件，删除后会自动重建</string>
     <string name="storage_clean_logs">运行日志</string>
-    <string name="storage_clean_logs_desc">应用日志与 AI 请求日志，删除不影响功能</string>
+    <string name="storage_clean_logs_desc">应用日志、AI 请求日志与事件轨迹，删除不影响功能</string>
     <string name="storage_clean_tool_output">工具输出存档</string>
     <string name="storage_clean_tool_output_desc">AI 超长工具输出保存到磁盘的副本，删除后旧消息里的输出路径不再可读</string>
     <string name="storage_clean_vision">识图会话缓存</string>
@@ -161,6 +161,7 @@
     <string name="storage_workspace_attachments">含附件 %1$s</string>
     <string name="storage_logs_app">应用日志</string>
     <string name="storage_logs_ai">AI 请求日志</string>
+    <string name="storage_logs_trace">事件轨迹</string>
 
     <!-- 语言设置页 -->
     <string name="language_follow_system">跟随系统</string>

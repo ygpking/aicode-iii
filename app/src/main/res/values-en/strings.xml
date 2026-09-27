@@ -151,7 +151,7 @@
     <string name="storage_clean_caches">Cached files</string>
     <string name="storage_clean_caches_desc">Temporary files, rebuilt automatically</string>
     <string name="storage_clean_logs">Log files</string>
-    <string name="storage_clean_logs_desc">App and AI request logs; deleting them affects nothing</string>
+    <string name="storage_clean_logs_desc">App logs, AI request logs and event traces; deleting them affects nothing</string>
     <string name="storage_clean_tool_output">Tool output archive</string>
     <string name="storage_clean_tool_output_desc">Saved copies of oversized tool output; output paths in older messages stop resolving</string>
     <string name="storage_clean_vision">Vision session cache</string>
@@ -161,6 +161,7 @@
     <string name="storage_workspace_attachments">incl. attachments %1$s</string>
     <string name="storage_logs_app">App logs</string>
     <string name="storage_logs_ai">AI request logs</string>
+    <string name="storage_logs_trace">Event traces</string>
 
     <!-- Language settings -->
     <string name="language_follow_system">Follow System</string>

@@ -3,6 +3,7 @@ package com.aicode.feature.settings.domain.service
 import android.content.Context
 import com.aicode.R
 import com.aicode.core.util.AILogger
+import com.aicode.core.util.EventTrace
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.data.local.database.AgentDatabase
@@ -86,7 +87,7 @@ class StorageUsageScanner @Inject constructor(
     suspend fun clean(kind: CleanupKind): Long = withContext(Dispatchers.IO) {
         when (kind) {
             CleanupKind.Caches -> clearDirContents(context.cacheDir) + clearDirContents(context.codeCacheDir)
-            CleanupKind.Logs -> FileLogger.clearLogs() + AILogger.clearLogs()
+            CleanupKind.Logs -> FileLogger.clearLogs() + AILogger.clearLogs() + EventTrace.clearTraceFiles()
             CleanupKind.ToolOutput -> clearDirContents(toolOutputStore.outputDir)
             CleanupKind.VisionSessions -> clearDirContents(visionSessionStore.sessionDir)
         }
@@ -208,17 +209,19 @@ class StorageUsageScanner @Inject constructor(
         StorageEntry(StorageCategory.Checkpoints, dirSize(File(context.filesDir, CHECKPOINTS_DIR), cancelled))
 
     /**
-     * 日志：直接问两个 logger 要文件清单，而不是猜目录——它们优先写外部私有目录，
-     * 外部不可用时回退到内部，路径由 logger 自己决定。
+     * 日志：直接问三个记录层要文件清单，而不是猜目录——它们优先写外部私有目录，
+     * 外部不可用时回退到内部，路径由各自决定。
      */
     private fun logsEntry(): StorageEntry {
         val appLogs = runCatching { FileLogger.listLogFiles().sumOf { it.length() } }.getOrDefault(0L)
         val aiLogs = runCatching { AILogger.listLogFiles().sumOf { it.length() } }.getOrDefault(0L)
+        val traceLogs = runCatching { EventTrace.totalBytes() }.getOrDefault(0L)
         val details = buildList {
             if (appLogs > 0) add(StorageDetail(context.getString(R.string.storage_logs_app), appLogs))
             if (aiLogs > 0) add(StorageDetail(context.getString(R.string.storage_logs_ai), aiLogs))
+            if (traceLogs > 0) add(StorageDetail(context.getString(R.string.storage_logs_trace), traceLogs))
         }
-        return StorageEntry(StorageCategory.Logs, appLogs + aiLogs, details)
+        return StorageEntry(StorageCategory.Logs, appLogs + aiLogs + traceLogs, details)
     }
 
     private fun cacheEntry(cancelled: () -> Boolean): StorageEntry =
