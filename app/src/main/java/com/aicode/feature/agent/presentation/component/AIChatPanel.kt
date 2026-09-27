@@ -859,11 +859,18 @@ fun AIChatPanel(
     // 流式状态跳变观测：只在值变化时打点，不每帧写盘。
     // 动机：此前 UI 侧零日志，遇到「思考与消息串台」这类问题时无法从日志验证界面到底变成了什么，
     // 只能靠读源码推断。走统一的 EventTrace，与模型事件同一条时间线，事后可直接对照。
-    LaunchedEffect(currentSessionId, showReasoning, showStreaming, isAssistantSettled) {
+    //
+    // key 里必须带 isBusy：判定依赖它，而打点只在 key 变化时触发。
+    // 此前 key 缺 isBusy，导致「回合结束、isBusy 由 true 转 false」这个关键时刻根本不会被记录，
+    // 事后无法判断气泡为何没隐藏（排查时吃过这个亏）。
+    //
+    // 不得把 displayStreamingText/Reasoning 放进 key：它们是逐字累积变化的，
+    // 放进去会让本 effect 每个 delta 都重启，日志被刷爆（与「只在跳变时打点」的初衷相反）。
+    LaunchedEffect(currentSessionId, showReasoning, showStreaming, isAssistantSettled, isBusy) {
         EventTrace.recordFor(
             currentSessionId,
             "UI",
-            "尾巴 reasoning=$showReasoning streaming=$showStreaming settled=$isAssistantSettled " +
+            "尾巴 busy=$isBusy reasoning=$showReasoning streaming=$showStreaming settled=$isAssistantSettled " +
                 "retainedText=${retainedStreamingText?.length ?: 0} retainedReasoning=${retainedStreamingReasoning?.length ?: 0}"
         )
     }
