@@ -24,6 +24,14 @@ class CrashRecoveryPlannerTest {
     }
 
     @Test
+    fun recoverableStateIsRecoverable() {
+        // RECOVERABLE 是「上次崩溃已检测到、等用户决定是否续跑」的状态，必须仍被判可恢复。
+        // 曾将它排除在白名单外，导致二次启动时把上次遗留的待恢复任务静默置为 FAILED，
+        // 用户永远看不到恢复入口——与「崩溃后可续」的设计意图直接冲突。
+        assertTrue(CrashRecoveryPlanner.plan("t", "s", "RECOVERABLE", "", 0) is RecoveryVerdict.Recoverable)
+    }
+
+    @Test
     fun terminalStatesAreSkipped() {
         for (state in listOf("COMPLETED", "FAILED", "CANCELLED", "EXHAUSTED")) {
             assertSame(RecoveryVerdict.Skip, CrashRecoveryPlanner.plan("t", "s", state, "", 0))
@@ -39,9 +47,8 @@ class CrashRecoveryPlannerTest {
     }
 
     @Test
-    fun nonWhitelistedNonTerminalFailsClosed() {
-        // RECOVERABLE / PENDING 属非终态但不在「进行中」白名单 → 保守失败，避免二次复活。
-        assertTrue(CrashRecoveryPlanner.plan("t", "s", "RECOVERABLE", "", 0) is RecoveryVerdict.FailClosed)
+    fun pendingFailsClosed() {
+        // PENDING 从未开始执行（没有可续的进度），保守置失败。
         assertTrue(CrashRecoveryPlanner.plan("t", "s", "PENDING", "", 0) is RecoveryVerdict.FailClosed)
     }
 }

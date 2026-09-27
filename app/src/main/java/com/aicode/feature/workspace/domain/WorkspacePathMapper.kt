@@ -102,7 +102,6 @@ class WorkspacePathMapper @Inject constructor(
             else -> mountedHostFile(p)
                 ?: if (p.startsWith("/")) File(rootfsRoot(), p.removePrefix("/")) else confineTo(root, p)
         }
-        FileLogger.v(TAG, "toHostFile '$path' -> ${file.absolutePath}")
         return file
     }
 

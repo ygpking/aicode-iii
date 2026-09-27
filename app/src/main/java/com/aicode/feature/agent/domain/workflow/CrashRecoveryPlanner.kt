@@ -17,19 +17,27 @@ sealed interface RecoveryVerdict {
 /**
  * 崩溃恢复判定（纯函数、无 IO）。
  *
- * fail-closed 原则：只有**明确处于进行中状态**（RUNNING / WAITING_APPROVAL / PAUSED）的任务
- * 才判为可恢复；状态字符串无法解析时判为 [RecoveryVerdict.FailClosed]（保守置失败），
- * 绝不因「读不懂状态」而复活任务。已终态直接 [RecoveryVerdict.Skip]。
+ * fail-closed 原则：只有**明确可继续**的状态才判为可恢复；状态字符串无法解析时判为
+ * [RecoveryVerdict.FailClosed]（保守置失败），绝不因「读不懂状态」而复活任务。
+ * 已终态直接 [RecoveryVerdict.Skip]。
  *
  * 注意：判定为「可恢复」不等于「自动重跑」——只是标记出来供用户选择继续。
  */
 object CrashRecoveryPlanner {
 
-    /** 崩溃时仍在进行、可恢复的状态。 */
+    /**
+     * 崩溃时仍在进行、可恢复的状态。
+     *
+     * [TaskState.RECOVERABLE] 必须在内：它本就是「上次崩溃检测到、等待用户决定是否续跑」的状态
+     * （由 `RUNNING + CRASH_DETECTED` 转入，可经 `START` 回到 RUNNING）。曾经漏列它，
+     * 导致上次崩溃遗留的任务在下次启动被判定为「不在白名单」而静默置失败——
+     * 与「崩溃后可续」的设计意图相存，也让用户完全看不到恢复入口。
+     */
     private val IN_PROGRESS_STATES = setOf(
         TaskState.RUNNING,
         TaskState.WAITING_APPROVAL,
         TaskState.PAUSED,
+        TaskState.RECOVERABLE,
     )
 
     fun plan(taskId: String, sessionId: String, rawState: String, promptSnippet: String, round: Int): RecoveryVerdict {
@@ -39,7 +47,7 @@ object CrashRecoveryPlanner {
         return if (state in IN_PROGRESS_STATES) {
             RecoveryVerdict.Recoverable(taskId, sessionId, promptSnippet, round)
         } else {
-            // 非终态但不在「进行中」白名单（如 RECOVERABLE 自身、PENDING）：保守置失败，避免二次复活。
+            // 非终态但不在可继续白名单（如 PENDING）：保守置失败，避免二次复活。
             RecoveryVerdict.FailClosed(taskId, "状态 $state 不在可恢复白名单")
         }
     }
