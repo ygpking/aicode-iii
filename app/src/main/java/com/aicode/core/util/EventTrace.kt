@@ -195,7 +195,9 @@ object EventTrace {
     /**
      * 记录一条事件。
      *
-     * @param layer 层标签，便于过滤：`TURN` / `EVENT` / `TOOL` / `UI` / `SESSION` / `SNAPSHOT`。
+     * @param layer 层标签，便于过滤：`TURN`（回合起止）/ `EVENT`（Agent 事件，经 [AgentEventTracer]）/
+     *   `UI`（界面状态跳变）/ `SNAPSHOT/<kind>`（收尾残留清点）。**只列实际在用的**——
+     *   历史上这里还写过 `TOOL`/`SESSION`，但从未有调用方，属「文档说有、实际没有」，已删。
      * @param detail 人类可读细节。**只放结构与度量**（长度、数量、状态、标识），不要塞正文——
      *   正文已由 [AILogger] 完整留存，重复只会撑爆轨迹。
      * @param causeSeq 引发本条的上一条 `seq`；不传时**默认指向同回合的上一条**（有更精确的因果关系时显式传入覆盖）。
