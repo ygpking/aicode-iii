@@ -4,6 +4,7 @@ import com.aicode.feature.agent.domain.container.BoundedOutput
 import com.aicode.feature.agent.domain.container.CommandEngine
 import com.aicode.feature.agent.domain.container.CommandEvent
 import com.aicode.feature.agent.domain.container.sanitizeCommandForLog
+import com.aicode.feature.agent.domain.container.ContainerBuildGuard
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ParameterType
@@ -74,6 +75,10 @@ class ExecuteCommandTool @Inject constructor(
         )
     )
 
+    /** 把内存保护的改写说明附在输出末尾，让模型知道自己跑的不是原命令，避免困惑于参数差异。 */
+    private fun appendGuardNote(output: String, note: String?): String =
+        if (note == null) output else "$output\n\n[$note]"
+
     /** 解析 timeout（秒）参数并钳到合法范围，返回毫秒；缺省用默认值。 */
     private fun resolveTimeoutMs(args: Map<String, JsonElement>): Long {
         val seconds = args["timeout"]?.jsonPrimitive?.longOrNull ?: DEFAULT_TIMEOUT_SECONDS
@@ -105,10 +110,12 @@ class ExecuteCommandTool @Inject constructor(
             // 在当前工作区目录内执行，与文件工具保持同一根目录
             val workdir = workspaceRepository.currentPath()
             val timeoutMs = resolveTimeoutMs(args)
-            FileLogger.d(TAG, "execute_command (timeout=${timeoutMs}ms): ${sanitizeCommandForLog(command)}")
-            val output = commandEngine.runCommandSync(command, workdir, timeoutMs)
+            val guarded = ContainerBuildGuard.guard(command)
+            if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
+            FileLogger.d(TAG, "execute_command (timeout=${timeoutMs}ms): ${sanitizeCommandForLog(guarded.command)}")
+            val output = commandEngine.runCommandSync(guarded.command, workdir, timeoutMs)
             FileLogger.v(TAG, "execute_command 完成，输出 ${output.length} 字符")
-            ToolResult.Success(JsonPrimitive(output))
+            ToolResult.Success(JsonPrimitive(appendGuardNote(output, guarded.note)))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -137,8 +144,10 @@ class ExecuteCommandTool @Inject constructor(
         try {
             val workdir = workspaceRepository.currentPath()
             val timeoutMs = resolveTimeoutMs(args)
-            FileLogger.d(TAG, "execute_command(流式, timeout=${timeoutMs}ms): ${sanitizeCommandForLog(command)}")
-            commandEngine.runCommandStream(command, workdir, timeoutMs).collect { event ->
+            val guarded = ContainerBuildGuard.guard(command)
+            if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
+            FileLogger.d(TAG, "execute_command(流式, timeout=${timeoutMs}ms): ${sanitizeCommandForLog(guarded.command)}")
+            commandEngine.runCommandStream(guarded.command, workdir, timeoutMs).collect { event ->
                 when (event) {
                     is CommandEvent.Line -> {
                         accumulated.append(event.text)
@@ -149,7 +158,7 @@ class ExecuteCommandTool @Inject constructor(
                 }
             }
             FileLogger.v(TAG, "execute_command(流式) 完成，输出 ${accumulated.totalChars} 字符")
-            emit(ToolStreamEvent.Completed(ToolResult.Success(JsonPrimitive(accumulated.build()))))
+            emit(ToolStreamEvent.Completed(ToolResult.Success(JsonPrimitive(appendGuardNote(accumulated.build(), guarded.note)))))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

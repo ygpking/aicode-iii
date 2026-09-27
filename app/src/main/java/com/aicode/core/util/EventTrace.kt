@@ -90,8 +90,72 @@ object EventTrace {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
         val dir = File(base, DIR_NAME).apply { mkdirs() }
         logDir = dir
-        ioExecutor.execute { cleanupOldLogs(dir) }
+        ioExecutor.execute {
+            cleanupOldLogs(dir)
+            reportPreviousExit(dir)
+            writeLifecycleMarker(dir, "PROCESS START")
+        }
         FileLogger.i(TAG, "事件轨迹目录: ${dir.absolutePath}（等级 ${FileLogger.minLevel}，记录=${enabled}）")
+    }
+
+    /**
+     * 进程正常退出时调用（如 [android.app.Application.onTerminate]）写下的收尾标记。
+     * 该标记的存在与否，是事后判「上次是正常退出还是被杀」的**唯一依据**。
+     */
+    private const val MARKER_FILE = "process.marker"
+
+    /**
+     * 标记进程正常退出。进程被杀时不会执行到这里，标记也不会更新——正是这个差异让「被杀」可被证实。
+     *
+     * 注意：[android.app.Application.onTerminate] 在真机上几乎不会被调用（杀进程时不会走正常退出流程），
+     * 所以本标记主要靠「不写」来传递信号：写成功说明是温和退出，没写说明上一次是被杀的。
+     */
+    fun markCleanExit() {
+        val dir = logDir ?: return
+        ioExecutor.execute { writeLifecycleMarker(dir, "PROCESS STOP") }
+    }
+
+    private fun writeLifecycleMarker(dir: File, text: String) {
+        runCatching {
+            val f = File(dir, MARKER_FILE)
+            // 先写时序行记入当天日志，再把标记文件更新为「最后一次已知状态」。
+            // 标记文件内容存时间戳：下次启动时可算出中断时长。
+            val now = System.currentTimeMillis()
+            appendLine(dir, "${timestampFormat.format(Instant.ofEpochMilli(now))}  -      -    -    -  LIFECYCLE  $text\n")
+            f.writeText("$text|$now")
+        }.onFailure { Log.e(TAG, "写进程标记失败", it) }
+    }
+
+    /**
+     * 启动时检查上一次退出方式。
+     *
+     * 若上次写的是 `PROCESS START` 而没有对应的 `PROCESS STOP`，说明进程**没有走正常退出流程就消失了**
+     * ——即被系统杀掉（低内存或后台限制）。这是目前唯一能在下次启动时自动认定「上次被杀」的手段：
+     * 被杀时异常处理器与 finally 都不会执行，不会有堆栈，日志里只有一段空白。
+     */
+    private fun reportPreviousExit(dir: File) {
+        runCatching {
+            val f = File(dir, MARKER_FILE)
+            if (!f.isFile) return@runCatching
+            val parts = f.readText().split('|')
+            val state = parts.getOrNull(0)?.trim()
+            val at = parts.getOrNull(1)?.toLongOrNull()
+            if (state != "PROCESS START" || at == null) return@runCatching
+            val gapSec = (System.currentTimeMillis() - at) / 1000
+            appendLine(
+                dir,
+                "${timestampFormat.format(Instant.now())}  -      -    -    -  LIFECYCLE  " +
+                    "上次未正常退出（距今 ${gapSec}s）——无 STOP 标记，判定为进程被杀非异常崩溃\n"
+            )
+        }.onFailure { Log.e(TAG, "检查上次退出状态失败", it) }
+    }
+
+    /** 直接向当天轨迹文件追加一行（供生命周期标记使用，不经 writer 缓冲）。 */
+    private fun appendLine(dir: File, line: String) {
+        runCatching {
+            val day = dayFormat.format(Instant.now())
+            File(dir, "trace-$day.log").appendText(line)
+        }.onFailure { Log.e(TAG, "追加轨迹行失败", it) }
     }
 
     /** 返回轨迹文件列表（含轮转归档），供占用统计与查看界面使用。 */
@@ -106,6 +170,18 @@ object EventTrace {
      * @param key 作用域，通常是 sessionId——多会话并行时各自独立编号，避免混线。
      */
     fun beginTurn(key: String): String {
+        // 开启新回合前，先看同作用域上一回合是否留有未收尾状态。
+        // 这是「被杀」在日志里唯一的自动痕迹：进程突然消失时，finally 与异常处理都不执行，
+        // 上一回合永远等不到 endTurn。检测到就写一行显式说明，而不是留下一段无解释的空白。
+        activeTurns[key]?.let { stale ->
+            if (seqCounters.containsKey(stale)) {
+                val total = recordCounters[stale] ?: 0L
+                record(
+                    stale, key, "TURN",
+                    "上一回合 $stale 未见收尾（已记 $total 条）——进程可能被系统杀掉，非正常结束"
+                )
+            }
+        }
         val n = turnCounters.computeIfAbsent(key) { AtomicLong(0) }.incrementAndGet()
         val turnId = "t$n"
         seqCounters[turnId] = AtomicLong(0)
