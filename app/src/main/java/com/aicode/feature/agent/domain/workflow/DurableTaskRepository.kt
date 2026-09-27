@@ -3,9 +3,29 @@ package com.aicode.feature.agent.domain.workflow
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.DurableTaskDao
 import com.aicode.feature.agent.data.local.entity.DurableTaskEntity
+import kotlinx.coroutines.CancellationException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+
+/**
+ * 与标准库 [runCatching] 等价，但**不吞协程取消**。
+ *
+ * 标准 [runCatching] 会把 [CancellationException] 也当成普通异常捕获，后果是：
+ * 本应交到取消传播的链上，却被降级成一次「失败」（只写一行日志），
+ * 协程甚至会因此不被标记为已取消。实测（本地探针验证）：
+ * 包装挂起调用的 runCatching 吞掉取消后，外层 job 的 isCancelled 仍为 false。
+ *
+ * 本仓库写入侧一律「尽力而为、失败只记日志」，但同时必须让取消照常传播，故用这个替代。
+ */
+private inline fun <T> guarded(block: () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        Result.failure(e)
+    }
 
 /**
  * durable 任务账本：记录每次长任务的生命周期状态，供崩溃恢复判定。
@@ -27,7 +47,7 @@ class DurableTaskRepository @Inject constructor(
     suspend fun begin(sessionId: String, prompt: String): String {
         val id = UUID.randomUUID().toString()
         val snippet = prompt.trim().take(80)
-        runCatching {
+        guarded {
             dao.upsert(
                 DurableTaskEntity(
                     id = id,
@@ -43,18 +63,18 @@ class DurableTaskRepository @Inject constructor(
 
     /** 更新任务的轮次（每轮 LLM 完成后）。 */
     suspend fun updateRound(taskId: String, round: Int) {
-        val current = runCatching { dao.getById(taskId) }.getOrNull() ?: return
-        runCatching {
+        val current = guarded { dao.getById(taskId) }.getOrNull() ?: return
+        guarded {
             dao.upsert(current.copy(round = round, updatedAt = System.currentTimeMillis()))
         }.onFailure { FileLogger.w(TAG, "更新任务轮次失败: ${it.message}") }
     }
 
     /** 迁移状态（经状态机；非法转移记录日志并忽略）。 */
     suspend fun transition(taskId: String, event: TaskEvent) {
-        val current = runCatching { dao.getById(taskId) }.getOrNull() ?: return
+        val current = guarded { dao.getById(taskId) }.getOrNull() ?: return
         val state = TaskStateMachine.parse(current.state) ?: return
         when (val result = TaskStateMachine.transition(state, event)) {
-            is TransitionResult.Moved -> runCatching {
+            is TransitionResult.Moved -> guarded {
                 dao.upsert(current.copy(state = result.to.name, updatedAt = System.currentTimeMillis()))
             }.onFailure { FileLogger.w(TAG, "迁移任务状态失败: ${it.message}") }
             is TransitionResult.Rejected ->
@@ -74,7 +94,7 @@ class DurableTaskRepository @Inject constructor(
      * - 不可判定/白名单外 → 保守置 FAILED（fail-closed，不复活）。
      */
     suspend fun scanForRecovery(): List<RecoveryVerdict> {
-        val nonTerminal = runCatching {
+        val nonTerminal = guarded {
             dao.getByStates(TaskStateMachine.NON_TERMINAL_STATES.map { it.name })
         }.getOrNull() ?: return emptyList()
 
@@ -89,10 +109,10 @@ class DurableTaskRepository @Inject constructor(
             )
             verdicts += verdict
             when (verdict) {
-                is RecoveryVerdict.Recoverable -> runCatching {
+                is RecoveryVerdict.Recoverable -> guarded {
                     dao.upsert(task.copy(state = TaskState.RECOVERABLE.name, updatedAt = System.currentTimeMillis()))
                 }
-                is RecoveryVerdict.FailClosed -> runCatching {
+                is RecoveryVerdict.FailClosed -> guarded {
                     FileLogger.w(TAG, "任务 ${task.id} 保守置失败：${verdict.reason}")
                     dao.upsert(task.copy(state = TaskState.FAILED.name, updatedAt = System.currentTimeMillis()))
                 }
@@ -104,7 +124,7 @@ class DurableTaskRepository @Inject constructor(
 
     /** 清理超期任务记录。 */
     suspend fun prune() {
-        runCatching { dao.deleteOlderThan(System.currentTimeMillis() - RETENTION_MS) }
+        guarded { dao.deleteOlderThan(System.currentTimeMillis() - RETENTION_MS) }
             .onFailure { FileLogger.w(TAG, "清理 durable 任务失败: ${it.message}") }
     }
 }
