@@ -833,10 +833,27 @@ fun AIChatPanel(
         }
     }
 
-    val displayStreamingText = if (isAssistantSettled) null else (streamingText ?: retainedStreamingText)
+    // 回合进行中（busy）只信 streaming，**不用 retained 兑底**。
+    //
+    // retained 的职责是「回合已结束、但落库消息尚未到达」这一段空隙的兜底；
+    // 若在回合进行中也用它兑底，工具轮之间的空档（streamingReasoning=null）就会回退到
+    // **上一轮**的大段文本，下一轮首个不可见增量又把它拉回寥寥几字——思考块在几千字与几字之间
+    // 反复伸缩（实测每轮抖动 5 次、间隔 0.5~4 秒），这就是「聊天框彻底乱了」的直接成因。
+    //
+    // 回合内 streaming 为 null 意味着「本轮还没输出到这一半」或「正在等工具结果」，
+    // 此时尾巴应展示「正在思考」状态，而不是回放上一轮内容。
+    val displayStreamingText = when {
+        isBusy -> streamingText
+        isAssistantSettled -> null
+        else -> streamingText ?: retainedStreamingText
+    }
     val showStreaming = displayStreamingText?.hasVisibleContent() == true
 
-    val displayStreamingReasoning = if (isAssistantSettled) null else (streamingReasoning ?: retainedStreamingReasoning)
+    val displayStreamingReasoning = when {
+        isBusy -> streamingReasoning
+        isAssistantSettled -> null
+        else -> streamingReasoning ?: retainedStreamingReasoning
+    }
     val showReasoning = displayStreamingReasoning?.hasVisibleContent() == true
 
     // 流式状态跳变观测：只在值变化时打点，不每帧写盘。
