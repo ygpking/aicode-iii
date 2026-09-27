@@ -587,12 +587,16 @@ git_config() {
     command -v git >/dev/null 2>&1 || return 0
     # 凭据注入最小化：只对工作区根目录（$HOME/workspace/）下的仓库生效——
     # credential.helper 写进 gitconfig.credential，经 includeIf 按目录条件加载，
-    # 容器内其它目录的 git 仓库不会被注入（aicode 自定义 helper 解码凭据文件命中秒过，未命中时经文件 IPC 弹窗回填）。
+    # 容器内其它目录的 git 仓库不会被注入。
+    # 两级 helper，顺序不可颠倒：git 的多 helper 是**顺序串行、凭据累加**——
+    # 先 store 从凭据文件读出 user:token（命中即得）；未命中时自定义 helper 才经文件 IPC 弹窗回填。
+    # 若只留自定义 helper，它自身不读文件，git 会因取不到用户名报 `could not read Username`。
     # 用 $HOME 而非写死 /root：容器 home 由环境决定，保持一致（App 侧 GIT_CONFIG_GLOBAL 同指向 $HOME/.aicode/.gitconfig）。
     AICODE_DIR="$HOME/.aicode"
     mkdir -p "$AICODE_DIR"
     cat > "$AICODE_DIR/gitconfig.credential" <<EOF
 [credential]
+    helper = store --file=$AICODE_DIR/git-credentials
     helper = $AICODE_DIR/git-credential-aicode
 EOF
     # 先清旧的 includeIf 段（幂等），再写限定工作区根的 includeIf。
