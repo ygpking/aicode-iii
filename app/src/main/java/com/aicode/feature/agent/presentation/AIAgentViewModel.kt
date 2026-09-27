@@ -102,6 +102,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -1648,7 +1649,13 @@ class AIAgentViewModel @Inject constructor(
             val cancelledState = _agentStates.value[sessionId]
             val isOwnJob = sessionJobs[sessionId] == coroutineContext[Job]
             FileLogger.d(TAG, "stream cancelled: sid=$sessionId isOwnJob=$isOwnJob state=$cancelledState")
-            EventTrace.endTurn(turnId, sessionId, "cancelled")
+            // 取消路径也要清点遗留状态：用户手动停止时「当时还剩什么」是最需要看到的——
+            // 偏偏取消后协程已处于取消态，读库等挂起调用会立即抛 CancellationException，
+            // 故必须包 NonCancellable 才能真的读到（否则快照永远静默失败、等于没加）。
+            withContext(NonCancellable) {
+                EventTrace.snapshot(sessionId, "LEFTOVER", leftoverStateOf(sessionId))
+                EventTrace.endTurn(turnId, sessionId, "cancelled")
+            }
             // durable 账本：主动取消/停止置 CANCELLED（区别于崩溃残留：明确终态不会被恢复扫描命中）。
             if (isOwnJob) durableTaskRepository.finish(durableTaskId, TaskEvent.CANCEL)
             if (isOwnJob &&
