@@ -1392,7 +1392,8 @@ class AIAgentViewModel @Inject constructor(
         // 折中：保留到用户发下一条消息为止，此时上一轮的清单已经看过、再无价值。
         clearStaleCompletedTodos(sessionId)
 
-        // 事件轨迹回合：开启后每个 AgentEvent 都会记一行（受日志等级控制，关闭时无开销）。
+        // 事件轨迹回合：开启后每个 AgentEvent 都会记一行。轨迹独立成层、默认开启，
+        // 只有把日志等级设为 NONE 才停止（release 默认 INFO，若挂在 DEBUG 之下则正式包永不记录）。
         // 必须声明在 try **之前**：finally 会引用它，而 try 内 beginTurn 之前就可能抛异常，
         // 那时变量尚未初始化，Kotlin 不允许在 finally 里读取未初始化的 local val。
         val turnId = EventTrace.beginTurn(sessionId)
@@ -1456,7 +1457,7 @@ class AIAgentViewModel @Inject constructor(
                 tools = tools
             ).collect { event ->
                 // 事件轨迹：在事件的唯一消费出口统一记录，不侵入下面 13 个分支。
-                // 轨迹默认关闭（受日志等级控制），关闭时 onEvent 内部直接返回，无额外开销。
+                // 逐字增量与流式片段在 AgentEventTracer 内部被过滤，不会进轨迹。
                 AgentEventTracer.onEvent(turnId, sessionId, event)
                 when (event) {
                     is AgentEvent.AssistantDelta -> {

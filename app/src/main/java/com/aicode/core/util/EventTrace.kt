@@ -31,13 +31,13 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * 因此本层不参与 [LogLevel] 的常规过滤：只要用户没有把日志等级显式设为 [LogLevel.NONE]，
  * 就一直记录（[enabled]）。写入量靠下面两条约束控制，而不是靠默认关闭：
- * - **只记状态变化，不记增量流**：逐字流式不记，只记「开始/结束/阶段切换」；
+ * - **只记状态变化，不记增量流**：逐字流式不记，只记「开始/结束/阶段切换」（由 [AgentEventTracer] 保证）；
  * - 独立文件 + 按大小轮转 + 按天清理，占用有上限。
  *
  * ## 三个维度如何表达
  * - **事件链**：各层在**唯一出口**统一记录，而非散落各处手写，避免遗漏与重复。
  * - **时序链**：每条带全局递增 `seq`；顺序以 seq 为准，不依赖墙钟（墙钟会被系统校时影响）。
- * - **因果链**：可传 `causeSeq` 指向引发本条的上一条，形成「谁导致谁」的引用。
+ * - **因果链**：每条默认指向**同回合的上一条**（`causeSeq` 可显式覆盖），使链路从起因到结果可一路倒推、不断档。
  *
  * 使用前需在 [android.app.Application.onCreate] 调用一次 [init]。
  */
@@ -198,20 +198,23 @@ object EventTrace {
      * @param layer 层标签，便于过滤：`TURN` / `EVENT` / `TOOL` / `UI` / `SESSION` / `SNAPSHOT`。
      * @param detail 人类可读细节。**只放结构与度量**（长度、数量、状态、标识），不要塞正文——
      *   正文已由 [AILogger] 完整留存，重复只会撑爆轨迹。
-     * @param causeSeq 引发本条的上一条 `seq`；不传表示无明确因果（外部触发、轮次开始）。
+     * @param causeSeq 引发本条的上一条 `seq`；不传时**默认指向同回合的上一条**（有更精确的因果关系时显式传入覆盖）。
+     * @return 本条分配到的 `seq`；未记录（未启用 / 回合未知 / 超上限）时返回 null。
      */
-    fun record(turnId: String?, scope: String?, layer: String, detail: String, causeSeq: Long? = null) {
-        if (!enabled || turnId == null) return
-        val seq = seqCounters[turnId]?.incrementAndGet() ?: return
-
+    fun record(turnId: String?, scope: String?, layer: String, detail: String, causeSeq: Long? = null): Long? {
+        if (!enabled || turnId == null) return null
+        // 先判上限、再取 seq：seq 只为「已接受」的记录分配，保证连续无空洞，
+        // 于是「上一条 = seq-1」恒成立（否则默认因果会指向被丢弃的序号）。
         val count = recordCounters[turnId] ?: 0L
         if (count >= MAX_RECORDS_PER_TURN) {
             droppedCounters[turnId] = (droppedCounters[turnId] ?: 0L) + 1
-            return
+            return null
         }
+        val seq = seqCounters[turnId]?.incrementAndGet() ?: return null
         recordCounters[turnId] = count + 1
 
-        write(turnId, scope, seq, layer, detail, causeSeq)
+        write(turnId, scope, seq, layer, detail, causeSeq ?: (seq - 1).takeIf { it >= 1 })
+        return seq
     }
 
     /**
@@ -259,7 +262,7 @@ object EventTrace {
      * ```
      * 2026-09-26 22:59:01.123  s=a1b2c3d4 t3 #42 ←#41  TOOL  todo 写入 5 项 [completed=5] 已全部完成
      * ```
-     * 字段依次为：时间、会话短号、回合号、序号、因果来源（可省）、层标签、细节。
+     * 字段依次为：时间、会话短号、回合号、序号、因果来源（指向同回合上一条）、层标签、细节。
      */
     private fun write(turnId: String, scope: String?, seq: Long, layer: String, detail: String, causeSeq: Long?) {
         val dir = logDir ?: return

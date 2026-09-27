@@ -12,6 +12,11 @@ import com.aicode.core.util.EventTrace
  *
  * 记录原则：只记**结构与度量**（长度、数量、状态、标识），不记正文原文。
  * 正文与完整 SSE 已由 [com.aicode.core.util.AILogger] 按会话完整留存，此处重复只会撑爆日志。
+ *
+ * 同理，逐字增量（[AgentEvent.AssistantDelta] / [AgentEvent.ReasoningDelta]）与流式
+ * 工具输出片段（[AgentEvent.ToolCallProgress]）**一律不记**：它们按字符刷屏，实测占轨迹总量的 80%，
+ * 却只重复「正在输出」这一个事实，而定量信息已由随后的 [AgentEvent.AssistantText] /
+ * [AgentEvent.ToolCallFinished] 各一条给出。
  */
 internal object AgentEventTracer {
 
@@ -20,17 +25,21 @@ internal object AgentEventTracer {
      *
      * @param turnId 本回合 id；为 null 时不记录（调用方未开启轨迹）。
      * @param scope 作用域（通常是 sessionId），用于日志里区分会话。
+     * @return 本条分配到的 `seq`；未记录时返回 null。
      */
-    fun onEvent(turnId: String?, scope: String?, event: AgentEvent) {
-        if (turnId == null) return
-        EventTrace.record(turnId, scope, "EVENT", describe(event))
+    fun onEvent(turnId: String?, scope: String?, event: AgentEvent): Long? {
+        if (turnId == null) return null
+        val detail = describe(event) ?: return null
+        return EventTrace.record(turnId, scope, "EVENT", detail)
     }
 
-    /** 事件 → 一行摘要。新增 [AgentEvent] 子类时此处会因 `when` 不穷尽而编译失败。 */
-    private fun describe(event: AgentEvent): String = when (event) {
-        is AgentEvent.AssistantDelta -> "assistant_delta +${event.accumulated.length}字"
-        is AgentEvent.ReasoningDelta -> "reasoning_delta +${event.accumulated.length}字"
-
+    /**
+     * 事件 → 一行摘要；返回 null 表示该事件**不值得记**（逐字/流式片段）。
+     * 新增 [AgentEvent] 子类时此处会因 `when` 不穷尽而编译失败。
+     */
+    private fun describe(event: AgentEvent): String? = when (event) {
+        // 增量流一律不记：按字符刷屏，且每轮必有对应的汇总行。
+        is AgentEvent.AssistantDelta, is AgentEvent.ReasoningDelta, is AgentEvent.ToolCallProgress -> null
         is AgentEvent.AssistantText -> buildString {
             append("assistant_text ")
             append("正文=${event.content.length}字 思考=${event.reasoning.length}字 ")
@@ -42,11 +51,13 @@ internal object AgentEventTracer {
 
         is AgentEvent.ToolCallPreparing -> "tool_preparing ${event.toolName}"
         is AgentEvent.ToolCallStarted -> "tool_started ${event.toolName} id=${event.id}"
-        is AgentEvent.ToolCallProgress -> "tool_progress ${event.toolName} id=${event.id} +${event.accumulated.length}字"
         is AgentEvent.ToolCallFinished -> buildString {
             append("tool_finished ${event.toolName} id=${event.id} ")
             append(if (event.isError) "失败" else "成功")
             append(" 结果=${event.result.length}字")
+            // 失败时带上结果开头：原本只有「失败 + 字数」，要查为何失败得另翻 AILogger；
+            // 摘要一行即可自证，无需再去别处找。
+            if (event.isError) append(" 原因摘要=${event.result.take(120).replace('\n', ' ')}")
         }
 
         is AgentEvent.Retrying ->
