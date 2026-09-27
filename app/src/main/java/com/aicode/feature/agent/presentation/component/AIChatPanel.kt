@@ -795,8 +795,14 @@ fun AIChatPanel(
     //
     // 额外要求「当前无流式在跑」：工具被用户拒绝时不落库 TOOL 消息，末尾仍是那条 ASSISTANT，
     // 但回合会继续流式输出；此时若只看角色，会把正在输出的新正文当成「已落库」而隐藏掉。
+    //
+    // 还要求「回合已收敛（!isBusy）」：工具执行完到下一轮 LLM 首个 delta 之间有个空档期，
+    // 此时 lastMsg 已是刚落库的 ASSISTANT、streaming 也已清空——只看这两条会判 settled=true 而隐藏气泡，
+    // 几十毫秒后新 delta 到达又变 settled=false 重新显示。实测该抖动为 4~48ms 且每轮工具调用必现，
+    // 在界面上表现为尾巴气泡反复闪烁。回合仍在进行时不应判定「已收敛」，这是区分「工具间空档」
+    // 与「本轮真结束」的唯一依据。
     val isAssistantSettled = lastMsg?.role == MessageRole.ASSISTANT &&
-        streamingText == null && streamingReasoning == null
+        streamingText == null && streamingReasoning == null && !isBusy
 
     // 强制重置（重试 / 切 key / 开始压缩）时必须连 retained 一起清：这三个事件会在 ViewModel 里
     // 清空当前流式文本，但 retained 是 UI 本地副本，不同步就会残留旧内容。
