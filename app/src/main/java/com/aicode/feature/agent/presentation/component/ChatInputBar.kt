@@ -271,9 +271,12 @@ internal fun ChatInputBar(
                         1.dp, MaterialTheme.colorScheme.outlineVariant
                     )
                 ) {
+                    // 技能多了会超出屏幕，必须可滚动且限高，否则超出部分不可见不可点。
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .heightIn(max = 320.dp)
+                            .verticalScroll(rememberScrollState())
                             .padding(horizontal = Spacing.sm, vertical = Spacing.xs)
                     ) {
                         filteredCommands.forEach { command ->
