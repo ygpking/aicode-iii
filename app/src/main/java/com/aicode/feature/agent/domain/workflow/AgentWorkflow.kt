@@ -71,8 +71,14 @@ sealed class AgentEvent {
     /** 上下文压缩流程已结束（成功或失败）。仅用于 UI 实时展示，不落库。 */
     object CompactionFinished : AgentEvent()
 
-    /** 上下文压缩失败（如压缩模型不可用）。携带失败原因，UI 展示为可展开的失败卡片；不落库。 */
-    data class CompactionFailed(val reason: String) : AgentEvent()
+    /**
+     * 上下文压缩失败（如压缩模型不可用）。携带失败原因，UI 展示为可展开的失败卡片；不落库。
+     *
+     * [transient] 为 true 表示临时性失败（网关 503/限流/连接拒绝等，稍后可能自愈）：
+     * 调用方**不应**因此关停本次用户请求内的后续压缩尝试；只有确定性失败
+     * （上下文超限/鉴权/输出预算/图片不支持）才应置 `compactionAttemptFailed` 关停。
+     */
+    data class CompactionFailed(val reason: String, val transient: Boolean = false) : AgentEvent()
 
     /**
      * 整个流程因错误终止（如流式请求被网络中断、达到迭代上限）。与 [Completed] 区别：携带错误，UI 应展示错误而非成功。

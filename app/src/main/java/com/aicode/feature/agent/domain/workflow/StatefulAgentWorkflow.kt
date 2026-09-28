@@ -576,7 +576,8 @@ class StatefulAgentWorkflow @Inject constructor(
                         if (!compactionAttemptFailed) {
                             val sessionLastInputTokens = currentContext.sessionId?.let { sessionUseCase.getSessionById(it)?.lastInputTokens } ?: 0
                             compactedMessages = contextCompactor.compactIfNeeded(state.messages, compactionProvider, context.sessionId, lastInputTokens = sessionLastInputTokens, windowProvider = aiProvider) { event ->
-                                if (event is AgentEvent.CompactionFailed) compactionAttemptFailed = true
+                                // 仅确定性失败关停本轮后续压缩；临时性失败（网关 503 等）下轮 LLM 调用前还可再试。
+                                if (event is AgentEvent.CompactionFailed && !event.transient) compactionAttemptFailed = true
                                 send(event)
                             }
                             if (compactedMessages !== state.messages) {
@@ -746,7 +747,8 @@ class StatefulAgentWorkflow @Inject constructor(
                                     state.messages, providerInUse, context.sessionId,
                                     lastInputTokens = 0, windowProvider = aiProvider, force = true
                                 ) { event ->
-                                    if (event is AgentEvent.CompactionFailed) compactionAttemptFailed = true
+                                    // 同上：临时性失败不关停，给后续轮次的自动压缩留机会。
+                                    if (event is AgentEvent.CompactionFailed && !event.transient) compactionAttemptFailed = true
                                     send(event)
                                 }
                                 if (!compactionAttemptFailed) {

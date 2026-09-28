@@ -14,6 +14,8 @@ import com.aicode.feature.agent.domain.model.id
 import com.aicode.feature.agent.domain.prompt.SystemPromptProvider
 import com.aicode.feature.agent.domain.provider.AIProvider
 import com.aicode.feature.agent.domain.provider.AIResponse
+import com.aicode.feature.agent.domain.provider.ProviderFailureKind
+import com.aicode.feature.agent.domain.provider.ProviderFailureTaxonomy
 import com.aicode.feature.agent.presentation.MessageRole
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.settings.data.repository.GeneralSettingsRepository
@@ -157,7 +159,17 @@ class ContextCompactor @Inject constructor(
         } catch (e: Exception) {
             callError = e.message ?: e.javaClass.simpleName
             FileLogger.e(TAG, "压缩上下文失败", e)
-            onEvent(AgentEvent.CompactionFailed(callError))
+            // 临时性失败（网关 503/限流/连接拒绝等）置 transient，调用方不应因此关停本轮后续压缩尝试；
+            // 确定性失败（上下文超限/鉴权/输出预算/图片）才值得关停——重试也是白烧。
+            val transient = when (ProviderFailureTaxonomy.classify(e)) {
+                ProviderFailureKind.CONTEXT_OVERFLOW,
+                ProviderFailureKind.AUTH_FAILED,
+                ProviderFailureKind.INVALID_OUTPUT_BUDGET,
+                ProviderFailureKind.UNSUPPORTED_VISION -> false
+                ProviderFailureKind.RATE_LIMITED,
+                ProviderFailureKind.UNKNOWN -> true
+            }
+            onEvent(AgentEvent.CompactionFailed(callError, transient))
             onEvent(AgentEvent.CompactionFinished)
             return messages.toList() // 失败则原样返回，交由上层自行承担溢出风险
         }
