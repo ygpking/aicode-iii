@@ -8,6 +8,7 @@ import com.aicode.feature.agent.domain.container.ContainerBuildGuard
 import com.aicode.feature.agent.domain.container.HostMemoryProbe
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.tool.AgentTool
+import com.aicode.feature.agent.domain.tool.LineFolder
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
 import com.aicode.feature.agent.domain.tool.StreamingAgentTool
@@ -150,6 +151,9 @@ class ExecuteCommandTool @Inject constructor(
      * 流式执行：逐行 emit [ToolStreamEvent.Progress]，命令结束 emit [ToolStreamEvent.Completed]，
      * 其最终结果与 [execute] 等价（同样经 [BoundedOutput] 限幅：超大输出仅保留开头+结尾），
      * 保证喂回模型的内容一致且不会撑爆上下文。
+     *
+     * 与 [execute] 的差别：这里在累积**之前**先用 [LineFolder] 逐行去噪，把重复行折叠掉再进限幅窗口，
+     * 因此尾窗里留下的是真正的结尾报错，而非上百行重复日志；实时展示区仍逐行发原文（含进度回刷）。
      */
     override fun executeStream(
         args: Map<String, JsonElement>,
@@ -162,7 +166,10 @@ class ExecuteCommandTool @Inject constructor(
         }
 
         // 限幅累积：喂回模型的最终结果只保留开头+结尾，避免超大输出撑爆上下文。
+        // 去噪前移到此处（而非入库时）：否则中段成千上万行重复会先把头尾窗口占满，
+        // 真正有诊断价值的结尾报错反而被挤出尾窗，折叠计数也失真。
         val accumulated = BoundedOutput()
+        val folder = LineFolder()
         try {
             val workdir = workspaceRepository.currentPath()
             val timeoutMs = resolveTimeoutMs(args)
@@ -174,12 +181,19 @@ class ExecuteCommandTool @Inject constructor(
             commandEngine.runCommandStream(guarded.command, workdir, timeoutMs).collect { event ->
                 when (event) {
                     is CommandEvent.Line -> {
-                        accumulated.append(event.text)
-                        accumulated.append("\n")
+                        folder.feed(event.text).forEach { line ->
+                            accumulated.append(line)
+                            accumulated.append("\n")
+                        }
+                        // 实时区展示原始行：进度条回刷等噪点让用户看到“在动”，不参与模型上下文。
                         emit(ToolStreamEvent.Progress(event.text))
                     }
                     is CommandEvent.Exit -> { /* 结束在流完成后统一聚合 */ }
                 }
+            }
+            folder.finish().forEach { line ->
+                accumulated.append(line)
+                accumulated.append("\n")
             }
             FileLogger.v(TAG, "execute_command(流式) 完成，输出 ${accumulated.totalChars} 字符")
             emit(ToolStreamEvent.Completed(ToolResult.Success(JsonPrimitive(appendGuardNote(accumulated.build(), guarded.note, memWarning)))))
@@ -189,6 +203,13 @@ class ExecuteCommandTool @Inject constructor(
             // 兜底：底层 flow 异常终止时，已逐行 emit 给用户的 Progress 仍应作为最终结果保留，
             // 而不是被这里抛出的空 Error 覆盖掉（否则模型只看到“执行失败”，之前展示的输出全丢）。
             FileLogger.e(TAG, "execute_command(流式) 异常(已保留此前输出 ${accumulated.totalChars} 字符): $command", e)
+            // 先把 pending 行刷出，否则最后一行会随异常一起丢掉。
+            runCatching {
+                folder.finish().forEach { line ->
+                    accumulated.append(line)
+                    accumulated.append("\n")
+                }
+            }
             val saved = accumulated.build()
             val result = if (saved.isNotEmpty()) {
                 ToolResult.Success(JsonPrimitive(saved))

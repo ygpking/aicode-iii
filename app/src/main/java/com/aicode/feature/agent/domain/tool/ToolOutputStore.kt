@@ -19,7 +19,9 @@ data class StoredToolOutput(
     val truncated: Boolean,
     val totalChars: Long,
     val outputPath: String? = null,
-    val storageError: String? = null
+    val storageError: String? = null,
+    /** 去噪真实改写了内容（折叠了重复行 / 清除 ANSI）。未截断时调用方据此改用 [preview]。 */
+    val denoised: Boolean = false
 )
 
 @Singleton
@@ -63,40 +65,38 @@ class ToolOutputStore @Inject constructor(
         val scrubbed = ToolOutputScrubber.scrub(rawText)
 
         // 通用去噪：仅命令类工具、且原文足够长时才做。折叠说明会附在预览末尾，让模型知情。
-        var compressNote = ""
-        val text = if (toolName in COMPRESS_TOOLS && scrubbed.length >= COMPRESS_MIN_CHARS) {
-            val r = ToolOutputCompressor.compress(scrubbed)
-            if (r.linesFolded > 0 || r.ansiStripped) {
-                compressNote = buildString {
-                    append("\n\n...[已去噪：")
-                    if (r.linesFolded > 0) append("折叠重复行 ${r.linesFolded} 行")
-                    if (r.linesFolded > 0 && r.ansiStripped) append("、")
-                    if (r.ansiStripped) append("清除 ANSI 控制码")
-                    append("；原始输出可回读落盘文件]...")
-                }
-            }
-            r.text
+        val compressed = if (toolName in COMPRESS_TOOLS && scrubbed.length >= COMPRESS_MIN_CHARS) {
+            ToolOutputCompressor.compress(scrubbed)
         } else {
-            scrubbed
+            null
         }
+        val text = compressed?.text ?: scrubbed
+        val denoised = compressed != null && (compressed.linesFolded > 0 || compressed.ansiStripped)
 
         if (text.length <= MAX_INLINE_CHARS) {
             return StoredToolOutput(
-                preview = text + compressNote,
+                // 未落盘：不能提「可回读落盘文件」，否则模型会去找不存在的文件。
+                preview = text + ToolOutputCompressor.foldNote(
+                    compressed?.linesFolded ?: 0, compressed?.ansiStripped ?: false, spilledPath = null
+                ),
                 truncated = false,
-                totalChars = text.length.toLong()
+                totalChars = text.length.toLong(),
+                denoised = denoised
             )
         }
 
         // 落盘保留去噪前的脱敏原文，保证被折叠的内容仍可逐字回捞（无损可逆）。
         val writeResult = writeFullOutput(toolName, callId, scrubbed)
-        val preview = buildPreview(text, writeResult.outputPath, toolName) + compressNote
+        val preview = buildPreview(text, writeResult.outputPath, toolName) + ToolOutputCompressor.foldNote(
+            compressed?.linesFolded ?: 0, compressed?.ansiStripped ?: false, spilledPath = writeResult.outputPath
+        )
         return StoredToolOutput(
             preview = preview,
             truncated = true,
             totalChars = text.length.toLong(),
             outputPath = writeResult.outputPath,
-            storageError = writeResult.storageError
+            storageError = writeResult.storageError,
+            denoised = denoised
         )
     }
 
@@ -105,7 +105,11 @@ class ToolOutputStore @Inject constructor(
         val primitive = element as? JsonPrimitive
         if (primitive?.isString == true) {
             val stored = boundText(toolName, callId, primitive.content)
-            return if (stored.truncated) stored.toJsonObject("output") else element
+            // 截断输出必须换成带 output_path 的新对象；去噪生效时也必须改用 preview——
+            // 原先只判 truncated，而命令链路的上游（BoundedOutput 头尾各 2 万）恰好等于
+            // MAX_INLINE_CHARS，去噪后必然 ≤ 上限，于是 truncated 恒为 false、preview 被丢掉，
+            // 去噪白算（这是本函数此前最隐蔽的一处失效）。
+            return if (stored.truncated || stored.denoised) stored.toJsonObject("output") else element
         }
 
         val obj = element as? JsonObject
