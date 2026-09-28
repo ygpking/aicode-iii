@@ -1398,6 +1398,13 @@ class AIAgentViewModel @Inject constructor(
         // 那时变量尚未初始化，Kotlin 不允许在 finally 里读取未初始化的 local val。
         val turnId = EventTrace.beginTurn(sessionId)
 
+        // 压缩状态：ContextCompactor 在协程被取消时补发不了 CompactionFinished
+        // （那一刻 channelFlow 的 send 已不可用），故此处留痕，由 finally 补齐因果链。
+        var compactionInFlight = false
+        // 同一回合内压缩反复失败只落一张卡片：外层每轮 LLM 调用前都会重试压缩，
+        // 卡住的会话会连发十几次，逐次落卡会让对话流被同一张失败卡片刷屏。
+        var compactionFailureCardPersisted = false
+
         try {
             var failed = false
             // 必须在插入本次用户消息之前读取历史：workflow 会自己 add(userRequest)，避免重复。
@@ -1494,20 +1501,27 @@ class AIAgentViewModel @Inject constructor(
                         setStreamingText(sessionId, null)
                         setStreamingReasoning(sessionId, null)
                         setCompacting(sessionId, true)
+                        compactionInFlight = true
                     }
                     AgentEvent.CompactionFinished -> {
                         setCompacting(sessionId, false)
+                        compactionInFlight = false
                     }
                     is AgentEvent.CompactionFailed -> {
                         setCompacting(sessionId, false)
+                        compactionInFlight = false
                         // 落库为无配对的 TOOL 消息：UI 渲染失败卡片，buildHistory 回放自动丢弃，不进模型上下文。
-                        messagePersistenceUseCase.persist(
-                            sessionId,
-                            MessageRole.TOOL,
-                            event.reason,
-                            toolName = COMPACTION_FAILURE_TOOL_NAME,
-                            isError = true
-                        )
+                        // 同一回合只落首张：外层已会反复重试压缩，重因相同的卡片重复落地没有任何新信息。
+                        if (!compactionFailureCardPersisted) {
+                            compactionFailureCardPersisted = true
+                            messagePersistenceUseCase.persist(
+                                sessionId,
+                                MessageRole.TOOL,
+                                event.reason,
+                                toolName = COMPACTION_FAILURE_TOOL_NAME,
+                                isError = true
+                            )
+                        }
                     }
                     is AgentEvent.AssistantText -> {
                         // 流式收尾：在落库并触发 UI messages 更新之前，先同步清空流式状态，
@@ -1674,6 +1688,13 @@ class AIAgentViewModel @Inject constructor(
         } finally {
             val isOwnJob = sessionJobs[sessionId] == coroutineContext[Job]
             FileLogger.d(TAG, "stream finally: sid=$sessionId isOwnJob=$isOwnJob state=${_agentStates.value[sessionId]}")
+            // 压缩被取消时 ContextCompactor 补发不了 CompactionFinished：协程已处于取消态，
+            // channelFlow 的 send 会直接抛出而送不出去。不在此留痕的话，轨迹上就只剩一条
+            // compaction_started 悬着，因果链断裂（实测全天 42 started / 39 finished）。
+            // EventTrace 是直接落盘、不经事件流，故这里仍写得成。
+            if (compactionInFlight) {
+                EventTrace.record(turnId, sessionId, "EVENT", "compaction_abandoned 回合结束仍未收到 compaction_finished")
+            }
             // 收尾清点：主动记录「回合结束时还剩下什么」。
             // 为什么必须主动清点：“任务完成但面板不消失”这类缺陷的本质是**该清理的没被清理**——
             // 没有任何代码会产生日志，被动记录永远看不见。只能在这里主动回读一遍状态，

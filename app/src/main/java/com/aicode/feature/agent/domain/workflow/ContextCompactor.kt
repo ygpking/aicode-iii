@@ -170,12 +170,15 @@ class ContextCompactor @Inject constructor(
             callError = e.message ?: e.javaClass.simpleName
             FileLogger.e(TAG, "压缩上下文失败", e)
             // 临时性失败（网关 503/限流/连接拒绝等）置 transient，调用方不应因此关停本轮后续压缩尝试；
-            // 确定性失败（上下文超限/鉴权/输出预算/图片）才值得关停——重试也是白烧。
+            // 确定性失败（上下文超限/鉴权/输出预算/图片/请求非法）才值得关停——重试也是白烧。
+            // 特别是 INVALID_REQUEST（上游拒收未知字段、Base URL 配错返回网页）：重发同一请求必然再失败，
+            // 若归 transient 就会变成每轮 LLM 调用前都原地重试一次（实测单会话十分钟内重试了 10 次）。
             val transient = when (ProviderFailureTaxonomy.classify(e)) {
                 ProviderFailureKind.CONTEXT_OVERFLOW,
                 ProviderFailureKind.AUTH_FAILED,
                 ProviderFailureKind.INVALID_OUTPUT_BUDGET,
-                ProviderFailureKind.UNSUPPORTED_VISION -> false
+                ProviderFailureKind.UNSUPPORTED_VISION,
+                ProviderFailureKind.INVALID_REQUEST -> false
                 ProviderFailureKind.RATE_LIMITED,
                 ProviderFailureKind.UNKNOWN -> true
             }
