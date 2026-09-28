@@ -632,6 +632,7 @@
     <string name="retry_error_network">Network disconnected</string>
     <string name="retry_error_timeout">Connection timed out</string>
     <string name="retry_error_connection_refused">Connection refused</string>
+    <string name="retry_error_connection_refused_hint">For a local gateway (e.g. 127.0.0.1), check that the gateway app is running</string>
     <string name="retry_error_dns_failed">DNS resolution failed</string>
     <string name="retry_error_connection_reset">Connection interrupted</string>
     <string name="retry_error_ssl">SSL handshake failed</string>

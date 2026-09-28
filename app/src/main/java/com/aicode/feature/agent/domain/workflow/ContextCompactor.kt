@@ -25,6 +25,7 @@ import android.os.SystemClock
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -37,6 +38,9 @@ class ContextCompactor @Inject constructor(
     private val llmCallRecordDao: LlmCallRecordDao,
     private val generalSettingsRepository: GeneralSettingsRepository
 ) {
+
+    /** 会话上次成功压缩后的消息估算 token 数（自适应阈值的增长基准）。会话级内存态即可，丢了退回固定阈值。 */
+    private val lastCompactionSizeBySession = ConcurrentHashMap<String, Int>()
 
     private companion object {
         const val TAG = "ContextCompactor"
@@ -81,7 +85,13 @@ class ContextCompactor @Inject constructor(
         val summaryMetadata = modelMetadataService.resolve(aiProvider.providerId, inferProviderType(aiProvider), aiProvider.model)
         val contextLimit = windowMetadata.contextTokens.takeIf { it > 0 } ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
         // 触发阈值百分比由「偏好设置 → 模型」配置（默认 90，见 GeneralSettingsRepository）。
-        val triggerThreshold = (contextLimit * generalSettingsRepository.compactionThresholdPercent() / 100.0).toInt()
+        // 自适应下调：距上次成功压缩增长超过窗口 15% 的会话（工具输出密集型），阈值降 15 个百分点
+        // 提前压；固定 90% 追不上增长时压缩点会一路扬升（实测 136k→199k→224k）。下限 60%。
+        val basePercent = generalSettingsRepository.compactionThresholdPercent()
+        val lastCompactedSize = sessionId?.let { lastCompactionSizeBySession[it] } ?: 0
+        val fastGrowth = lastCompactedSize > 0 && estimatedTokens - lastCompactedSize > contextLimit * 0.15
+        val effectivePercent = if (fastGrowth) (basePercent - 15).coerceAtLeast(60) else basePercent
+        val triggerThreshold = (contextLimit * effectivePercent / 100.0).toInt()
         // 真实 usage 优先（含 system prompt + tools，与上下文窗口同口径）；取不到（0）回退本地估算
         val currentTokens = lastInputTokens.takeIf { it > 0 } ?: estimatedTokens
         val reachedThreshold = currentTokens >= triggerThreshold
@@ -273,6 +283,11 @@ class ContextCompactor @Inject constructor(
         newMessages.addAll(tail)
         newMessages.add(markerMessage)
         newMessages.add(compactedMessage)
+
+        // 记录压缩后基准，供下次触发判断计算增长速率（自适应阈值）。
+        if (sessionId != null) {
+            lastCompactionSizeBySession[sessionId] = estimateTokens(newMessages)
+        }
 
         return newMessages
     }

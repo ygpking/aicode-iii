@@ -141,9 +141,9 @@ class StatefulAgentWorkflow @Inject constructor(
          */
         fun continuationsFor(totalRounds: Int): Int =
             ((totalRounds + TURN_ROUNDS_PER_SEGMENT - 1) / TURN_ROUNDS_PER_SEGMENT - 1).coerceAtLeast(0)
-        /** 段尾软收敛提示：提示模型先总结中间结论再进入下一段。 */
+        /** 段尾软收敛提示：提示模型先总结中间结论再进入下一段；顺带提醒处理已全部完成却仍挂着的 todo。 */
         const val TURN_WRAP_UP_NOTICE =
-            "轮次预算已用去一段。请先收束：用一小段总结当前已完成的工作、仍待解决的事项与下一步计划，然后继续推进；不要开启与本任务无关的新工作。"
+            "轮次预算已用去一段。请先收束：用一小段总结当前已完成的工作、仍待解决的事项与下一步计划，然后继续推进；不要开启与本任务无关的新工作。若任务已全部完成，请用 todo 工具清理或归档已完成的条目，保持清单与实际进度一致。"
         /** 单轮工具调用数上限：超出部分当轮不执行、回写说明让模型下一轮再调，避免一次梭哈。 */
         const val MAX_TOOLS_PER_ROUND = 12
         val LEADING_COMMENT = Regex("(?s)^\\s*<!--.*?-->\\s*")

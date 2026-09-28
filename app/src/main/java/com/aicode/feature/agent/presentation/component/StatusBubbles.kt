@@ -241,6 +241,15 @@ internal fun RetryingBubble(attempt: Int, maxRetries: Int, error: RetryErrorInfo
                     style = MaterialTheme.typography.labelMedium
                 )
             }
+            // 连接被拒多半是本地网关进程没跑起来（实测 WorkBuddy 网关被系统杀后连续 CONNECTION_REFUSED），
+            // 单纯「连接被拒绝」用户不知道该去检查什么，补一句可行动的提示。
+            if (error.kind == RetryErrorKind.CONNECTION_REFUSED) {
+                Text(
+                    text = stringResource(R.string.retry_error_connection_refused_hint),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall
+                )
+            }
         }
         Row(
             verticalAlignment = Alignment.CenterVertically,

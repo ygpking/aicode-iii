@@ -632,6 +632,7 @@
     <string name="retry_error_network">网络连接断开</string>
     <string name="retry_error_timeout">连接超时</string>
     <string name="retry_error_connection_refused">连接被拒绝</string>
+    <string name="retry_error_connection_refused_hint">若是本地网关（如 127.0.0.1），请检查网关应用是否在运行</string>
     <string name="retry_error_dns_failed">DNS 解析失败</string>
     <string name="retry_error_connection_reset">连接中断</string>
     <string name="retry_error_ssl">SSL 握手失败</string>
