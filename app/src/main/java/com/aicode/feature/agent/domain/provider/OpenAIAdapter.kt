@@ -210,8 +210,9 @@ class OpenAIAdapter @Inject constructor(
             }
         }
         // OpenAI 官方 Responses 原生支持 prompt_cache_key（同会话路由到同一缓存 shard）；
-        // 自动管理缓存的服务（如 DeepSeek）会静默忽略该字段，不会报错。
-        logSessionId?.let { request["prompt_cache_key"] = it }
+        // 但部分网关/中转会直接 400 拒绝未知字段，与 Chat Completions 路径（116/305）
+        // 一致受 chatCacheKeyEnabled 开关控制（默认关闭），不赌中转的容忍度。
+        if (chatCacheKeyEnabled) logSessionId?.let { request["prompt_cache_key"] = it }
         return request
     }
 
