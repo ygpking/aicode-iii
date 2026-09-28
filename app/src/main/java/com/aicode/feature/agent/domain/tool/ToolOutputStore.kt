@@ -35,6 +35,11 @@ class ToolOutputStore @Inject constructor(
         const val MAX_INLINE_CHARS = HEAD_CHARS + TAIL_CHARS
         val LARGE_TEXT_FIELDS = listOf("output", "content", "text", "stdout", "stderr", "body", "result")
         val TIMESTAMP_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
+        // 只对命令类输出做通用去噪：进度条/重复行/ANSI 噪音集中在这里；
+        // readFile 等要保留原文逐字，不参与折叠。
+        val COMPRESS_TOOLS = setOf("Bash", "terminal")
+        // 短于此阈值的输出不值得为省一点字符引入去噪，直接原样。
+        const val COMPRESS_MIN_CHARS = 2_000
     }
 
     private val json = Json { encodeDefaults = true }
@@ -54,18 +59,38 @@ class ToolOutputStore @Inject constructor(
     }
 
     fun boundText(toolName: String, callId: String, rawText: String): StoredToolOutput {
-        // 先脱敏再截断/落盘：保证「进模型的正文」与「落盘文件」同一口径，密钥不被持久化。
-        val text = ToolOutputScrubber.scrub(rawText)
+        // 先脱敏再去噪再截断/落盘：保证「进模型的正文」与「落盘文件」同一口径，密钥不被持久化。
+        val scrubbed = ToolOutputScrubber.scrub(rawText)
+
+        // 通用去噪：仅命令类工具、且原文足够长时才做。折叠说明会附在预览末尾，让模型知情。
+        var compressNote = ""
+        val text = if (toolName in COMPRESS_TOOLS && scrubbed.length >= COMPRESS_MIN_CHARS) {
+            val r = ToolOutputCompressor.compress(scrubbed)
+            if (r.linesFolded > 0 || r.ansiStripped) {
+                compressNote = buildString {
+                    append("\n\n...[已去噪：")
+                    if (r.linesFolded > 0) append("折叠重复行 ${r.linesFolded} 行")
+                    if (r.linesFolded > 0 && r.ansiStripped) append("、")
+                    if (r.ansiStripped) append("清除 ANSI 控制码")
+                    append("；原始输出可回读落盘文件]...")
+                }
+            }
+            r.text
+        } else {
+            scrubbed
+        }
+
         if (text.length <= MAX_INLINE_CHARS) {
             return StoredToolOutput(
-                preview = text,
+                preview = text + compressNote,
                 truncated = false,
                 totalChars = text.length.toLong()
             )
         }
 
-        val writeResult = writeFullOutput(toolName, callId, text)
-        val preview = buildPreview(text, writeResult.outputPath, toolName)
+        // 落盘保留去噪前的脱敏原文，保证被折叠的内容仍可逐字回捞（无损可逆）。
+        val writeResult = writeFullOutput(toolName, callId, scrubbed)
+        val preview = buildPreview(text, writeResult.outputPath, toolName) + compressNote
         return StoredToolOutput(
             preview = preview,
             truncated = true,
