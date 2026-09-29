@@ -31,9 +31,15 @@ interface AgentMessageDao {
     @Query("DELETE FROM agent_messages WHERE sessionId = :sessionId AND timestamp < :cutoffTimestamp")
     suspend fun deleteMessagesBeforeTimestamp(sessionId: String, cutoffTimestamp: Long)
 
-    /** 将指定会话中 cutoff 时间戳之前的所有消息标记为已压缩（isCompacted=1），不再参与上下文回放和 UI 展示。 */
-    @Query("UPDATE agent_messages SET isCompacted = 1 WHERE sessionId = :sessionId AND timestamp < :cutoffTimestamp")
-    suspend fun markMessagesCompactedBeforeTimestamp(sessionId: String, cutoffTimestamp: Long)
+    /**
+     * 将指定 id 的消息标记为已压缩（isCompacted=1），不再参与上下文回放和 UI 展示。
+     *
+     * 按 id 精确标记而不是按 cutoff 时间戳：时间戳来自消息落库时刻，同一毫秒内的
+     * 多条消息无法区分，且 `timestamp < cutoff` 会漏掉边界那条自身。id 是本项目
+     * 消息的唯一标识，标记范围与「被摘要替换掉的 head」严格一致。
+     */
+    @Query("UPDATE agent_messages SET isCompacted = 1 WHERE id IN (:ids)")
+    suspend fun markMessagesCompactedByIds(ids: List<String>)
 
     @Query("DELETE FROM agent_messages")
     suspend fun deleteAllMessages()

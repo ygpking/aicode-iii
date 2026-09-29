@@ -50,6 +50,10 @@ class ContextCompactor @Inject constructor(
 
         /** 摘要窗口预留比例：30% 留给摘要提示词与旧摘要，故可用 70%。 */
         const val SUMMARY_WINDOW_RESERVE_RATIO = 0.7f
+
+        /** 单次标记已压缩的 id 分块大小，避开 SQLite 绑定变量上限（旧版 999）。 */
+        const val COMPACTED_IDS_CHUNK = 500
+
         val LEADING_COMMENT = Regex("(?s)^\\s*<!--.*?-->\\s*")
     }
 
@@ -232,19 +236,28 @@ class ContextCompactor @Inject constructor(
             try {
                 val dbEntities = agentMessageDao.getMessagesBySessionOnce(sessionId
                 )
-                val firstTailId = tail.firstOrNull { msg -> msg.id.isNotEmpty() }?.id
-                val tailEntity = if (firstTailId != null) dbEntities.find { it.id == firstTailId } else null
-                // cutoff 必须来自 tailEntity 的真实时间戳。tail 首条尚未落库（持久化竞态）时**不能**
-                // 回退到 now()——那会把所有已落库消息都标为已压缩，而摘要又晚落，重启后上下文全丢。
-                // 查不到就直接跳过持久化标记（内存态不受影响）。
-                val cutoffTimestamp = tailEntity?.timestamp
+                // 按 id 精确标记 head（而不是靠 tail 首条的时间戳）：
+                // 旧实现以 tail 首条是否已落库决定能否写标记，遇持久化竞态（tail 首条尚未落库）
+                // 就整个跳过标记，导致 head 的 isCompacted 保持 0，下个轮次 buildHistory
+                // 把整段已压缩历史原样读回——压缩花了摘要的钱却没能缩短上下文
+                // （实测同一会话 231677 → 239446 → 327335 tokens 不降反升）。
+                // head 的消息绝大多数早已落库，故仍只标记 DB 中确实存在的 id，
+                // 既消除竞态，也保留「绝不误标未落库/全部历史」的原设计初衷。
+                val persistedIds = dbEntities.mapTo(HashSet()) { it.id }
+                val headIdsToMark = CompactionMarkSelector.selectIdsToMark(head, persistedIds)
                 // 三步写（标已压缩 + marker + summary）必须原子：若标记成功但摘要未落库，
                 // head 会被回放过滤掉（isCompacted）而摘要缺失 → 重启后那段上下文静默消失。
                 agentDatabase.withTransaction {
-                    if (cutoffTimestamp != null) {
-                        agentMessageDao.markMessagesCompactedBeforeTimestamp(sessionId, cutoffTimestamp)
+                    if (headIdsToMark.isNotEmpty()) {
+                        // 分块更新：Room 的 IN (...) 会为每个元素生成一个绑定参数，
+                        // 超 SQLite 变量上限（旧版 999）会直接报错；压缩型会话的 head 可达数百条。
+                        headIdsToMark.chunked(COMPACTED_IDS_CHUNK).forEach { chunk ->
+                            agentMessageDao.markMessagesCompactedByIds(chunk)
+                        }
                     } else {
-                        FileLogger.w(TAG, "压缩持久化：tail 首条未落库，跳过已压缩标记以免误标全部历史（会话 $sessionId）")
+                        // 仅当 head 整段都未落库（首轮即压缩等极端情况）才会走到这里；
+                        // 此时压缩无法在重启后生效，如实告警便于定位。
+                        FileLogger.w(TAG, "压缩持久化：head 内无已落库消息，跳过已压缩标记（会话 $sessionId，head 共 ${head.size} 条）")
                     }
 
                     // 摘要收尾：marker + summary 时间戳放在 tail 最后一条之后，回放/UI 顺序 = tail → 摘要，

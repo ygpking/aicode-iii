@@ -38,6 +38,15 @@ object FileLogger {
     private const val TAG = "FileLogger"
     private const val MAX_AGE_DAYS = 7
     private const val MAX_FILE_BYTES = 5 * 1024 * 1024 // 单个日志文件上限 5MB（VERBOSE 下增长较快）
+
+    /**
+     * 单条日志消息折叠后的字符上限。取值宽松（正常状态文本远小于此），
+     * 只用于挡「意外塞进超大文本」导致磁盘暴涨的极端情况。
+     */
+    private const val MAX_LOGGED_MESSAGE_CHARS = 20_000
+
+    /** 单条异常堆栈折叠后的字符上限（深层递归堆栈可能上千行）。 */
+    private const val MAX_LOGGED_STACK_CHARS = 8_000
     /** 合并 flush 的延迟：一批日志写完静默这么久即落盘。ERROR 级不等延迟，立即落。 */
     private const val FLUSH_DELAY_MS = 500L
 
@@ -159,13 +168,17 @@ object FileLogger {
         val now = java.time.Instant.now()
         // 落盘前过媒体脱敏：防超大 base64（图片等）撑爆按天日志文件；logcat 仍打印原样（有系统截断保护）。
         val redacted = MediaRedactor.redact(message)
+        // 落盘必须严格一行一条：消息体与异常堆栈都折叠换行。
+        // 否则多行内容会把一条日志拆成几十行，被拆出的行不带时间戳/级别前缀，
+        // grep 会把内容当日志匹配到（实测某天 70% 的行不是日志行）。
         val line = buildString {
             append(timestampFormat.format(now))
             append(" ").append(level)
             append(" [").append(tag).append("] ")
-            append(redacted)
+            append(LogLineFolder.fold(redacted, MAX_LOGGED_MESSAGE_CHARS))
             if (throwable != null) {
-                append("\n").append(stackTraceToString(throwable))
+                // 分隔符用纯文本，不用换行：堆栈同样折叠成同一行。
+                append(" | ").append(LogLineFolder.fold(stackTraceToString(throwable), MAX_LOGGED_STACK_CHARS))
             }
             append("\n")
         }
