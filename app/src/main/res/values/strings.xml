@@ -1580,7 +1580,7 @@
     <string name="settings_virtual_screen_daemon_running">运行中</string>
     <string name="settings_virtual_screen_daemon_stopped">未运行（首次使用时自动拉起）</string>
     <string name="settings_virtual_screen_daemon_desc">负责创建虚拟屏的执行进程。用完会自动退出，不需手动管理。</string>
-    <string name="settings_virtual_screen_session_active">检测到虚拟屏仍在运行（displayId=%1$d）</string>
+    <string name="settings_virtual_screen_session_active">检测到 %1$d 块虚拟屏仍在运行</string>
     <string name="settings_virtual_screen_session_active_desc">可能是上一轮任务被中断没来得及关闭。点此回收，避免占用资源。</string>
     <string name="settings_virtual_screen_close_session">回收虚拟屏</string>
 </resources>

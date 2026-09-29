@@ -108,13 +108,17 @@ internal fun VirtualScreenSection(
         }
 
         // ── 残留会话：只在真有的时候才显示，避免平时占位造成困惑 ──────────
-        val displayId = state.activeDisplayId
-        if (displayId != null) {
+        // 多会话后可能同时存在多块屏（每个 AI 会话一块），故逐条列出包名与 displayId，
+        // 而不是只报一个 displayId——用户需要知道「哪些会话还占着屏」。
+        val sessions = state.activeSessions
+        if (sessions.isNotEmpty()) {
             SettingsGroup {
                 SettingsRow(
                     icon = FeatherIcons.XCircle,
-                    title = stringResource(R.string.settings_virtual_screen_session_active, displayId),
-                    subtitle = stringResource(R.string.settings_virtual_screen_session_active_desc),
+                    title = stringResource(R.string.settings_virtual_screen_session_active, sessions.size),
+                    subtitle = sessions.joinToString("\n") {
+                        "${it.packageName}（displayId=${it.displayId}）"
+                    } + "\n" + stringResource(R.string.settings_virtual_screen_session_active_desc),
                     onClick = onCloseActiveSession
                 )
             }

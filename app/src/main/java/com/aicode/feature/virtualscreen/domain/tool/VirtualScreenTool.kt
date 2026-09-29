@@ -49,6 +49,8 @@ class VirtualScreenTool @Inject constructor(
             "动作：open=开屏并启动 App；dump=读取界面（结构化文本，含可见文本/控件/坐标）；" +
             "click=按文本或 id 点击；input=向输入框写文本；swipe=滑动；close=关闭并回收；status=查询状态。\n" +
             "典型流程：open → dump → click/input → dump 确认结果 → close。\n" +
+            "**虚拟屏按会话隔离**：每个 AI 会话有自己的一块屏，dump/click/close 只作用于本会话的屏，" +
+            "看不到也动不了别的会话的屏；同一应用不能跨会话重复打开（会互相影响），最多同时 4 块。\n" +
             "依赖 Shizuku（需已授权）；界面读写需用户已开启本应用的无障碍服务。"
 
     override val permissionPolicy = ToolPermissionPolicy.ASK
@@ -135,7 +137,7 @@ class VirtualScreenTool @Inject constructor(
                 "input" -> input(args, context)
                 "swipe" -> swipe(args, context)
                 "close" -> close(context)
-                "status" -> status()
+                "status" -> status(context)
                 else -> ToolResult.Error(
                     "未知 action: $action（可选 open/dump/click/input/swipe/close/status）",
                     code = "BAD_ARG"
@@ -200,19 +202,27 @@ class VirtualScreenTool @Inject constructor(
         }
     }
 
-    private suspend fun status(): ToolResult {
-        val session = controller.current
+    private suspend fun status(context: AgentContext): ToolResult {
+        // 「本会话自己的屏」与「全局所有会话」都报：前者回答「我能不能操作」，
+        // 后者让 AI 知道别的会话占着哪些应用（同包不能跨会话并存）。
+        val mine = controller.sessionFor(context.sessionId)
         return ToolResult.Success(JsonObject(mapOf(
             "daemon" to JsonPrimitive(controller.isDaemonAlive().toString()),
             "a11y" to JsonPrimitive((requireA11y() != null).toString()),
-            "session" to if (session == null) {
-                JsonPrimitive("无活动会话")
+            "mySession" to if (mine == null) {
+                JsonPrimitive("本会话无虚拟屏")
             } else {
                 JsonObject(mapOf(
-                    "displayId" to JsonPrimitive(session.displayId),
-                    "packageName" to JsonPrimitive(session.packageName)
+                    "displayId" to JsonPrimitive(mine.displayId),
+                    "packageName" to JsonPrimitive(mine.packageName)
                 ))
             },
+            "activeCount" to JsonPrimitive(controller.activeCount),
+            "allSessions" to JsonPrimitive(
+                controller.activeSessions().joinToString("; ") {
+                    "${it.packageName}(displayId=${it.displayId})"
+                }.ifEmpty { "无" }
+            ),
             "lastError" to JsonPrimitive(controller.lastError ?: "")
         )))
     }
@@ -220,7 +230,7 @@ class VirtualScreenTool @Inject constructor(
     // ── 界面感知与操作（需 a11y） ───────────────────────────────────────
 
     private suspend fun dump(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
-        val session = requireSession() ?: return noSessionError()
+        val session = requireSession(context) ?: return noSessionError()
         val service = requireA11y() ?: return noA11yError()
 
         val waitReady = args["waitReady"]?.jsonPrimitive?.booleanOrNull ?: false
@@ -233,7 +243,7 @@ class VirtualScreenTool @Inject constructor(
     }
 
     private suspend fun click(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
-        val session = requireSession() ?: return noSessionError()
+        val session = requireSession(context) ?: return noSessionError()
         val service = requireA11y() ?: return noA11yError()
 
         val text = args["text"]?.jsonPrimitive?.contentOrNull
@@ -278,7 +288,7 @@ class VirtualScreenTool @Inject constructor(
     }
 
     private suspend fun input(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
-        val session = requireSession() ?: return noSessionError()
+        val session = requireSession(context) ?: return noSessionError()
         val service = requireA11y() ?: return noA11yError()
         val text = args["text"]?.jsonPrimitive?.contentOrNull
             ?: return ToolResult.Error("action=input 需要 text", code = "MISSING_ARG")
@@ -299,7 +309,7 @@ class VirtualScreenTool @Inject constructor(
     }
 
     private suspend fun swipe(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
-        val session = requireSession() ?: return noSessionError()
+        val session = requireSession(context) ?: return noSessionError()
         val service = requireA11y() ?: return noA11yError()
         val x1 = args["x1"]?.jsonPrimitive?.intOrNull ?: 540
         val y1 = args["y1"]?.jsonPrimitive?.intOrNull ?: 1800
@@ -317,10 +327,11 @@ class VirtualScreenTool @Inject constructor(
 
     // ── 前置校验 ────────────────────────────────────────────────────────
 
-    private fun requireSession() = controller.current
+    private fun requireSession(context: AgentContext) = controller.sessionFor(context.sessionId)
 
     private fun noSessionError() = ToolResult.Error(
-        "当前没有活动的虚拟屏会话，请先 action=open。",
+        "当前会话还没有虚拟屏，请先 action=open。（注意：虚拟屏按会话隔离，" +
+            "其他会话开的屏在这里不可见、也不可操作。）",
         code = "NO_SESSION"
     )
 

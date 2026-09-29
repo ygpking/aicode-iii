@@ -1,12 +1,22 @@
 package com.aicode.feature.virtualscreen.domain.model
 
-/** 一次虚拟屏会话，`displayId` 由 host 在 OPEN 时动态分配（**不可假定为固定值**）。 */
+/**
+ * 一次虚拟屏会话，`displayId` 由 host 在 OPEN 时动态分配（**不可假定为固定值**）。
+ */
 data class VirtualScreenSession(
     val displayId: Int,
     val packageName: String,
     val width: Int,
     val height: Int,
     val dpi: Int,
+    /**
+     * 发起方会话 id（AI 会话/标签 id，`AgentContext.sessionId`）。
+     *
+     * **必须记录归属**：控制器按它索引会话，`dump`/`click`/`close` 都据此定位自己那块屏。
+     * 此前不记归属、只留一个 `current` 单例，导致「B 会话的操作用到 A 的屏、B 的 close 关掉
+     * A 的会话」这类静默串扰。
+     */
+    val ownerSessionId: String,
     /** 创建时刻（elapsedRealtime），用于展示会话时长。 */
     val startedAt: Long = android.os.SystemClock.elapsedRealtime()
 )
