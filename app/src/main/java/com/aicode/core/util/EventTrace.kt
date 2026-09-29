@@ -109,8 +109,10 @@ object EventTrace {
             reportStaleTurns(dir)
             appendLine(
                 dir,
+                // 末尾必须带 \n：appendLine 只做 appendText，不像同名的 Kotlin appendLine 会自动补行。
+                // 漏了它会把本行与紧随其后的 PROCESS START 拼成一行（实测踩过）。
                 "${timestampFormat.format(Instant.now())}  -      -    -    -  LIFECYCLE  APP VERSION $version" +
-                    " android=${Build.VERSION.RELEASE}(API ${Build.VERSION.SDK_INT}) abi=${Build.SUPPORTED_ABIS.firstOrNull()}"
+                    " android=${Build.VERSION.RELEASE}(API ${Build.VERSION.SDK_INT}) abi=${Build.SUPPORTED_ABIS.firstOrNull()}\n"
             )
             writeLifecycleMarker(dir, "PROCESS START")
         }
@@ -213,27 +215,44 @@ object EventTrace {
      * 启动时清点「上一个进程留下的未收尾回合」。
      *
      * 为什么不能靠内存里的 [activeTurns]：进程重启后它必然是空的，等真正要查时早已无迹可寻。
-     * 未收尾回合只存在于**磁盘上最后一个进程写下的那段轨迹**里，故必须回读文件推断。
+     * 未收尾回合只存在于**磁盘上上一个进程写下的那段轨迹**里，故必须回读文件推断。
      *
      * 为什么必须补：`beginTurn` 的 stale 检测只在「同会话再开新回合」时才触发，会话终止后
      * 不再开回合的永远不会被察觉（实测 266 开始 / 237 结束 = 29 个未收尾，而显式记录仅 4 条，
      * 覆盖率 14%）——这正是本模块最忌讳的「无解释的空白」。
      *
-     * 扫描范围刻意限定为**最后一个 PROCESS START 之后**：上一个进程写入的所有回合都在其中，
-     * 而更早进程的残局已由它自己启动时清点过，重复报告只会制造噪声。
+     * **跨天处理（易错点）**：文件名按天生成，而进程会跨天——23:00 启动的进程，其 START 写在
+     * 前一天的文件里，零点之后的记录却写进次日的文件。若只读最新一个文件，就会因为「找不到
+     * START」而直接早退，**漏掉跨天残局**。故从最新文件往前逐份回读，直到找到最后一个
+     * PROCESS START 为止，再从那里扫到末尾。只丢弃该 START 之前的内容（属于更早的进程）。
      */
     private fun reportStaleTurns(dir: File) {
         runCatching {
-            val last = dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }
-                ?.sortedBy { it.name }?.lastOrNull() ?: return@runCatching
-            val lines = runCatching { last.readLines() }.getOrNull() ?: return@runCatching
-            val startIdx = lines.indexOfLast { it.contains("LIFECYCLE") && it.contains("PROCESS START") }
-            if (startIdx < 0) return@runCatching
+            val files = dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }
+                ?.sortedBy { it.name } ?: return@runCatching
+            if (files.isEmpty()) return@runCatching
+
+            // 从最新文件往前回读，凑出「上一个进程 START 之后」的全部行（跨文件拼接）。
+            // 找到 START 就停——它前面同文件的内容属于更早的进程，不入本次扫描。
+            val lines = ArrayList<String>()
+            var found = false
+            for (file in files.asReversed()) {
+                val part = runCatching { file.readLines() }.getOrNull() ?: continue
+                val idx = part.indexOfLast { it.contains("LIFECYCLE") && it.contains("PROCESS START") }
+                if (idx >= 0) {
+                    lines.addAll(0, part.subList(idx, part.size))
+                    found = true
+                    break
+                }
+                lines.addAll(0, part)
+            }
+            if (!found) return@runCatching
 
             // 只跟踪「回合开始」而无「回合结束」的 (会话 → 回合号)。
             val openTurns = LinkedHashMap<String, String>()
             val turnRe = Regex("""s=(\S+)\s+(t\d+)\s+#\d+""")
-            for (i in startIdx + 1 until lines.size) {
+            // 从 1 起跳：第 0 行是 START 本身。
+            for (i in 1 until lines.size) {
                 val line = lines[i]
                 if (!line.contains("  TURN  ")) continue
                 val m = turnRe.find(line) ?: continue
