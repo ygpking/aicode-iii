@@ -82,6 +82,7 @@ import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.presentation.ShizukuViewModel
+import com.aicode.feature.virtualscreen.presentation.VirtualScreenViewModel
 import com.aicode.feature.settings.presentation.SkillImportState
 import com.aicode.feature.settings.presentation.SkillUiEntry
 import com.aicode.feature.agent.domain.skill.SkillImportError
@@ -926,11 +927,17 @@ fun SettingsScreen(
                     val shizukuViewModel: ShizukuViewModel =
                         androidx.hilt.navigation.compose.hiltViewModel()
                     val shizukuState by shizukuViewModel.state.collectAsStateWithLifecycle()
+                    val virtualScreenViewModel: VirtualScreenViewModel =
+                        androidx.hilt.navigation.compose.hiltViewModel()
+                    val virtualScreenState by virtualScreenViewModel.state.collectAsStateWithLifecycle()
                     AppPermissionsSection(
                         shizukuState = shizukuState,
                         onRequestShizukuPermission = { shizukuViewModel.requestPermission() },
                         onOpenShizuku = { shizukuViewModel.openShizukuApp() },
-                        onRefreshShizuku = { shizukuViewModel.refresh() }
+                        onRefreshShizuku = { shizukuViewModel.refresh() },
+                        virtualScreenState = virtualScreenState,
+                        onRefreshVirtualScreen = { virtualScreenViewModel.refresh() },
+                        onCloseVirtualScreenSession = { virtualScreenViewModel.closeActiveSession() }
                     )
                 }
                 SettingsSection.BackgroundRun -> BackgroundRunSection(

@@ -49,6 +49,7 @@
 | 网络代理 | 全局代理与供应商级代理（1.11.0 起）→ [文档](/guide/proxy) |
 | 连接与同步 | SFTP / FTP 通道、工作区同步、内置 FTP 服务端 → [文档](/guide/sync) |
 | Shizuku 执行后端 | 以 adb shell（uid 2000）身份执行系统命令、读写 /sdcard → [文档](/guide/shizuku) |
+| 虚拟屏调试 | 在不占用物理屏的独立显示屏里打开并操作 App，读界面、点击、输入 → [文档](/guide/virtual-screen) |
 
 ### 权限与后台
 

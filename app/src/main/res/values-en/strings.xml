@@ -1567,4 +1567,21 @@
     <string name="browser_night_mode_on">Turn off night mode</string>
     <string name="browser_night_mode_off">Turn on night mode</string>
     <string name="browser_devtools">Developer tools</string>
+    <string name="virtual_screen_a11y_desc">Lets AiCode read and operate app interfaces on a separate virtual display (only affects the virtual screen; never reads the screen you are using).</string>
+    <string name="settings_virtual_screen_title">Virtual Screen</string>
+    <string name="settings_virtual_screen_subtitle">Open and operate apps on a separate display without occupying your screen (needs Shizuku and accessibility)</string>
+    <string name="settings_virtual_screen_a11y">Virtual screen accessibility service</string>
+    <string name="settings_virtual_screen_a11y_off_hint">Off. Without it the AI can open apps on the virtual screen but cannot read or tap anything. Android does not allow apps to enable this themselves — you must turn it on in system settings.</string>
+    <string name="settings_virtual_screen_a11y_on_hint">On. The AI can read and operate the virtual screen.</string>
+    <string name="settings_virtual_screen_a11y_pending">Enabled, not connected</string>
+    <string name="settings_virtual_screen_a11y_pending_hint">Enabled in system settings, but the service is not connected yet (refresh, or check whether battery optimization is restricting this app).</string>
+    <string name="settings_virtual_screen_refresh">Re-check status</string>
+    <string name="settings_virtual_screen_refresh_subtitle">Tap to re-check after returning from system settings or the Shizuku app</string>
+    <string name="settings_virtual_screen_daemon">Virtual screen background service</string>
+    <string name="settings_virtual_screen_daemon_running">Running</string>
+    <string name="settings_virtual_screen_daemon_stopped">Not running (starts automatically on first use)</string>
+    <string name="settings_virtual_screen_daemon_desc">The process that creates virtual displays. It exits on its own; no manual management needed.</string>
+    <string name="settings_virtual_screen_session_active">A virtual screen is still running (displayId=%1$d)</string>
+    <string name="settings_virtual_screen_session_active_desc">Probably left over from an interrupted task. Tap to reclaim it.</string>
+    <string name="settings_virtual_screen_close_session">Reclaim virtual screen</string>
 </resources>

@@ -91,6 +91,13 @@ val syncAiDocs = tasks.register<Sync>("syncAiDocs") {
     into(layout.buildDirectory.dir("generated/aiDocs/docs"))
 }
 
+// 虚拟屏宿主（vdsupport/src 的 Java 源码）在构建期编译成裸 dex，随 APK 打进 assets/virtualscreen/。
+// 为什么不把 dex 签进仓库：宿主源码改了却忘记重生 dex，APK 里的 host 就会与源码静默不一致，
+// 而那正是最难查的一类 bug。改成构建期生成后，这种不一致在结构上不可能发生。
+// 为什么是裸 dex 而非 APK：Shizuku 经 app_process 拉起宿主，其 CLASSPATH 只吃 dex——
+// 实测喂 APK 会在 AndroidRuntime::startReg 的 FindClass 阶段直接 abort。
+val vdHostGeneratedDir = layout.buildDirectory.dir("generated/vdHost")
+
 android {
     namespace = "com.aicode"
     compileSdk = 36
@@ -171,6 +178,11 @@ android {
         getByName("x86solo") { jniLibs.srcDir("src/_x86JniLibs") }
         // 文档不放在 app/src/main/assets 下，改由 syncAiDocs 从 docs-site/docs 生成后并入
         getByName("main") { assets.srcDir(aiDocsGeneratedDir) }
+        // 虚拟屏宿主 dex 同理：由 buildVdHostDex 在构建期生成后并入。
+        // 必须逐 flavor 各挂一次——flavor 的 sourceSet 不继承 main 的 assets 源目录。
+        listOf("universal", "armsolo", "x86solo").forEach { flavor ->
+            getByName(flavor) { assets.srcDir(vdHostGeneratedDir) }
+        }
     }
 
     buildTypes {
@@ -439,9 +451,29 @@ tasks.register<Exec>("checkArchitecture") {
     workingDir(rootProject.projectDir)
 }
 
+// 宿主的编译交给 scripts/build-vd-host.sh（javac + d8），不用 JavaCompile 是因为：
+// 它要的是「裸 dex、只依赖 android.jar、min-api 与 App 无关」，套 JavaCompile 反而要
+// 额外压制 Kotlin/核心库脱糖/SDK 版本一堆与它无关的设定。
+tasks.register<Exec>("buildVdHostDex") {
+    description = "把 vdsupport/src 的虚拟屏宿主源码编译为裸 dex，供打包进 assets"
+    group = "build"
+    workingDir(rootProject.projectDir)
+    commandLine(
+        "bash", "scripts/build-vd-host.sh",
+        // 用 AGP 解析出的 SDK 目录，而不是自己找——保证和本次构建用的是同一份 SDK。
+        android.sdkDirectory.absolutePath,
+        vdHostGeneratedDir.get().asFile.absolutePath,
+    )
+    inputs.dir(rootProject.layout.projectDirectory.dir("vdsupport/src"))
+    inputs.file(rootProject.layout.projectDirectory.file("scripts/build-vd-host.sh"))
+    outputs.dir(vdHostGeneratedDir)
+}
+
 // assets 合并前必须先生成文档，否则首次构建（或 clean 后）APK 里会没有 docs/。
 // 同时先跑架构检查：违规即中止构建，不让约定腐化到 CI 之后。
+// 宿主 dex 也在此生成（它同样是被并进 assets 的产物）。
 tasks.named("preBuild") {
     dependsOn(syncAiDocs)
     dependsOn("checkArchitecture")
+    dependsOn("buildVdHostDex")
 }

@@ -4,6 +4,9 @@ Shizuku 让普通应用在**不 root** 的前提下，以 adb shell（uid 2000�
 
 它与「本地容器 / 远程 SSH」并列，不需要切换模式：只要 Shizuku 就绪，AI 就能调用。
 
+> 想在**不占用你屏幕**的前提下把 App 真点开、读界面并操作，见 [虚拟屏调试](/guide/virtual-screen)——
+> 它同样以 Shizuku 为前置，root 与 adb 授权都能用。
+
 ## 能做什么
 
 | 能力 | 本地容器（PRoot） | Shizuku |

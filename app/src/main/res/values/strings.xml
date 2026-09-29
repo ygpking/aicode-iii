@@ -1566,4 +1566,21 @@
     <string name="browser_night_mode_on">关闭夜间模式</string>
     <string name="browser_night_mode_off">开启夜间模式</string>
     <string name="browser_devtools">开发者工具</string>
+    <string name="virtual_screen_a11y_desc">让 AiCode 在独立的虚拟显示屏中读取并操作应用界面（仅在虚拟屏内生效，不读取你当前使用的屏幕）。</string>
+    <string name="settings_virtual_screen_title">虚拟屏调试</string>
+    <string name="settings_virtual_screen_subtitle">在不占用你屏幕的独立显示屏里打开并操作 App（需 Shizuku 与无障碍）</string>
+    <string name="settings_virtual_screen_a11y">虚拟屏无障碍服务</string>
+    <string name="settings_virtual_screen_a11y_off_hint">未开启。未开启时虚拟屏「只能开不能操作」，AI 无法读界面或点击。系统不允许应用自行开启，需你到系统设置里手动打开。</string>
+    <string name="settings_virtual_screen_a11y_on_hint">已开启，虚拟屏可读取并操作界面。</string>
+    <string name="settings_virtual_screen_a11y_pending">已开启未连接</string>
+    <string name="settings_virtual_screen_a11y_pending_hint">已在系统设置里开启，但服务尚未连接（可下拉刷新，或检查电池优化是否限制了本应用）。</string>
+    <string name="settings_virtual_screen_refresh">重新体检</string>
+    <string name="settings_virtual_screen_refresh_subtitle">从系统设置或 Shizuku 返回后，点此重新检测各项状态</string>
+    <string name="settings_virtual_screen_daemon">虚拟屏后台服务</string>
+    <string name="settings_virtual_screen_daemon_running">运行中</string>
+    <string name="settings_virtual_screen_daemon_stopped">未运行（首次使用时自动拉起）</string>
+    <string name="settings_virtual_screen_daemon_desc">负责创建虚拟屏的执行进程。用完会自动退出，不需手动管理。</string>
+    <string name="settings_virtual_screen_session_active">检测到虚拟屏仍在运行（displayId=%1$d）</string>
+    <string name="settings_virtual_screen_session_active_desc">可能是上一轮任务被中断没来得及关闭。点此回收，避免占用资源。</string>
+    <string name="settings_virtual_screen_close_session">回收虚拟屏</string>
 </resources>

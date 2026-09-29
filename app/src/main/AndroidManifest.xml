@@ -74,6 +74,27 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- 虚拟屏的无障碍服务：读取并操作虚拟显示器上的界面。
+
+             exported=true 是系统绑定 a11y 服务的硬性要求（由 BIND_ACCESSIBILITY_SERVICE 权限把守，
+             普通应用调不动）。
+
+             刻意**不放在 :vdscreen 独立进程**（原方案的设计）：a11y 读窗口/执行操作都在主进程更简单，
+             而隔离带来的收益（主进程被冻结时不中断）在 v1 里有限——AI 驱动操作时主进程必然存活。
+             若将来要长稳后台会话，再拆进程 + Binder 桥。 -->
+        <service
+            android:name=".feature.virtualscreen.domain.a11y.VirtualScreenA11yService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/virtual_screen_a11y" />
+        </service>
+
         <!-- Shizuku：用于以 adb shell 身份执行命令（UserService）。
              permission 声明为 INTERACT_ACROSS_USERS_FULL 是官方要求，防止普通应用访问该 provider。 -->
         <provider

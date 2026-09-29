@@ -34,6 +34,8 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.aicode.R
 import com.aicode.core.theme.Spacing
 import com.aicode.feature.agent.domain.shizuku.ShizukuState
+import com.aicode.feature.virtualscreen.presentation.VirtualScreenSection
+import com.aicode.feature.virtualscreen.presentation.VirtualScreenSettingsState
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.Bell
 import compose.icons.feathericons.Download
@@ -50,6 +52,7 @@ import compose.icons.feathericons.Zap
  * - 访问存储空间：展示授权状态，未授权点击申请运行时权限；已被永久拒绝时同样引导去系统设置。
  * - 忽略电池优化 / 自启动管理：跳转系统设置。
  * - Shizuku：展示 adb shell 授权状态，未就绪时点击安装/启动/申请授权。
+ * - 虚拟屏：展示无障碍服务与后台服务状态，未就绪时一键跳系统设置。
  * 页面恢复（含从系统设置页或 Shizuku 应用返回）时刷新各权限状态。
  */
 @Composable
@@ -57,7 +60,10 @@ internal fun AppPermissionsSection(
     shizukuState: ShizukuState,
     onRequestShizukuPermission: () -> Unit,
     onOpenShizuku: () -> Unit,
-    onRefreshShizuku: () -> Unit
+    onRefreshShizuku: () -> Unit,
+    virtualScreenState: VirtualScreenSettingsState,
+    onRefreshVirtualScreen: () -> Unit,
+    onCloseVirtualScreenSession: () -> Unit
 ) {
     val context = LocalContext.current
 
@@ -178,6 +184,13 @@ internal fun AppPermissionsSection(
                 }
             )
         }
+
+        // 虚拟屏：紧跟在 Shizuku 之后——两者是搭配使用的（建屏靠 Shizuku，读写界面靠无障碍）。
+        VirtualScreenSection(
+            state = virtualScreenState,
+            onRefresh = onRefreshVirtualScreen,
+            onCloseActiveSession = onCloseVirtualScreenSession
+        )
     }
 
     if (showStorageDeniedDialog) {

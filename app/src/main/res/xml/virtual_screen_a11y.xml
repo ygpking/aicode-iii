@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  虚拟屏无障碍服务配置。
+
+  flagRetrieveInteractiveWindows 是 getWindowsOnAllDisplays() 能返回窗口的前提，
+  缺它则拿不到任何 window（也就读不到虚拟屏的节点树）。
+
+  flagIncludeNotImportantViews：部分界面（尤其被 App 标注为 not-important 的容器）里，
+  真正的可点击元素不会被暴露，缺它会导致「看得到文本但点不到」。
+
+  accessibilityEventTypes 声明 typeAllMask 只是满足系统校验（服务本身不依赖事件驱动，
+  见 VirtualScreenA11yService.onAccessibilityEvent 的说明）。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews|flagReportViewIds"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:notificationTimeout="100"
+    android:description="@string/virtual_screen_a11y_desc" />

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  仅 debug 变体的 Manifest（AGP 会把 debug 源集的 Manifest 与 main 合并）。
+
+  这里只声明虚拟屏自测用的广播接收器，用途见 VdProbeReceiver 的 KDoc。
+
+  两处刻意写法：
+
+  1. **全限定类名，不用 `.feature....` 相对写法**。相对名是按 `namespace`（com.aicode）
+     展开的，而不是 applicationId（com.aicode.iii.debug）——写成 `.feature.x.Y` 会得到
+     com.aicode.feature.x.Y，但很容易误以为得到 com.aicode.iii.debug.feature.x.Y。
+     之前启用无障碍服务时就踩过这个坑（组件名写错导致 settings 静默不生效）。
+
+  2. **不指定 `android:process`，必须与 a11y 服务同进程**。
+     a11y 服务用 `VirtualScreenA11yService.instance` 这个**静态字段**暴露实例，而静态量不跨进程共享
+     ——若把本接收器放进独立进程，拿到的永远是 `instance == null`，探针直接失效。
+     （曾一度想用独立进程「顺便验证跨进程并发调用」，但那需要 Binder 桥，本模块现在没有；
+     等将来真拆进程时再做。）
+
+     副作用可接受：`dump` 是同步阻塞调用（深树可达数百节点、waitReady 还会轮询 5s），
+     跑在 .debug 主进程里会短暂占住调用线程。仅在自测时发生，且主进程本就不因此被冻结。
+
+  安全说明：该接收器 `exported="true"` 且无权限保护，任意本机应用都能触发它。
+  这是可接受的，因为它**只存在于 debug 变体**（不进 release），且只做「读虚拟屏 + 回写一个文本文件」，
+  不接触任何凭证或用户数据。release 包中不含本文件。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+
+        <receiver
+            android:name="com.aicode.feature.virtualscreen.debug.VdProbeReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.aicode.vdprobe.CMD" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+
+</manifest>
