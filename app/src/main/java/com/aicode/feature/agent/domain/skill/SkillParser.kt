@@ -32,15 +32,19 @@ object SkillParser {
             return null
         }
 
-        return parseText(text, dir.substringAfterLast('/').ifBlank { dir }).copy(dirPath = dir)
+        return parseText(
+            text,
+            fallbackName = dir.substringAfterLast('/').ifBlank { dir },
+            source = "$dir/$fileName"
+        ).copy(dirPath = dir)
     }
 
     /**
      * 从原始 Markdown 文本解析技能（不依赖磁盘），供文件/压缩包导入使用。
      * [fallbackName] 为 frontmatter 缺 name 时的兜底（通常传源文件名或所在目录名）。
      */
-    fun parseText(text: String, fallbackName: String): Skill {
-        val (frontmatter, body) = splitAndParseFrontmatter(text)
+    fun parseText(text: String, fallbackName: String, source: String? = null): Skill {
+        val (frontmatter, body) = splitAndParseFrontmatter(text, source)
 
         // name 优先取 frontmatter，缺省回退到兜底名
         val name = frontmatter["name"]?.toString()?.takeIf { it.isNotBlank() } ?: fallbackName
@@ -67,7 +71,7 @@ object SkillParser {
      * 利用 SnakeYAML 切分并解析 YAML frontmatter。
      * @return (frontmatter 键值对, 正文)
      */
-    private fun splitAndParseFrontmatter(text: String): Pair<Map<String, Any>, String> {
+    private fun splitAndParseFrontmatter(text: String, source: String?): Pair<Map<String, Any>, String> {
         val normalized = text.replace("\r\n", "\n")
         if (!normalized.startsWith("---\n")) return emptyMap<String, Any>() to normalized
 
@@ -76,18 +80,57 @@ object SkillParser {
 
         val block = normalized.substring(4, end)
         val rest = normalized.substring(end + 4).removePrefix("\n")
-        
-        val map = try {
-            val yaml = Yaml()
-            val loaded = yaml.load<Map<String, Any>>(block)
-            loaded ?: emptyMap()
-        } catch (e: Exception) {
-            FileLogger.w(TAG, "解析 YAML 失败", e)
-            emptyMap()
-        }
-        
-        return map to rest
+
+        return parseYamlBlock(block, source) to rest
     }
+
+    /** 裸标量行 `key: 值`（跳过缩进行、列表项与注释）。 */
+    private val PLAIN_SCALAR = Regex("^([A-Za-z_][A-Za-z0-9_-]*):[ \\t]+(\\S.*)$")
+
+    private fun at(source: String?): String = source?.let { "（$it）" } ?: ""
+
+    /**
+     * 解析 frontmatter 块，失败时先尝试修复、再报错。
+     *
+     * 最常见的坏法（技能库里实测就有一个）：`description` 是**未加引号的裸标量**，值里又
+     * 写了 `: `（如 `触发：cgo 报 "jni.h: No such file or directory"`）。YAML 会把 `: `
+     * 当映射分隔符，整块解析失败——而该技能**仍会留在技能列表里**，只是 description 变空；
+     * description 是模型判断「要不要启用这个技能」的唯一依据，于是它**永久失效且毫无提示**。
+     *
+     * 故先给这类裸标量补引号重试；仍失败才报错，且**带上来源**（原先只打异常堆栈，
+     * 同一句告警一天刷十几次却查不出是哪个技能）。
+     */
+    private fun parseYamlBlock(block: String, source: String?): Map<String, Any> {
+        runCatching { Yaml().load<Map<String, Any>>(block) }.getOrNull()?.let { return it }
+
+        val repaired = quotePlainScalarsWithColon(block)
+        if (repaired != block) {
+            runCatching { Yaml().load<Map<String, Any>>(repaired) }.getOrNull()?.let {
+                FileLogger.w(TAG, "frontmatter 含未加引号的冒号，已自动补引号修复${at(source)}")
+                return it
+            }
+        }
+
+        FileLogger.w(TAG, "解析 frontmatter 失败${at(source)}——该技能 name/description 回退兜底值，可能不会被模型启用")
+        return emptyMap()
+    }
+
+    /**
+     * 给「未加引号且含 `: `」的顶层标量值补双引号。
+     *
+     * 只针对上述坏 frontmatter，不追求覆盖全部 YAML 语法——调用点本就在首次解析已失败之后，
+     * 修不动也只是维持原状，不会更坏。
+     */
+    private fun quotePlainScalarsWithColon(block: String): String =
+        block.lines().joinToString("\n") { line ->
+            val m = PLAIN_SCALAR.matchEntire(line) ?: return@joinToString line
+            val value = m.groupValues[2]
+            // 已是引号/块标量/流式集合/锚点别名/注释，交给 YAML 自己处理
+            if (value.first() in charArrayOf('"', '\'', '|', '>', '[', '{', '&', '*', '#')) return@joinToString line
+            if (!value.contains(": ")) return@joinToString line
+            val quoted = value.replace("\\", "\\\\").replace("\"", "\\\"").trim()
+            "${m.groupValues[1]}: \"$quoted\""
+        }
 
     /**
      * 把设置页表单写回 `SKILL.md` 文本（frontmatter + 正文），与 [parse] 成对。

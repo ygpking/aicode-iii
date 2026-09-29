@@ -133,7 +133,8 @@ class ExecuteCommandTool @Inject constructor(
             val timeoutMs = resolveTimeoutMs(args)
             val guarded = ContainerBuildGuard.guard(command)
             if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
-            FileLogger.d(TAG, "execute_command (timeout=${timeoutMs}ms): ${sanitizeCommandForLog(guarded.command)}")
+            // 命令正文不在这里记：engine 的 execCaptured 已记同一条（还多带 cwd），
+            // 两处重复实测占日志 15%+，且工具执行期必然经过 engine，不会漏记。
             // 执行前采样：事后采样无法提前预警，就失去了意义
             val memWarning = memoryWarningFor(guarded.rewritten)
             val output = commandEngine.runCommandSync(guarded.command, workdir, timeoutMs)
@@ -175,7 +176,7 @@ class ExecuteCommandTool @Inject constructor(
             val timeoutMs = resolveTimeoutMs(args)
             val guarded = ContainerBuildGuard.guard(command)
             if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
-            FileLogger.d(TAG, "execute_command(流式, timeout=${timeoutMs}ms): ${sanitizeCommandForLog(guarded.command)}")
+            // 命令正文交给 engine 记（见 execute 中同名注释），此处不重复。
             // 执行前采样：事后采样无法提前预警，就失去了意义
             val memWarning = memoryWarningFor(guarded.rewritten)
             commandEngine.runCommandStream(guarded.command, workdir, timeoutMs).collect { event ->

@@ -195,6 +195,17 @@ public final class TerminalSession extends TerminalOutput {
         }
     }
 
+    /**
+     * 是否为子进程退出后的良性 EIO。
+     *
+     * 子进程一结束，PTY 主端读就返回 EIO；实测 15 次 EIO 的下一行**全部**是
+     * 「PTY 子进程退出」——是正常收尾而非故障。不区分会让每天十几条假警告淹没真正的读错误。
+     */
+    private static boolean isBenignEio(Exception e) {
+        return e instanceof java.io.IOException
+            && String.valueOf(e.getMessage()).contains("EIO");
+    }
+
     private void startPumpThreads(String label) {
         final InputStream termIn = mBackend.getInputStream();
         final OutputStream termOut = mBackend.getOutputStream();
@@ -216,7 +227,13 @@ public final class TerminalSession extends TerminalOutput {
                         mMainThreadHandler.sendEmptyMessage(MSG_NEW_INPUT);
                     }
                 } catch (Exception e) {
-                    mClient.logWarn(LOG_TAG, "PTY 读取异常(pid=" + mShellPid + "): " + e);
+                    // 子进程退出后再读主端会得到 EIO——正常收尾语义。降为 debug，
+                    // 保留痕迹但不再冒充警告（真正的读错误仍走 warn）。
+                    if (isBenignEio(e)) {
+                        mClient.logDebug(LOG_TAG, "PTY 读取结束(pid=" + mShellPid + "): " + e);
+                    } else {
+                        mClient.logWarn(LOG_TAG, "PTY 读取异常(pid=" + mShellPid + "): " + e);
+                    }
                 }
             }
         }.start();
