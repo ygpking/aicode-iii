@@ -82,4 +82,73 @@ class SkillParserTest {
 
         assertTrue(!text.contains("required_tools"))
     }
+
+    /**
+     * 回归：技能库里真实存在过的坏法——description 是未加引号的裸标量，值里含 `: `。
+     * 原先 YAML 整块解析失败 → description 变空，而技能仍在列表里：模型据此判断是否启用，
+     * 于是该技能**静默失效**。现在应自动补引号救回，而不是降级成空描述。
+     */
+    @Test
+    fun parse_repairsUnquotedColonInPlainScalar() {
+        val skill = SkillParser.parseText(
+            text = """
+                |---
+                |name: cgo-stub-header-cross-compile
+                |description: 容器里没有 NDK 时编译验证 —— 触发：cgo 报 "jni.h: No such file or directory"、或 undefined: C.xxx。
+                |---
+                |
+                |正文
+            """.trimMargin(),
+            fallbackName = "fallback"
+        )
+
+        assertEquals("cgo-stub-header-cross-compile", skill.name)
+        // 关键断言：描述必须被救回（而非空串），否则技能等于废掉
+        assertTrue("description 不应为空，实际='${skill.description}'", skill.description.isNotBlank())
+        assertTrue(skill.description.contains("jni.h: No such file or directory"))
+        assertEquals("正文", skill.instructions)
+    }
+
+    /** 自动修复不得误伤合法写法：已引号包裹的冒号、列表都应原样解出。 */
+    @Test
+    fun parse_keepsValidFrontmatterIntact() {
+        val skill = SkillParser.parseText(
+            text = """
+                |---
+                |name: quoted
+                |description: "a: b"
+                |required_tools: [Bash, writeFile]
+                |---
+                |
+                |正文
+            """.trimMargin(),
+            fallbackName = "fallback"
+        )
+
+        assertEquals("quoted", skill.name)
+        assertEquals("a: b", skill.description)
+        assertEquals(listOf("Bash", "writeFile"), skill.requiredTools)
+    }
+
+    /** 真正解析不了时不得崩溃；name 回退兜底值，函数仍需正常返回。 */
+    @Test
+    fun parse_survivesUnrepairableFrontmatter() {
+        val skill = SkillParser.parseText(
+            text = "---\n:  bad\n name\n---\n正文",
+            fallbackName = "fallback-name"
+        )
+
+        assertEquals("fallback-name", skill.name)
+        assertEquals("正文", skill.instructions)
+    }
+
+    /** 无 frontmatter 时不应报错，name 取兜底值。 */
+    @Test
+    fun parse_withoutFrontmatterUsesFallbackName() {
+        val skill = SkillParser.parseText("只有正文", fallbackName = "plain")
+
+        assertEquals("plain", skill.name)
+        assertEquals("", skill.description)
+        assertEquals("只有正文", skill.instructions)
+    }
 }

@@ -55,6 +55,9 @@ object EventTrace {
     /** 单回合记录上限：防止单轮异常刷屏（正常一轮数百条）。 */
     private const val MAX_RECORDS_PER_TURN = 2000
 
+    /** 无回合上下文的丢弃告警频率：首条 + 每这么多条一次。 */
+    private const val ORPHAN_REPORT_EVERY = 50L
+
     private val ioExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "event-trace").apply { isDaemon = true }
     }
@@ -74,6 +77,9 @@ object EventTrace {
     private val recordCounters = ConcurrentHashMap<String, Long>()
     private val droppedCounters = ConcurrentHashMap<String, Long>()
     private val activeTurns = ConcurrentHashMap<String, String>()
+
+    /** 无回合上下文而被丢弃的记录数，用于限频告警。 */
+    private val orphanDropped = AtomicLong()
 
     /**
      * 是否记录。
@@ -234,7 +240,13 @@ object EventTrace {
      * @return 本条分配到的 `seq`；未记录（未启用 / 回合未知 / 超上限）时返回 null。
      */
     fun record(turnId: String?, scope: String?, layer: String, detail: String, causeSeq: Long? = null): Long? {
-        if (!enabled || turnId == null) return null
+        if (!enabled) return null
+        if (turnId == null) {
+            // 原先直接 return，让轨迹出现无法解释的空白（而本模块的设计初衷恰恰是
+            // 「不要留下无解释的空白」）。改为限频落一行，不再静默。
+            noteOrphan(scope, layer, detail, why = "未携带回合上下文")
+            return null
+        }
         // 先判上限、再取 seq：seq 只为「已接受」的记录分配，保证连续无空洞，
         // 于是「上一条 = seq-1」恒成立（否则默认因果会指向被丢弃的序号）。
         val count = recordCounters[turnId] ?: 0L
@@ -242,11 +254,30 @@ object EventTrace {
             droppedCounters[turnId] = (droppedCounters[turnId] ?: 0L) + 1
             return null
         }
-        val seq = seqCounters[turnId]?.incrementAndGet() ?: return null
+        val seqCounter = seqCounters[turnId]
+        if (seqCounter == null) {
+            // 回合已 endTurn（或从未 beginTurn）却仍在记录：同样不能静默。
+            noteOrphan(scope, layer, detail, why = "回合 $turnId 已收尾")
+            return null
+        }
+        val seq = seqCounter.incrementAndGet()
         recordCounters[turnId] = count + 1
 
         write(turnId, scope, seq, layer, detail, causeSeq ?: (seq - 1).takeIf { it >= 1 })
         return seq
+    }
+
+    /**
+     * 记录一条「本该进轨迹但进不去」的丢弃事实——限频：首条 + 每 [ORPHAN_REPORT_EVERY] 条一次，
+     * 避免它自己刷屏（与 [MAX_RECORDS_PER_TURN] 的用意一致）。
+     */
+    private fun noteOrphan(scope: String?, layer: String, detail: String, why: String) {
+        val n = orphanDropped.incrementAndGet()
+        if (n != 1L && n % ORPHAN_REPORT_EVERY != 0L) return
+        write(
+            turnId = "-", scope = scope, seq = 0L, layer = "TRACE_DROPPED",
+            detail = "$why，本条未入轨迹（累计 $n 条）: [$layer] $detail", causeSeq = null
+        )
     }
 
     /**
@@ -258,7 +289,11 @@ object EventTrace {
      */
     fun recordFor(scope: String?, layer: String, detail: String) {
         if (!enabled || scope == null) return
-        val turnId = activeTurns[scope] ?: return
+        val turnId = activeTurns[scope]
+        if (turnId == null) {
+            noteOrphan(scope, layer, detail, why = "作用域 $scope 无活跃回合")
+            return
+        }
         // scope 一并带上：反查得到的回合号在日志里不够用，仍需标明是哪个会话
         record(turnId, scope, layer, detail)
     }
