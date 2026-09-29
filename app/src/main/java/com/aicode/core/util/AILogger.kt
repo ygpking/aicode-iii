@@ -71,7 +71,13 @@ object AILogger {
         val text = buildString {
             append('\n').append("=".repeat(78)).append('\n')
             append(now()).append("  REQUEST #").append(n)
-            append("   [").append(provider).append(" / ").append(model).append("]\n")
+            append("   [").append(provider).append(" / ").append(model).append("]")
+            // 回合外键：把本请求挂到 [EventTrace] 正在进行的回合上。
+            // 两个日志此前各自独立编号（此处 REQUEST #n 按会话计数，轨迹那边是 s=xxx tN），
+            // 事后无法对齐，导致轨迹有「结局」、本日志有「输入」却拼不成一对。
+            // 在此落一个 turn=，即可把请求体回接到回合指标上（供离线回放/对比用）。
+            EventTrace.currentTurnOf(sessionId)?.let { append("  turn=").append(it) }
+            append('\n')
             append(method).append(' ').append(url).append('\n')
             append("--- request body ---\n")
             append(stringify(body)).append('\n')

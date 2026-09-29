@@ -1,0 +1,15 @@
+2026-09-27 10:00:00.000  -      -    -    -  LIFECYCLE  APP VERSION v1.13.1(52) android=15(API 35) abi=arm64-v8a
+2026-09-27 10:00:00.001  -      -    -    -  LIFECYCLE  PROCESS START
+2026-09-27 10:00:01.000  s=aaaa1111 t1 #1  TURN  轮次开始
+2026-09-27 10:00:02.000  s=aaaa1111 t1 #2 ←#1  EVENT  assistant_text 正文=10字 思考=50字 工具调用=2 token=1000in/100out 缓存=300
+2026-09-27 10:00:02.100  s=aaaa1111 t1 #3 ←#2  EVENT  tool_started Bash id=call_00_a
+2026-09-27 10:00:02.200  s=aaaa1111 t1 #4 ←#3  EVENT  tool_started list id=call_01_b
+2026-09-27 10:00:03.000  s=aaaa1111 t1 #5 ←#4  EVENT  tool_finished Bash id=call_00_a 成功 结果=100字
+2026-09-27 10:00:03.100  s=aaaa1111 t1 #6 ←#5  EVENT  tool_finished list id=call_01_b 成功 结果=200字
+2026-09-27 10:00:04.000  s=aaaa1111 t1 #7 ←#6  EVENT  assistant_text 正文=5字 思考=10字 工具调用=0 token=2000in/200out 缓存=500
+2026-09-27 10:00:05.000  s=aaaa1111 t1 #8 ←#7  TURN  轮次结束/finished 共 8 条
+2026-09-27 11:00:01.000  s=bbbb2222 t1 #1  TURN  轮次开始
+2026-09-27 11:00:02.000  s=bbbb2222 t1 #2 ←#1  EVENT  assistant_text 正文=1字 思考=2字 工具调用=1 token=500in/50out 缓存=0
+2026-09-27 11:00:02.100  s=bbbb2222 t1 #3 ←#2  EVENT  tool_started Bash id=call_00_c
+2026-09-27 11:00:02.200  s=bbbb2222 t1 #4 ←#3  EVENT  tool_finished Bash id=call_00_c 成功 结果=10字
+2026-09-27 11:00:03.000  s=bbbb2222 t1 #5 ←#4  TURN  轮次结束/finished 共 5 条

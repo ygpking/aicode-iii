@@ -1,6 +1,9 @@
 package com.aicode.feature.virtualscreen.domain.a11y
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityService.ScreenshotResult
+import android.accessibilityservice.AccessibilityService.TakeScreenshotCallback
+import android.graphics.Bitmap
 import android.graphics.Rect
 import android.os.Bundle
 import android.util.SparseArray
@@ -41,6 +44,9 @@ class VirtualScreenA11yService : AccessibilityService() {
 
         private const val MAX_ANCESTOR_HOPS = 6
         private const val MAX_MATCHES = 50
+
+        /** 截图回调的等待上限：takeScreenshot 是异步回调，而本服务对外是同步接口。 */
+        private const val SCREENSHOT_TIMEOUT_MS = 3_000L
 
         /**
          * 当前连接的服务实例。AccessibilityService 由系统单实例持有，用静态引用即可，
@@ -209,6 +215,85 @@ class VirtualScreenA11yService : AccessibilityService() {
             .setDisplayId(displayId)
             .build()
         return runCatching { dispatchGesture(gesture, null, null) }.getOrDefault(false)
+    }
+
+    /**
+     * 截取指定显示器的画面。
+     *
+     * 为什么要截图：节点树给出的是**语义**，但有内容它表达不了——图像、画布
+     * （Canvas/WebView/游戏）、以及「布局没错但就是显示异常」的视觉问题。taixu 的
+     * 实时视频流需要额外服务端编码器，这里不做；单帧截图已足够「让 AI 看见」。
+     *
+     * 实现约束：
+     * - `takeScreenshot(displayId, executor, callback)` 是 **API 34+** 且需服务声明
+     *   `canTakeScreenshot`（见 res/xml/virtual_screen_a11y.xml），否则调用失败；
+     * - 它是**异步回调**，而本服务对外是同步接口，故用 latch 等待（超时即放弃，
+     *   不让调用方无限挂住）；
+     * - 返回的硬件位图需 copy 成软件位图后才能安全压缩：`HardwareBitmap` 在部分设备上
+     *   用 `Bitmap.compress` 会抛异常，且脱离回调后会失效。同时必须 `recycle()`，
+     *   否则大图会稳定泄漏 native 内存。
+     *
+     * 线程：可用任意线程调用，**不要放主线程**——本方法会阻塞等待回调，最长
+     * [SCREENSHOT_TIMEOUT_MS]。调用方（工具层）应放在 IO 调度器上。
+     */
+    fun screenshot(displayId: Int, quality: Int = 90): ByteArray? {
+        if (android.os.Build.VERSION.SDK_INT < 34) {
+            FileLogger.w(TAG, "截图需要 Android 14(API 34)+，当前 SDK=${android.os.Build.VERSION.SDK_INT}")
+            return null
+        }
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var png: ByteArray? = null
+        var failure: String? = null
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        try {
+            takeScreenshot(
+                displayId,
+                executor,
+                object : TakeScreenshotCallback {
+                    override fun onSuccess(result: ScreenshotResult) {
+                        // 回调可能不在主线程，位图操作在此线程内完成即可。
+                        runCatching {
+                            val hardware = Bitmap.wrapHardwareBuffer(
+                                result.hardwareBuffer, result.colorSpace
+                            )
+                            // 先 copy 成软件位图：硬件位图不能直接 compress，且 buffer 释放后即失效。
+                            val software = hardware?.copy(Bitmap.Config.ARGB_8888, false)
+                            hardware?.recycle()
+                            // 不用 use{}：Bitmap 是否实现 AutoCloseable 随 API 而异，
+                            // 显式 try/finally 更稳，也保证异常路径同样回收。
+                            if (software != null) {
+                                try {
+                                    val out = java.io.ByteArrayOutputStream()
+                                    software.compress(Bitmap.CompressFormat.PNG, quality, out)
+                                    png = out.toByteArray()
+                                } finally {
+                                    software.recycle()
+                                }
+                            }
+                        }.onFailure { failure = "编码截图为 PNG 失败: ${it.message}" }
+                        // HardwareBuffer 必须显式关闭，否则 native 内存泄漏。
+                        runCatching { result.hardwareBuffer.close() }
+                        latch.countDown()
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        failure = "系统拒绝截图（errorCode=$errorCode）"
+                        latch.countDown()
+                    }
+                }
+            )
+            if (!latch.await(SCREENSHOT_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                FileLogger.w(TAG, "截图超时（displayId=$displayId，${SCREENSHOT_TIMEOUT_MS}ms）")
+                return null
+            }
+        } catch (t: Throwable) {
+            FileLogger.w(TAG, "截图调用失败（displayId=$displayId）: $t")
+            return null
+        } finally {
+            executor.shutdown()
+        }
+        failure?.let { FileLogger.w(TAG, "截图失败（displayId=$displayId）: $it") }
+        return png
     }
 
     // ── 内部查找 ────────────────────────────────────────────────────────
