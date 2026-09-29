@@ -1,0 +1,19 @@
+2026-09-29 09:00:00.000  -      -    -    -  LIFECYCLE  上次未记录到正常退出标记（距今 3600s）——进程可能被系统回收，或退出前未进入后台
+2026-09-29 09:00:00.001  -      -    -    -  LIFECYCLE  APP VERSION v1.13.2(60) android=16(API 36) abi=arm64-v8a
+2026-09-29 09:00:00.002  -      -    -    -  LIFECYCLE  上轮有 1 个回合未收尾（dddd4444/t9）——进程在回合中途消失，这些回合的收尾事实已不可考
+2026-09-29 09:00:00.003  -      -    -    -  LIFECYCLE  PROCESS START
+2026-09-29 09:00:01.000  s=cccc3333 t1 #1  TURN  轮次开始
+2026-09-29 09:00:02.000  s=cccc3333 t1 #2 ←#1  EVENT  assistant_text 正文=3字 思考=4字 工具调用=1 token=800in/80out 缓存=400
+2026-09-29 09:00:02.100  s=cccc3333 t1 #3 ←#2  EVENT  tool_started Bash id=call_00_d
+2026-09-29 09:00:02.500  s=cccc3333 t1 #4 ←#3  EVENT  tool_finished Bash id=call_00_d 失败 结果=60字 原因摘要=No such file or directory: /tmp/x
+2026-09-29 09:00:03.000  s=cccc3333 t1 #5 ←#4  TURN  轮次结束/finished 共 5 条
+2026-09-29 09:10:01.000  s=cccc3333 t2 #1  TURN  轮次开始
+2026-09-29 09:10:02.000  s=cccc3333 t2 #2 ←#1  EVENT  assistant_text 正文=1字 思考=1字 工具调用=1 token=900in/90out 缓存=0
+2026-09-29 09:10:02.100  s=cccc3333 t2 #3 ←#2  EVENT  tool_started Bash id=call_00_e
+2026-09-29 09:10:02.500  s=cccc3333 t2 #4 ←#3  EVENT  tool_finished Bash id=call_00_e 失败 结果=60字 原因摘要=No such file or directory: /tmp/y
+2026-09-29 09:20:01.000  s=eeee5555 t1 #1  TURN  轮次开始
+2026-09-29 09:20:02.000  s=eeee5555 t1 #2 ←#1  EVENT  assistant_text 正文=2字 思考=2字 工具调用=1 token=700in/70out 缓存=100
+2026-09-29 09:20:02.100  s=eeee5555 t1 #3 ←#2  EVENT  tool_started Write id=call_00_f
+2026-09-29 09:20:02.500  s=eeee5555 t1 #4 ←#3  EVENT  tool_finished Write id=call_00_f 失败 结果=40字 原因摘要=File exists: /tmp/out.txt
+2026-09-29 09:20:03.000  s=eeee5555 t1 #5 ←#4  EVENT  tool_finished Write id=call_00_g 失败 结果=40字 原因摘要=File exists: /tmp/out2.txt
+2026-09-29 09:20:04.000  s=eeee5555 t1 #6 ←#5  TURN  轮次结束/finished 共 6 条
