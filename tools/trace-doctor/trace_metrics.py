@@ -47,8 +47,10 @@ RE_ASSISTANT = re.compile(
     r"assistant_text 正文=(?P<text>\d+)字 思考=(?P<reason>\d+)字 工具调用=(?P<calls>\d+) "
     r"token=(?P<in>\d+)in/(?P<out>\d+)out 缓存=(?P<cache>\d+)"
 )
-RE_TOOL_FINISHED = re.compile(r"tool_finished (?P<name>\S+) id=\S+ (?P<status>成功|失败)(?: 结果=(?P<len>\d+)字)?")
+RE_TOOL_FINISHED = re.compile(r"tool_finished (?P<name>\S+) id=\S+ (?P<status>成功|失败)(?: 结果=(?P<len>\d+)字)?(?P<path> path=\S+)?")
 RE_TOOL_STARTED = re.compile(r"tool_started (?P<name>\S+)")
+# 轨迹里的路径证据（本次新增）：`path=~/workspace/xxx`
+RE_PATH_FIELD = re.compile(r"\bpath=(\S+)")
 RE_RETRY = re.compile(r"retrying 第(?P<attempt>\d+)/(?P<max>\d+)次 原因=(?P<kind>\S+)")
 RE_TURN_END = re.compile(r"轮次结束/(?P<outcome>\S+) 共 (?P<total>\d+) 条")
 RE_VERSION = re.compile(r"APP VERSION (?P<version>\S+)")
@@ -75,6 +77,8 @@ class Turn:
     output_tokens: int = 0
     cached_tokens: int = 0
     records: int = 0
+    compaction_transient: int = 0
+    files_touched: set = field(default_factory=set)
     failures: list[tuple[str, str]] = field(default_factory=list)
 
     @property
@@ -163,9 +167,11 @@ def parse_file(path: str, agg: dict, failures: Counter, notes: list[str]) -> Non
                 sm = RE_TOOL_STARTED.match(detail)
                 if sm and detail.startswith("tool_started"):
                     turn.tool_calls += 1
+                    _collect_path(detail, turn)
                     continue
                 fm = RE_TOOL_FINISHED.match(detail)
                 if fm:
+                    _collect_path(detail, turn)
                     if fm.group("status") == "失败":
                         turn.tool_failures += 1
                         agg["tool_failures"] += 1
@@ -183,11 +189,23 @@ def parse_file(path: str, agg: dict, failures: Counter, notes: list[str]) -> Non
                     continue
                 if detail.startswith("compaction_failed"):
                     turn.compaction_failures += 1
+                    # transient=true 的失败是重试链条中的一环，不是终止；单独计数以免高估失败率。
+                    if "transient=true" in detail:
+                        turn.compaction_transient += 1
                     continue
                 continue
 
             if layer.startswith("SNAPSHOT"):
                 continue
+
+
+def _collect_path(detail: str, turn: Turn) -> None:
+    """把行内的 `path=...` 收进回合的「接触过的文件」集合。
+
+    此行字段是后加的（见 AgentEventTracer.pathEvidence）：老轨迹没有，缺失不代表没动文件。
+    """
+    for m in RE_PATH_FIELD.finditer(detail):
+        turn.files_touched.add(m.group(1))
 
 
 def _reason_of(detail: str) -> str:
@@ -280,7 +298,7 @@ def summarize(agg: dict, failures: Counter, out_dir: str) -> str:
     add(f"| 输入 token | {inp:,} |")
     add(f"| 输出 token | {out:,} |")
     add(f"| 缓存 token | {cache:,} |")
-    add(f"| 缓存命中率 | {cache / (cache + inp) * 100:.1f}%（缓存/(缓存+输入)）|")
+    add(f"| 缓存命中率 | {cache / (cache + inp) * 100:.1f}%（缓存/(缓存+输入)）|" if (cache + inp) > 0 else "| 缓存命中率 | -（无 token 数据）|")
     add(f"| 回合耗时 p50 | {_pct(durations, 0.5):.1f}s |")
     add(f"| 回合耗时 p90 | {_pct(durations, 0.9):.1f}s |")
     add("")
@@ -331,15 +349,16 @@ def summarize(agg: dict, failures: Counter, out_dir: str) -> str:
         writer = csv.writer(fh)
         writer.writerow(
             ["session", "turn", "version", "outcome", "duration_s", "llm_calls", "tool_calls",
-             "tool_failures", "retries", "compaction_starts", "compaction_failures",
-             "input_tokens", "output_tokens", "cached_tokens", "records", "start"]
+             "tool_failures", "retries", "compaction_starts", "compaction_failures", "compaction_transient",
+             "files_touched", "input_tokens", "output_tokens", "cached_tokens", "records", "start"]
         )
         for t in sorted(turns, key=lambda x: (x.version, x.session, x.start or datetime.min)):
             writer.writerow([
                 t.session, t.turn, t.version, t.outcome,
                 f"{t.duration_s:.3f}" if t.duration_s is not None else "",
                 t.llm_calls, t.tool_calls, t.tool_failures, t.retries,
-                t.compaction_starts, t.compaction_failures,
+                t.compaction_starts, t.compaction_failures, t.compaction_transient,
+                len(t.files_touched),
                 t.input_tokens, t.output_tokens, t.cached_tokens, t.records,
                 t.start.strftime(TS_FMT) if t.start else "",
             ])

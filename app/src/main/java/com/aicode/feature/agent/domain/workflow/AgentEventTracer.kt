@@ -21,6 +21,27 @@ import com.aicode.core.util.EventTrace
 internal object AgentEventTracer {
 
     /**
+     * 从工具参数/结果文本里抽取文件路径，让「本回合动了哪些文件」在轨迹里可见。
+     *
+     * 动机（真机踩坑）：轨迹里工具事件只有「成功/失败 + 结果 N 字」，**不记路径**。
+     * 于是排查「editFile 为何报未读即改」时，只能去翻 486MB 的 ai-logs 逐个对齐参数，
+     * 当场多花大量时间——而这条信息本就在结果与参数里。
+     *
+     * 两种来源：文件工具结果的 JSON（`"path":"…"`），以及未读即改类错误的自然语言文案
+     * （`…读取 ~/workspace/xxx 的当前内容…`）。只抽路径、不记全文，与「只记结构与度量」的原则一致。
+     */
+    private val PATH_IN_JSON = Regex("\"(?:path|file|target|source|destination)\"\\s*:\\s*\"([^\"]{1,200})\"")
+    private val PATH_IN_TEXT = Regex("(~/[\\w./\\-]{2,200})")
+
+    private fun pathEvidence(text: String): String? {
+        val raw = PATH_IN_JSON.find(text)?.groupValues?.get(1)
+            ?: PATH_IN_TEXT.find(text)?.groupValues?.get(1)
+            ?: return null
+        // 路径可能含空格，而轨迹是空格分列的；替换掉以保证字段可切分。
+        return raw.take(200).replace(' ', '_')
+    }
+
+    /**
      * 记录一次事件。
      *
      * @param turnId 本回合 id；为 null 时不记录（调用方未开启轨迹）。
@@ -50,11 +71,19 @@ internal object AgentEventTracer {
         }
 
         is AgentEvent.ToolCallPreparing -> "tool_preparing ${event.toolName}"
-        is AgentEvent.ToolCallStarted -> "tool_started ${event.toolName} id=${event.id}"
+        is AgentEvent.ToolCallStarted -> buildString {
+            append("tool_started ${event.toolName} id=${event.id}")
+            // 参数里带路径的（editFile/readFile/writeFile/…）落一份，事后一眼看出「动的哪个文件」。
+            pathEvidence(event.argsPreview)?.let { append(" path=$it") }
+        }
         is AgentEvent.ToolCallFinished -> buildString {
             append("tool_finished ${event.toolName} id=${event.id} ")
             append(if (event.isError) "失败" else "成功")
             append(" 结果=${event.result.length}字")
+            // 路径**只在失败时**从结果抽：错误文案必带真实路径（未读即改/陈旧内容都会回显）。
+            // 成功时结果可能是文件正文（readFile），正文里出现 "path" 键会记下无关路径、污染证据；
+            // 而成功场景的路径已由 tool_started 从参数给出，此处不必再抽。
+            if (event.isError) pathEvidence(event.result)?.let { append(" path=$it") }
             // 失败时带上结果开头：原本只有「失败 + 字数」，要查为何失败得另翻 AILogger；
             // 摘要一行即可自证，无需再去别处找。
             if (event.isError) append(" 原因摘要=${event.result.take(120).replace('\n', ' ')}")
@@ -66,7 +95,11 @@ internal object AgentEventTracer {
 
         is AgentEvent.CompactionStarted -> "compaction_started 估算=${event.estimatedTokens}token"
         AgentEvent.CompactionFinished -> "compaction_finished"
-        is AgentEvent.CompactionFailed -> "compaction_failed ${event.reason}"
+        // transient 必须落盘：它区分「重试可成功」与「确定性失败」。
+        // 此前只记原因，导致 30 次失败被读成 34% 的失败率，而其中 18 次其实是重试中的一环——
+        // 缺这一个布尔值，就会把「自愈」误判为「故障」。
+        is AgentEvent.CompactionFailed ->
+            "compaction_failed ${event.reason} transient=${event.transient}"
 
         is AgentEvent.Failed -> "failed ${event.reasonCode ?: "-"} ${event.error.take(200)}"
         AgentEvent.Completed -> "completed"
