@@ -12,6 +12,7 @@ import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.virtualscreen.domain.VirtualScreenController
 import com.aicode.feature.virtualscreen.domain.a11y.VirtualScreenA11yService
+import com.aicode.feature.workspace.domain.WorkspacePathMapper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,10 +35,23 @@ import javax.inject.Inject
  * 另需用户开启本应用的无障碍服务。
  */
 class VirtualScreenTool @Inject constructor(
-    private val controller: VirtualScreenController
+    private val controller: VirtualScreenController,
+    private val pathMapper: WorkspacePathMapper
 ) : AbstractContextualTool() {
     private companion object {
         const val TAG = "VirtualScreenTool"
+
+        /**
+         * 截图落盘目录（容器视角）。
+         *
+         * 必须落在 `~/workspace` 下：该目录被 bind 成容器内可见，`viewImage` 才能读到
+         * （它只认容器路径）。放宿主其他位置则 AI 无法用任何工具查看。
+         * 用点开头目录，不在文件树里干扰用户的工作区浏览。
+         */
+        const val SHOT_DIR = "~/workspace/.vdshots"
+
+        /** 保留的截图张数上限，超出按修改时间删最旧的，避免在工作区里无限累积。 */
+        const val MAX_KEPT_SCREENSHOTS = 10
     }
 
     override val name = "virtualScreen"
@@ -47,8 +61,10 @@ class VirtualScreenTool @Inject constructor(
             "用于需要「实际点开 App 看真实界面」的任务：验证 UI 改动、走一遍注册/登录流程、复现界面问题。" +
             "会话由 AI 独占，操作不进入用户的最近任务；关闭时会强制停止目标应用，避免任务残留。\n" +
             "动作：open=开屏并启动 App；dump=读取界面（结构化文本，含可见文本/控件/坐标）；" +
-            "click=按文本或 id 点击；input=向输入框写文本；swipe=滑动；close=关闭并回收；status=查询状态。\n" +
-            "典型流程：open → dump → click/input → dump 确认结果 → close。\n" +
+            "click=按文本或 id 点击；input=向输入框写文本；swipe=滑动；" +
+            "screenshot=截取虚拟屏画面（返回图片路径，用 viewImage 查看）；close=关闭并回收；status=查询状态。\n" +
+            "典型流程：open → dump → click/input → dump 确认结果 → close。" +
+            "**dump 给语义，截图给视觉**：图像/画布/WebView/游戏等节点树表达不了的内容用 screenshot。\n" +
             "**虚拟屏按会话隔离**：每个 AI 会话有自己的一块屏，dump/click/close 只作用于本会话的屏，" +
             "看不到也动不了别的会话的屏；同一应用不能跨会话重复打开（会互相影响），最多同时 4 块。\n" +
             "依赖 Shizuku（需已授权）；界面读写需用户已开启本应用的无障碍服务。"
@@ -64,7 +80,7 @@ class VirtualScreenTool @Inject constructor(
     override val parameters: Map<String, ToolParameter> = mapOf(
         "action" to ToolParameter(
             "action", ParameterType.STRING, "操作类型", true,
-            enum = listOf("open", "dump", "click", "input", "swipe", "close", "status")
+            enum = listOf("open", "dump", "click", "input", "swipe", "screenshot", "close", "status")
         ),
         "packageName" to ToolParameter(
             "packageName", ParameterType.STRING, "要打开的 App 包名（如 com.android.settings）。action=open 必填。", false
@@ -136,10 +152,11 @@ class VirtualScreenTool @Inject constructor(
                 "click" -> click(args, context)
                 "input" -> input(args, context)
                 "swipe" -> swipe(args, context)
+                "screenshot" -> screenshot(args, context)
                 "close" -> close(context)
                 "status" -> status(context)
                 else -> ToolResult.Error(
-                    "未知 action: $action（可选 open/dump/click/input/swipe/close/status）",
+                    "未知 action: $action（可选 open/dump/click/input/swipe/screenshot/close/status）",
                     code = "BAD_ARG"
                 )
             }
@@ -323,6 +340,69 @@ class VirtualScreenTool @Inject constructor(
         } else {
             ToolResult.Error("滑动未被执行（手势分发失败）。", code = "SWIPE_FAILED")
         }
+    }
+
+    /**
+     * 截取虚拟屏画面并存到工作区，返回容器路径供 `viewImage` 查看。
+     *
+     * 为什么需要它：节点树是**语义**视图，图像/Canvas/WebView/游戏这类内容它表达不了，
+     * 而「布局没错但显示异常」的视觉问题也只能看图。两者互补：先 dump 定位控件，看不懂再截图。
+     *
+     * 落盘位置必须在 `~/workspace` 下（bind 进容器），否则模型无法用任何工具读到该图。
+     */
+    private suspend fun screenshot(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
+        val session = requireSession(context) ?: return noSessionError()
+        val service = requireA11y() ?: return noA11yError()
+
+        // 截图需在主线程发起（无障碍 API 约束）；等待回调的阻塞发生在服务方法内部。
+        val bytes = withContext(Dispatchers.IO) {
+            runCatching { service.screenshot(session.displayId) }.getOrNull()
+        } ?: return ToolResult.Error(
+            "截图失败。可能原因：系统版本低于 Android 14（截图需 API 34+）、无障碍服务未声明" +
+                "截图能力（重装应用后需重新开启无障碍）、或目标界面尚未绘制完成。" +
+                "可先用 dump 确认界面状态。",
+            code = "SCREENSHOT_FAILED"
+        )
+
+        // 文件名取包名末段并过滤非安全字符，避免路径里混进 / 或 .. 之类的意外。
+        val safeName = session.packageName.substringAfterLast('.')
+            .filter { it.isLetterOrDigit() || it == '_' || it == '-' }
+            .take(20)
+            .ifEmpty { "app" }
+        val containerPath = "$SHOT_DIR/${safeName}_${System.currentTimeMillis()}.png"
+        val hostFile = pathMapper.toHostFile(containerPath)
+        val writeErr = runCatching {
+            hostFile.parentFile?.mkdirs()
+            hostFile.writeBytes(bytes)
+        }.exceptionOrNull()
+        if (writeErr != null) {
+            FileLogger.e(TAG, "截图落盘失败: $containerPath", writeErr)
+            return ToolResult.Error("截图已生成但写入失败: ${writeErr.message}", code = "WRITE_FAILED")
+        }
+
+        pruneOldScreenshots(hostFile.parentFile)
+        EventTrace.recordFor(
+            context.sessionId, "VD",
+            "screenshot displayId=${session.displayId} ${bytes.size}字节 -> $containerPath"
+        )
+        return ToolResult.Success(JsonObject(mapOf(
+            "path" to JsonPrimitive(containerPath),
+            "bytes" to JsonPrimitive(bytes.size),
+            "hint" to JsonPrimitive(
+                "用 viewImage 传 images=[\"$containerPath\"] 即可查看该截图。" +
+                    "dump 给出控件语义，截图给出视觉外观，二者互补。"
+            )
+        )))
+    }
+
+    /** 只保留最近 [MAX_KEPT_SCREENSHOTS] 张，避免截图在工作区里无限累积。 */
+    private fun pruneOldScreenshots(dir: java.io.File?) {
+        runCatching {
+            val files = dir?.listFiles { f -> f.isFile && f.name.endsWith(".png") }
+                ?.sortedByDescending { it.lastModified() } ?: return
+            if (files.size <= MAX_KEPT_SCREENSHOTS) return
+            files.drop(MAX_KEPT_SCREENSHOTS).forEach { it.delete() }
+        }.onFailure { FileLogger.w(TAG, "清理旧截图失败", it) }
     }
 
     // ── 前置校验 ────────────────────────────────────────────────────────

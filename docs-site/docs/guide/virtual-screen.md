@@ -14,7 +14,7 @@
 | 操作期间占用你的屏幕 | — | ✗ | ✗ |
 | 需要 root | 否 | 否 | 否 |
 
-AI 拿到一个名为 `virtualScreen` 的工具，动作有七个：
+AI 拿到一个名为 `virtualScreen` 的工具，动作有八个：
 
 | 动作 | 作用 |
 | --- | --- |
@@ -23,6 +23,7 @@ AI 拿到一个名为 `virtualScreen` 的工具，动作有七个：
 | `click` | 按文本或控件 id 点击 |
 | `input` | 向输入框写入文本 |
 | `swipe` | 滑动 |
+| `screenshot` | 截一张虚拟屏画面，存到工作区并返回路径 |
 | `status` | 查看会话与依赖状态 |
 | `close` | 关闭会话并回收（同时强制停止目标应用） |
 
@@ -38,7 +39,9 @@ AI 拿到一个名为 `virtualScreen` 的工具，动作有七个：
 
 ### 2. 开启 AiCode 的无障碍服务
 
-建屏本身不需要无障碍，但**读界面和点击需要**。未开启时 `open` 仍会成功，`dump`/`click`/`input`/`swipe` 会返回明确提示。
+建屏本身不需要无障碍，但**读界面、点击和截图都需要**。未开启时 `open` 仍会成功，`dump`/`click`/`input`/`swipe`/`screenshot` 会返回明确提示。
+
+截图额外要求 **Android 14（API 34）及以上**：系统的 `AccessibilityService.takeScreenshot` 从该版本才有。低于此版本的设备上 `dump` 仍可用，只是看不到画面。
 
 开启路径：**系统设置 → 无障碍 → 已下载的服务 → AiCode III**。
 
@@ -61,6 +64,23 @@ virtualScreen(action="close")
 
 整个过程你的屏幕上什么都不会发生。
 
+## 看懂画面：dump 与 screenshot 互补
+
+`dump` 给的是**语义**（有哪些文字、哪些控件、各自什么位置），`screenshot` 给的是**视觉**（实际长什么样）。两者不能互替：
+
+- 只看 dump 看不出的：图片、`Canvas`、`WebView` 里的网页、游戏画面、图表，以及「布局没错但就是显示异常」的问题；
+- 只看截图看不出的：控件的可点击状态、资源 id、无障碍文本。
+
+`screenshot` 会把 PNG 写到工作区 `.vdshots/` 目录（只保留最近 10 张，自动清理），并返回路径。让 AI 看它，正常走 `viewImage`：
+
+```
+virtualScreen(action="screenshot")
+# 返回 {"path": "~/workspace/.vdshots/settings_1769...png", ...}
+viewImage(images=["~/workspace/.vdshots/settings_1769...png"])
+```
+
+同一个模型自身支持读图时会直接看；否则会转给配置的识图模型。
+
 ## 边界：它不是沙箱
 
 这一点必须说清，避免误判风险：
@@ -82,7 +102,7 @@ virtualScreen(action="close")
   需到系统设置里重新开启。
 - **操作会触发系统显示器增删**。极少数情况下，个别机型在增删显示器瞬间可能出现物理屏短暂闪烁，属系统侧的重配置行为。
 
-**已实测可用**（含中文）：开屏、读界面、点击、输入、滑动。
+**已实测可用**（含中文）：开屏、读界面、点击、输入、滑动、截图。
 
 ## 常见问题
 
@@ -97,6 +117,10 @@ virtualScreen(action="close")
 **`click` 找不到目标**
 
 先 `dump` 看界面上实际有什么。常见原因：文本是包含匹配但写成了全串、界面还没加载完（`dump` 时加 `waitReady`）、或该文本所在的控件不可点击。`dump` 输出里带坐标，可用 `click(bounds="left,top,right,bottom")` 兜底。
+
+**`screenshot` 报「截图失败」**
+
+依次排查：① 系统是否 Android 14+（截图需要 API 34）；② 无障碍服务是否开启——**重装应用后需要在系统设置里重新开启**，否则已声明的截图能力不生效；③ 界面是否还没绘制完成，可先 `dump` 确认。
 
 **`close` 之后目标应用被停掉了**
 

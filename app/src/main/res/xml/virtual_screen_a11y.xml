@@ -10,6 +10,9 @@
 
   accessibilityEventTypes 声明 typeAllMask 只是满足系统校验（服务本身不依赖事件驱动，
   见 VirtualScreenA11yService.onAccessibilityEvent 的说明）。
+
+  canTakeScreenshot：虚拟屏截图的前提。API 34+ 的 AccessibilityService.takeScreenshot 要求
+  服务声明本项，否则调用失败（SecurityException）。
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
     android:accessibilityEventTypes="typeAllMask"
@@ -17,5 +20,6 @@
     android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagIncludeNotImportantViews|flagReportViewIds"
     android:canRetrieveWindowContent="true"
     android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
     android:notificationTimeout="100"
     android:description="@string/virtual_screen_a11y_desc" />
