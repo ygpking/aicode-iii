@@ -9,6 +9,7 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.lang.reflect.Field;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * {@link SessionBackend} backed by a local pseudoterminal subprocess created via {@link JNI}
@@ -27,6 +28,25 @@ final class SubprocessBackend implements SessionBackend {
     private final FileDescriptor mWrappedFd;
     private final InputStream mInputStream;
     private final OutputStream mOutputStream;
+
+    /**
+     * 幂等关闭标记。
+     *
+     * <p>{@link SessionBackend#close()} 的契约是「可重复调用」，而本类此前无任何守卫：
+     * {@code JNI.close(mPtyFd)} 是裸 close(2)，对同一 fd 调用两次就会关掉一个「已被回收、
+     * 号数被系统复用给别人（如 Vulkan fence 的 unique_fd）」的描述符。Android 的 fdsan
+     * 会发现 owner 不符并直接 abort 整个进程（Abort message: attempted to close file
+     * descriptor N, expected to be unowned, actually owned by unique_fd）。
+     *
+     * <p>正式版 2026-09-29 的两次崩溃栈直接落在这里（{@code 11:04:49}、{@code 15:20:02}，
+     * 均为 close ← LocalBackendHolder.close ← cleanupResources）；同日 {@code 14:09:32}
+     * 崩在 libhwui/libgsl 的 Vulkan fence 上，abort 消息同类但栈不同，**属同一类 fd 复用
+     * 事故的推断，未直接证实**。
+     *
+     * <p>竞争来源：进程退出时 {@code TermSessionWaiter} 触发 {@code cleanupResources()}，
+     * 用户/AI 关标签时 {@code finishIfRunning()} 也会调 {@code close()}，两条路径无锁并发。
+     */
+    private final AtomicBoolean mClosed = new AtomicBoolean(false);
 
     SubprocessBackend(String shellPath, String cwd, String[] args, String[] env, int rows, int columns) {
         int[] processId = new int[1];
@@ -72,6 +92,10 @@ final class SubprocessBackend implements SessionBackend {
 
     @Override
     public void close() {
+        // 只允许真正关闭一次；后到的调用直接返回，避免对已复用的 fd 号二次 close。
+        if (!mClosed.compareAndSet(false, true)) {
+            return;
+        }
         if (mPid > 0) {
             try {
                 Os.kill(mPid, OsConstants.SIGKILL);

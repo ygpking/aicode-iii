@@ -147,9 +147,28 @@ private val SENSITIVE_ENV_ASSIGN_REGEX = Regex(
     """(?i)(?<![A-Za-z0-9_])([A-Za-z0-9_]*(?:_KEY_|_TOKEN|_SECRET|_PASSWORD)[A-Za-z0-9_]*)\s*=\s*(['"]?)(?:Bearer\s+|Basic\s+)?[^\s'"]+"""
 )
 
-fun sanitizeCommandForLog(command: String): String =
-    SENSITIVE_ENV_ASSIGN_REGEX.replace(
+/**
+ * 单条日志里命令正文的上限字符数。
+ *
+ * 命令正文是多行日志污染的主要来源：多行脚本/heredoc 会把一条日志拆成几十行，
+ * 实测占当天日志半数以上字节（977KB/1.85MB）；更麻烦的是被拆出的行不像日志行，
+ * grep 会**把命令内容当日志匹配到**——排查时据此得出过错误结论。
+ * 完整命令另有 AILogger 原文留存，此处只需留下足以定位的头部。
+ */
+private const val MAX_LOGGED_COMMAND_CHARS = 400
+
+fun sanitizeCommandForLog(command: String): String {
+    val redacted = SENSITIVE_ENV_ASSIGN_REGEX.replace(
         SENSITIVE_COMMAND_VALUE_REGEX.replace(command) { m ->
             m.groupValues[1] + m.groupValues[2] + m.groupValues[3] + "***"
         }
     ) { m -> m.groupValues[1] + "=" + m.groupValues[2] + "***" }
+
+    // 折叠换行，使一条日志严格占一行（CRLF 先归一，避免留下孤立的 \r）。
+    val oneLine = redacted.replace("\r\n", "\n").replace("\n", " ⏎ ")
+    return if (oneLine.length <= MAX_LOGGED_COMMAND_CHARS) {
+        oneLine
+    } else {
+        oneLine.take(MAX_LOGGED_COMMAND_CHARS) + "…(共${redacted.length}字符)"
+    }
+}

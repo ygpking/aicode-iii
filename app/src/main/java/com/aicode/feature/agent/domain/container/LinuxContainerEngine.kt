@@ -659,7 +659,12 @@ class LinuxContainerEngine @Inject constructor(
             )
             val provisionLog = java.io.File(containerInstaller.aicodeDir, "provision.log")
             if (provisionLog.isFile) {
-                val tail = runCatching { provisionLog.readLines().takeLast(20).joinToString(" | ") }.getOrDefault("")
+                // 20 行（实测单条 1535 字符）在每次 ensureInstalled 都打一遍，一天 60 余次
+                // 就占约 90KB，而快路径下这段几乎从不变化——收敛到 8 行、单条封顶 800 字符，
+                // 真正的失败信息都在末尾，仍可看到。
+                val tail = runCatching {
+                    provisionLog.readLines().takeLast(8).joinToString(" | ").take(800)
+                }.getOrDefault("")
                 FileLogger.i(TAG, "provision 日志尾部（$reason）：$tail")
             } else {
                 FileLogger.i(TAG, "provision.log 不存在（初始化脚本从未执行）：${provisionLog.absolutePath}")

@@ -118,7 +118,12 @@ public final class TerminalSession extends TerminalOutput {
 
         @Override
         public void close() {
-            mDelegate.close();
+            // open() 可能尚未执行（尺寸未知时不会创建 delegate）或已抛异常，此处必须容忍 null，
+            // 否则 cleanupResources 会以 NPE 取代本该完成的清理。
+            SubprocessBackend delegate = mDelegate;
+            if (delegate != null) {
+                delegate.close();
+            }
         }
 
         SubprocessBackend open(int columns, int rows) {
