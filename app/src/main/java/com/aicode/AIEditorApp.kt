@@ -324,7 +324,9 @@ class AIEditorApp : Application(), Configuration.Provider {
                 last = enabled
             }
         }
-        // 连接已配置的 MCP server，把其工具注册进 ToolRegistry（内部自有 scope，失败不影响启动）。
+        // 注册进程前后台标记：切后台时写下 PROCESS STOP，使「上次是否走过退出流程」有非恒真的依据。
+        // 必须在主线程（ProcessLifecycleOwner 绑定主 Looper），故放在 onCreate 而非 attachBaseContext。
+        EventTrace.installBackgroundMarker()
         mcpManager.start()
         // 权限规则由 App 启动即常驻订阅（AI 评估随时要读到最新规则）；MCP 配置与技能列表
         // 改由各自消费方（McpManager / 设置页）按需订阅，无需在这里拉起。

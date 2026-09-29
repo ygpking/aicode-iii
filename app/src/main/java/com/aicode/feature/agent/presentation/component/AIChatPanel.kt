@@ -867,9 +867,11 @@ fun AIChatPanel(
     // 不得把 displayStreamingText/Reasoning 放进 key：它们是逐字累积变化的，
     // 放进去会让本 effect 每个 delta 都重启，日志被刷爆（与「只在跳变时打点」的初衷相反）。
     LaunchedEffect(currentSessionId, showReasoning, showStreaming, isAssistantSettled, isBusy) {
-        EventTrace.recordFor(
+        // 走 recordUiState 而非 recordFor：本 effect 所在 item 在 LazyColumn 内，滑出视口即被
+        // dispose、滑回重建，effect 会再次执行而状态并未变化。recordUiState 在同会话内按内容去重，
+        // 堵住这条「重组导致重复落盘」的路径（实测同一状态组合独占单日 UI 记录的 37%）。
+        EventTrace.recordUiState(
             currentSessionId,
-            "UI",
             "尾巴 busy=$isBusy reasoning=$showReasoning streaming=$showStreaming settled=$isAssistantSettled " +
                 "retainedText=${retainedStreamingText?.length ?: 0} retainedReasoning=${retainedStreamingReasoning?.length ?: 0}"
         )

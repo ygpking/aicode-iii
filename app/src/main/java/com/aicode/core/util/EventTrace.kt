@@ -1,6 +1,7 @@
 package com.aicode.core.util
 
 import android.content.Context
+import android.os.Build
 import android.util.Log
 import java.io.File
 import java.io.FileOutputStream
@@ -96,30 +97,79 @@ object EventTrace {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
         val dir = File(base, DIR_NAME).apply { mkdirs() }
         logDir = dir
+        // 版本标识：轨迹里此前**没有任何版本信息**，而正式包会随升级换代——
+        // 事后看到一段异常轨迹时，无法判断它属于哪个构建，只能靠文件时间猜。
+        // 读 packageManager 而非 BuildConfig：无需开 buildFeatures.buildConfig，也不改构建脚本。
+        val version = appVersionTag(context)
         ioExecutor.execute {
             cleanupOldLogs(dir)
+            // 顺序不可调：先判上次退出方式，再清点上轮未收尾回合（两者都要读「上一个进程写下的内容」），
+            // 最后才写本次 START——否则 START 会混进被扫描区间，把上轮残局掩盖掉。
             reportPreviousExit(dir)
+            reportStaleTurns(dir)
+            appendLine(
+                dir,
+                "${timestampFormat.format(Instant.now())}  -      -    -    -  LIFECYCLE  APP VERSION $version" +
+                    " android=${Build.VERSION.RELEASE}(API ${Build.VERSION.SDK_INT}) abi=${Build.SUPPORTED_ABIS.firstOrNull()}"
+            )
             writeLifecycleMarker(dir, "PROCESS START")
         }
-        FileLogger.i(TAG, "事件轨迹目录: ${dir.absolutePath}（等级 ${FileLogger.minLevel}，记录=${enabled}）")
+        FileLogger.i(TAG, "事件轨迹目录: ${dir.absolutePath}（等级 ${FileLogger.minLevel}，记录=${enabled}，版本 $version）")
     }
 
+    /** 形如 `v1.13.1(52)`；取不到时返回 `v?`。versionCode 用 longVersionCode 兼容 64 位（API 28+）。 */
+    private fun appVersionTag(context: Context): String = runCatching {
+        val pi = context.packageManager.getPackageInfo(context.packageName, 0)
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            pi.longVersionCode
+        } else {
+            @Suppress("DEPRECATION") pi.versionCode.toLong()
+        }
+        "v${pi.versionName}($code)"
+    }.getOrDefault("v?")
+
     /**
-     * 进程正常退出时调用（如 [android.app.Application.onTerminate]）写下的收尾标记。
-     * 该标记的存在与否，是事后判「上次是正常退出还是被杀」的**唯一依据**。
+     * 进程离开前台时调用（由 [installBackgroundMarker] 挂在 ProcessLifecycleOwner 的 ON_STOP）。
+     * 该标记的存在与否，是事后判「上次是否走过退出流程」的依据之一（**不是**被杀的铁证，见下）。
      */
     private const val MARKER_FILE = "process.marker"
 
     /**
-     * 标记进程正常退出。进程被杀时不会执行到这里，标记也不会更新——正是这个差异让「被杀」可被证实。
+     * 标记「进程离开前台」。
      *
-     * 注意：[android.app.Application.onTerminate] 在真机上几乎不会被调用（杀进程时不会走正常退出流程），
-     * 所以本标记主要靠「不写」来传递信号：写成功说明是温和退出，没写说明上一次是被杀的。
+     * 调用方是 [androidx.lifecycle.ProcessLifecycleOwner] 的 `ON_STOP`（见 AIEditorApp），
+     * 而非 [android.app.Application.onTerminate]——后者在真机上几乎不被调用（系统回收进程时不走
+     * 正常退出流程），实测结果是「PROCESS STOP 记录恒为 0」，标记永远停在 START。
+     * 改用生命周期回调后，切后台即可写下标记；代价是它表达的是「离开前台」而非「干净退出」，
+     * 故判「被杀」时只作参考，不下断言。
      */
     fun markCleanExit() {
         val dir = logDir ?: return
         ioExecutor.execute { writeLifecycleMarker(dir, "PROCESS STOP") }
     }
+
+    /**
+     * 注册「离开前台」自动标 STOP。
+     *
+     * 挂在 [androidx.lifecycle.ProcessLifecycleOwner] 的 `ON_STOP`（App 进后台即触发），
+     * 取代原先依赖 `Application.onTerminate` 的做法——后者在真机上几乎不被调用，
+     * 导致 STOP 恒不落盘（实测 19 次启动 / 0 次 STOP）。
+     *
+     * 只挂一次（同一进程内重复调用无效）。
+     */
+    fun installBackgroundMarker() {
+        if (!backgroundMarkerInstalled.compareAndSet(false, true)) return
+        runCatching {
+            androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle
+                .addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
+                    override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
+                        markCleanExit()
+                    }
+                })
+        }.onFailure { Log.e(TAG, "注册后台标记失败", it) }
+    }
+
+    private val backgroundMarkerInstalled = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private fun writeLifecycleMarker(dir: File, text: String) {
         runCatching {
@@ -135,9 +185,8 @@ object EventTrace {
     /**
      * 启动时检查上一次退出方式。
      *
-     * 若上次写的是 `PROCESS START` 而没有对应的 `PROCESS STOP`，说明进程**没有走正常退出流程就消失了**
-     * ——即被系统杀掉（低内存或后台限制）。这是目前唯一能在下次启动时自动认定「上次被杀」的手段：
-     * 被杀时异常处理器与 finally 都不会执行，不会有堆栈，日志里只有一段空白。
+     * 若上次写的是 `PROCESS START` 而没有对应的 `PROCESS STOP`，只能推断「上次未走到退出流程」。
+     * 具体是被杀还是系统未给回调机会，本标记无法区分（见 [reportPreviousExit]）。
      */
     private fun reportPreviousExit(dir: File) {
         runCatching {
@@ -148,13 +197,69 @@ object EventTrace {
             val at = parts.getOrNull(1)?.toLongOrNull()
             if (state != "PROCESS START" || at == null) return@runCatching
             val gapSec = (System.currentTimeMillis() - at) / 1000
+            // 措辞刻意保留不确定性：STOP 标记由 [markCleanExit] 写入，而它依赖生命周期回调，
+            // 在「进程被系统直接回收」时同样不会执行——所以「无 STOP」既可能是被杀，
+            // 也可能是系统没给回调机会。此前写成「判定为进程被杀」是把猜测当结论（实测 19 次启动
+            // 报 19 次「被杀」、STOP 记录 0 条，等于恒真信号、零区分度），会误导排查方向。
             appendLine(
                 dir,
                 "${timestampFormat.format(Instant.now())}  -      -    -    -  LIFECYCLE  " +
-                    "上次未正常退出（距今 ${gapSec}s）——无 STOP 标记，判定为进程被杀非异常崩溃\n"
+                    "上次未记录到正常退出标记（距今 ${gapSec}s）——进程可能被系统回收，或退出前未进入后台\n"
             )
         }.onFailure { Log.e(TAG, "检查上次退出状态失败", it) }
     }
+
+    /**
+     * 启动时清点「上一个进程留下的未收尾回合」。
+     *
+     * 为什么不能靠内存里的 [activeTurns]：进程重启后它必然是空的，等真正要查时早已无迹可寻。
+     * 未收尾回合只存在于**磁盘上最后一个进程写下的那段轨迹**里，故必须回读文件推断。
+     *
+     * 为什么必须补：`beginTurn` 的 stale 检测只在「同会话再开新回合」时才触发，会话终止后
+     * 不再开回合的永远不会被察觉（实测 266 开始 / 237 结束 = 29 个未收尾，而显式记录仅 4 条，
+     * 覆盖率 14%）——这正是本模块最忌讳的「无解释的空白」。
+     *
+     * 扫描范围刻意限定为**最后一个 PROCESS START 之后**：上一个进程写入的所有回合都在其中，
+     * 而更早进程的残局已由它自己启动时清点过，重复报告只会制造噪声。
+     */
+    private fun reportStaleTurns(dir: File) {
+        runCatching {
+            val last = dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }
+                ?.sortedBy { it.name }?.lastOrNull() ?: return@runCatching
+            val lines = runCatching { last.readLines() }.getOrNull() ?: return@runCatching
+            val startIdx = lines.indexOfLast { it.contains("LIFECYCLE") && it.contains("PROCESS START") }
+            if (startIdx < 0) return@runCatching
+
+            // 只跟踪「回合开始」而无「回合结束」的 (会话 → 回合号)。
+            val openTurns = LinkedHashMap<String, String>()
+            val turnRe = Regex("""s=(\S+)\s+(t\d+)\s+#\d+""")
+            for (i in startIdx + 1 until lines.size) {
+                val line = lines[i]
+                if (!line.contains("  TURN  ")) continue
+                val m = turnRe.find(line) ?: continue
+                val scope = m.groupValues[1]
+                val turn = m.groupValues[2]
+                when {
+                    line.contains("轮次开始") -> openTurns[scope] = turn
+                    line.contains("轮次结束") -> if (openTurns[scope] == turn) openTurns.remove(scope)
+                }
+            }
+            if (openTurns.isEmpty()) return@runCatching
+            appendLine(
+                dir,
+                "${timestampFormat.format(Instant.now())}  -      -    -    -  LIFECYCLE  " +
+                        "上轮有 ${openTurns.size} 个回合未收尾（${openTurns.entries.joinToString(" ") { "${it.key}/${it.value}" }}）" +
+                        "——进程在回合中途消失，这些回合的收尾事实已不可考\n"
+            )
+        }.onFailure { Log.e(TAG, "清点上轮未收尾回合失败", it) }
+    }
+
+    /**
+     * 反查某作用域当前正在进行的回合号；无活跃回合时返回 null。
+     *
+     * 供拿不到 turnId 的层（如 AILogger 落请求头）把记录挂到正在进行的时间线上。
+     */
+    fun currentTurnOf(scope: String?): String? = scope?.let { activeTurns[it] }
 
     /** 直接向当天轨迹文件追加一行（供生命周期标记使用，不经 writer 缓冲）。 */
     private fun appendLine(dir: File, line: String) {
@@ -176,7 +281,7 @@ object EventTrace {
     /**
      * 清空轨迹文件（含轮转归档），返回释放的字节数。
      *
-     * 只删轨迹，不动 [MARKER_FILE]：它是「上次是否正常退出」的唯一依据，删了会让下次启动误报被杀。
+     * 只删轨迹，不动 [MARKER_FILE]：它是「上次是否走过退出流程」的依据之一，删了会让下次启动少一条判定线索。
      * 删除必须排到 [ioExecutor] 上并**先关闭写入句柄**（同 [FileLogger.clearLogs]）：当天的文件正被
      * [writer] 持有，不关就删的话，后续写入会继续落进已删除的 inode——文件看不见却仍占空间。
      */
@@ -207,7 +312,7 @@ object EventTrace {
      */
     fun beginTurn(key: String): String {
         // 开启新回合前，先看同作用域上一回合是否留有未收尾状态。
-        // 这是「被杀」在日志里唯一的自动痕迹：进程突然消失时，finally 与异常处理都不执行，
+        // 这是进程消失留下的自动痕迹之一：进程突然消失时，finally 与异常处理都不执行，
         // 上一回合永远等不到 endTurn。检测到就写一行显式说明，而不是留下一段无解释的空白。
         activeTurns[key]?.let { stale ->
             if (seqCounters.containsKey(stale)) {
@@ -307,6 +412,27 @@ object EventTrace {
      */
     fun snapshot(scope: String?, kind: String, detail: String) {
         recordFor(scope, "SNAPSHOT/$kind", detail)
+    }
+
+    /** 各作用域上一次记录过的 UI 状态行，用于抑制重复。 */
+    private val lastUiState = ConcurrentHashMap<String, String>()
+
+    /**
+     * 记录一次 UI 状态跳变；**同一作用域内与上次内容相同则丢弃**。
+     *
+     * 为什么不直接用 [recordFor]：调用点是 Compose 的 `LaunchedEffect`，而它所在的尾巴 item
+     * 位于 LazyColumn 内——`creates` 滑出视口即被 dispose、滑回又重建，effect 因此重新执行，
+     * 即使状态一个字节没变也会再写一行。实测单日 2039 条 UI 记录里，`busy=true reasoning=false
+     * streaming=false settled=false` 这一种组合独占 37%，全是同一状态被反复落盘。
+     *
+     * 在唯一出口按「同会话 + 同内容」去重，比在调用点调 effect 的 key 更稳：后者挡不住
+     * 「重组导致 effect 重启」这条路径（key 根本没变，effect 依旧会重跑）。
+     */
+    fun recordUiState(scope: String?, detail: String) {
+        if (!enabled || scope == null) return
+        // put 返回旧值；与本次相同则不落盘。先写后比是安全的：值没变，覆盖无副作用。
+        if (lastUiState.put(scope, detail) == detail) return
+        recordFor(scope, "UI", detail)
     }
 
     /** 回合结束：报告总量与被丢弃量，便于判断是否需要提高上限。 */
