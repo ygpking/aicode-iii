@@ -58,10 +58,15 @@ class FileCredentialRepository @Inject constructor(
     }
 
     override suspend fun delete(id: String) = mutex.withLock {
-        val updated = _credentials.value.filterNot { it.id == id }
-        writeFile(updated)
-        _credentials.value = updated
-        FileLogger.i(TAG, "删除凭据 id=$id")
+        try {
+            val updated = _credentials.value.filterNot { it.id == id }
+            writeFile(updated)
+            _credentials.value = updated
+            FileLogger.i(TAG, "删除凭据 id=$id")
+        } catch (e: Exception) {
+            FileLogger.w(TAG, "删除凭据失败 id=$id", e)
+            throw e
+        }
     }
 
     /** 解析 git-credentials 文件；格式异常的行跳过。 */

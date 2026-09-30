@@ -9,6 +9,7 @@ import android.provider.DocumentsContract.Root
 import android.provider.DocumentsProvider
 import android.webkit.MimeTypeMap
 import com.aicode.R
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import java.io.File
 import java.io.FileNotFoundException
@@ -30,6 +31,7 @@ import java.util.LinkedList
 class WorkspaceDocumentsProvider : DocumentsProvider() {
 
     private companion object {
+        const val TAG = "WorkspaceDocumentsProvider"
         const val ALL_MIME_TYPES = "*/*"
         const val MAX_SEARCH_RESULTS = 50
 
@@ -130,7 +132,12 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
     ): ParcelFileDescriptor {
         val file = fileForDocId(documentId)
         val accessMode = ParcelFileDescriptor.parseMode(mode)
-        return ParcelFileDescriptor.open(file, accessMode)
+        return try {
+            ParcelFileDescriptor.open(file, accessMode)
+        } catch (e: Exception) {
+            FileLogger.e(TAG, "打开文档失败: $documentId (mode=$mode)", e)
+            throw e
+        }
     }
 
     override fun createDocument(
@@ -148,15 +155,20 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
         val ok = try {
             if (Document.MIME_TYPE_DIR == mimeType) newFile.mkdir() else newFile.createNewFile()
         } catch (e: Exception) {
+            FileLogger.e(TAG, "创建文档失败: $displayName @ ${parent.absolutePath}", e)
             throw FileNotFoundException("Failed to create document: ${newFile.path}")
         }
-        if (!ok) throw FileNotFoundException("Failed to create document: ${newFile.path}")
+        if (!ok) {
+            FileLogger.e(TAG, "创建文档失败: $displayName @ ${parent.absolutePath}")
+            throw FileNotFoundException("Failed to create document: ${newFile.path}")
+        }
         return docIdForFile(newFile)
     }
 
     override fun deleteDocument(documentId: String) {
         val file = fileForDocId(documentId)
         if (!file.deleteRecursively()) {
+            FileLogger.e(TAG, "删除文档失败: $documentId")
             throw FileNotFoundException("Failed to delete document: $documentId")
         }
     }
@@ -207,12 +219,19 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
     private fun fileForDocId(docId: String): File {
         val base = baseDir().canonicalPath
         val f = runCatching { File(docId).canonicalFile }.getOrNull()
-            ?: throw FileNotFoundException("$docId not found")
+            ?: run {
+                FileLogger.w(TAG, "docId 无法解析: $docId")
+                throw FileNotFoundException("$docId not found")
+            }
         // docId 由外部(SAF 调用方)传入，必须限定在 filesDir 内，否则可借 `..` 越权读写/删除内部目录。
         if (f.path != base && !f.path.startsWith("$base/")) {
+            FileLogger.w(TAG, "docId 越出 provider 根已拒绝: $docId -> ${f.path}")
             throw FileNotFoundException("$docId out of provider root")
         }
-        if (!f.exists()) throw FileNotFoundException("$docId not found")
+        if (!f.exists()) {
+            FileLogger.w(TAG, "docId 对应文件不存在: $docId")
+            throw FileNotFoundException("$docId not found")
+        }
         return f
     }
 

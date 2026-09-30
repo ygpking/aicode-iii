@@ -108,7 +108,12 @@ class RemoteTerminalSessionManager @Inject constructor(
         // 但 TerminalSession 构造时会 new Handler()（绑当前线程 Looper），必须在有 Looper 的线程（主线程）构造，
         // 所以只把 sshj channel 建立切到 IO，拿到 shell 句柄后回主线程构造 session。
         val shell = withContext(Dispatchers.IO) {
-            connection.startShellSession().also { it.allocateDefaultPTY() }.startShell()
+            try {
+                connection.startShellSession().also { it.allocateDefaultPTY() }.startShell()
+            } catch (e: Exception) {
+                FileLogger.e(TAG, "创建远程 SSH shell 会话失败（$id, isBackground=$isBackground）", e)
+                throw e
+            }
         }
         val backend = SshShellBackend(shell)
         val termSession = TerminalSession(TRANSCRIPT_ROWS, AppRemoteSessionClient(), backend)
@@ -256,6 +261,7 @@ class RemoteTerminalSessionManager @Inject constructor(
             _tabs.value.firstOrNull { it.session === finishedSession }?.let { target ->
                 target.runState = RunState.Finished(0)
                 bumpRevision()
+                FileLogger.i(TAG, "远程终端标签 ${target.id} 会话结束（远端 shell 退出，后台=${target.isBackground}）")
                 if (target.notifyOnExit) {
                     _tabFinishedEvents.tryEmit(
                         TabFinishedEvent(

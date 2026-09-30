@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.notification
 
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.model.AgentMode
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -54,6 +55,10 @@ data class PendingNotification(
 @Singleton
 class AgentNotificationCenter @Inject constructor() {
 
+    private companion object {
+        const val TAG = "AgentNotificationCenter"
+    }
+
     private val lock = Any()
     private val pending = mutableMapOf<String, MutableList<PendingNotification>>()
     private val seqGenerator = AtomicLong(0)
@@ -64,6 +69,7 @@ class AgentNotificationCenter @Inject constructor() {
         synchronized(lock) {
             pending.getOrPut(sessionId) { mutableListOf() }.add(item.copy(seq = seq))
         }
+        FileLogger.i(TAG, "通知入队 session=$sessionId seq=$seq kind=${item.kind} sourceId=${item.sourceId}")
         return seq
     }
 
@@ -75,16 +81,25 @@ class AgentNotificationCenter @Inject constructor() {
     /** 确认已送达：按序号移除，peek 之后新入队的条目不受影响。 */
     fun ack(sessionId: String, seqs: Collection<Long>) {
         if (seqs.isEmpty()) return
-        synchronized(lock) {
+        val removed = synchronized(lock) {
             val list = pending[sessionId] ?: return
+            val count = list.count { it.seq in seqs }
             list.removeAll { it.seq in seqs }
             if (list.isEmpty()) pending.remove(sessionId)
+            count
         }
+        if (removed > 0) FileLogger.i(TAG, "通知已搭车送达 session=$sessionId 移除 $removed 条")
     }
 
     /** 原子取走该会话全部待送通知。 */
-    fun drain(sessionId: String): List<PendingNotification> = synchronized(lock) {
-        pending.remove(sessionId) ?: emptyList()
+    fun drain(sessionId: String): List<PendingNotification> {
+        val drained = synchronized(lock) {
+            pending.remove(sessionId) ?: emptyList()
+        }
+        if (drained.isNotEmpty()) {
+            FileLogger.i(TAG, "通知兜底送达（drain）session=$sessionId ${drained.size} 条")
+        }
+        return drained
     }
 
     fun pendingCount(sessionId: String): Int = synchronized(lock) {

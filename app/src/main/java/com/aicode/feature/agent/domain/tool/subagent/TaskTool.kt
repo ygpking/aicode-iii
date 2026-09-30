@@ -349,6 +349,7 @@ class TaskTool @Inject constructor(
                 type = SubAgentEventType.STOPPED
             )
         )
+        FileLogger.i(TAG, "已请求停止子代理: session=$subSessionId parent=${context.sessionId}")
         return ToolResult.Success(
             buildJsonObject {
                 put("id", subSessionId)

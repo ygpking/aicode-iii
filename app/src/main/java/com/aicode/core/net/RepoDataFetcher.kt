@@ -129,7 +129,9 @@ class RepoDataFetcher(
         }
 
         // 4. 彻底失败
-        FetchResult.Failure(lastError ?: IllegalStateException("Failed to fetch $cleanPath from all sources"))
+        val fatal = lastError ?: IllegalStateException("Failed to fetch $cleanPath from all sources")
+        FileLogger.e(TAG, "拉取 $cleanPath 彻底失败（网络不可用且无磁盘缓存）", fatal)
+        FetchResult.Failure(fatal)
     }
 
     /**

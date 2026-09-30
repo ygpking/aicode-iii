@@ -63,6 +63,7 @@ class SkillConfigRepository @Inject constructor(
         val key = name.trim().lowercase()
         if (disabled) names.add(key) else names.remove(key)
         writeDisabled(file, names)
+        FileLogger.i(TAG, "${if (disabled) "禁用" else "启用"}技能: ${name.trim().lowercase()} (scope=${scope.name.lowercase()})")
     }
 
     // ── 外部变更监听：容器内/手工直接增删改技能目录或 skills.json 后，数秒内通知 UI 刷新 ──

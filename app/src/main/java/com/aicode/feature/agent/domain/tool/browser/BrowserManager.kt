@@ -971,6 +971,7 @@ class BrowserManager @Inject constructor(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
+                    FileLogger.w(TAG, "https 加载失败，回退 http: $target（${e.message}）")
                     loadInto(tab, "http://$target")
                 }
             }

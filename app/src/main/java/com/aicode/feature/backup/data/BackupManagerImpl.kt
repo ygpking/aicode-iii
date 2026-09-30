@@ -106,6 +106,8 @@ class BackupManagerImpl @Inject constructor(
 
     override suspend fun export(password: CharArray?, options: BackupOptions, output: OutputStream) {
         withContext(Dispatchers.IO) {
+            val encrypted = password?.isNotEmpty() == true
+            FileLogger.i(TAG, "导出备份开始（${if (encrypted) "加密" else "明文"}${if (options.workspaceFiles) "，含工作区文件" else ""}）")
             val temp = createTempFile()
             try {
                 writeTarGz(temp, options)
@@ -117,6 +119,10 @@ class BackupManagerImpl @Inject constructor(
                         input.copyTo(output)
                     }
                 }
+                FileLogger.i(TAG, "导出备份完成（${if (encrypted) "加密" else "明文"}）")
+            } catch (e: Throwable) {
+                FileLogger.e(TAG, "导出备份失败（${if (encrypted) "加密" else "明文"}）", e)
+                throw e
             } finally {
                 temp.delete()
             }
@@ -125,6 +131,7 @@ class BackupManagerImpl @Inject constructor(
 
     override suspend fun exportSession(sessionId: String, output: OutputStream) {
         withContext(Dispatchers.IO) {
+            FileLogger.i(TAG, "导出单会话开始 sessionId=$sessionId")
             val session = chatSessionDao.getById(sessionId) ?: error("Session not found: $sessionId")
             val temp = createTempFile()
             try {
@@ -168,6 +175,10 @@ class BackupManagerImpl @Inject constructor(
                     }
                 }
                 FileInputStream(temp).use { it.copyTo(output) }
+                FileLogger.i(TAG, "导出单会话完成 sessionId=$sessionId")
+            } catch (e: Throwable) {
+                FileLogger.e(TAG, "导出单会话失败 sessionId=$sessionId", e)
+                throw e
             } finally {
                 temp.delete()
             }
