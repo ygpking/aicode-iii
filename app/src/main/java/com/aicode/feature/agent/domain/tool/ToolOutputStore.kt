@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.tool
 
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.agent.domain.OutputLimits
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -33,9 +34,12 @@ class ToolOutputStore @Inject constructor(
         const val TAG = "ToolOutputStore"
         const val AICODE_ROOT = "/root/.aicode"
         const val OUTPUT_DIR = "tool-output"
-        const val HEAD_CHARS = 20_000
-        const val TAIL_CHARS = 20_000
-        const val MAX_INLINE_CHARS = HEAD_CHARS + TAIL_CHARS
+        // 内联上限与上游命令累积窗口同源于 OutputLimits（不再是各自独立的 20_000 字面量）：
+        // 命令链路送进来的文本到达这里前已被 BoundedOutput 限幅，两者必须保持同一关系，
+        // 否则 truncated 会静默恒假、去噪结果被丢弃（见 d59a876）。
+        const val HEAD_CHARS = OutputLimits.COMMAND_HEAD_CHARS
+        const val TAIL_CHARS = OutputLimits.COMMAND_TAIL_CHARS
+        const val MAX_INLINE_CHARS = OutputLimits.INLINE_MAX_CHARS
         val LARGE_TEXT_FIELDS = listOf("output", "content", "text", "stdout", "stderr", "body", "result")
         val TIMESTAMP_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss-SSS")
         // 只对命令类输出做通用去噪：进度条/重复行/ANSI 噪音集中在这里；

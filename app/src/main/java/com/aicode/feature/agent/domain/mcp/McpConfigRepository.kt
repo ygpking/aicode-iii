@@ -218,6 +218,73 @@ class McpConfigRepository @Inject constructor(
         }
     }
 
+    // ── 名称主键的**唯一**归一入口 ──
+    // server 名是逻辑主键（用于合并、去重、匹配、重连）。写入侧与读取侧必须用同一个变换，
+    // 否则会出现「写进去了但按同样的名字删不掉/查不到」的静默失效（见 e5be8bc：禁用名单
+    // 删除分支未归一导致技能永远无法重新启用）。此处 trim + lowercase 为全仓唯一实现，
+    // 上层不再各自写 filterNot/remove——与 skill/agent 两级合并的约定一致。
+
+    /** 名称主键的归一键：大小写与首尾空白均无关。 */
+    private fun keyOf(name: String): String = name.trim().lowercase()
+
+    private suspend fun readScoped(scope: McpScope): List<McpServerConfig> =
+        if (scope == McpScope.GLOBAL) getGlobalServers() else getProjectServers()
+
+    private suspend fun writeScoped(scope: McpScope, servers: List<McpServerConfig>) {
+        if (scope == McpScope.GLOBAL) setGlobalServers(servers) else setProjectServers(servers)
+    }
+
+    /**
+     * 增/改一个 server（含重命名与作用域迁移），归一在此一次性完成。
+     *
+     * @param originalName 编辑前的名字；新增传 null。**仅大小写/空白变化也视为同一实体**，
+     *   否则目标作用域会同时留下 `Foo` 与新写入的 `foo`，落盘成 UI 不可见的幽灵重复项。
+     * @param originalScope 编辑前的作用域；与 [scope] 不同时先旧作用域移除，避免残留项在
+     *   [merge]（项目优先）中继续覆盖新作用域的配置。
+     */
+    suspend fun upsertServer(
+        config: McpServerConfig,
+        scope: McpScope,
+        originalName: String? = null,
+        originalScope: McpScope? = null
+    ) {
+        if (originalName != null && originalScope != null && originalScope != scope) {
+            removeServer(originalName, originalScope)
+        }
+        // 需剔除【原名】与【新名】两个 key：
+        // - 新名：编辑同一实体时替换其旧条目；
+        // - 原名：**重命名**（如 old→new）时移除残留的旧条目，否则新旧两条并存。
+        // 原名与新名相同（含仅大小写/空白变化）时二者归一键相等，不会重复剔除。
+        val keysToDrop = setOfNotNull(originalName?.let(::keyOf), keyOf(config.name))
+        val base = readScoped(scope).filterNot { keyOf(it.name) in keysToDrop }
+        writeScoped(scope, base + config)
+    }
+
+    /** 按名称（忽略大小写与首尾空白）从指定作用域删除；返回是否真的删掉了。 */
+    suspend fun removeServer(name: String, scope: McpScope): Boolean {
+        val base = readScoped(scope)
+        val kept = base.filterNot { keyOf(it.name) == keyOf(name) }
+        if (kept.size == base.size) return false
+        writeScoped(scope, kept)
+        return true
+    }
+
+    /** 按名称（忽略大小写与首尾空白）设置启用位；返回是否命中。 */
+    suspend fun setServerEnabled(name: String, enabled: Boolean, scope: McpScope): Boolean {
+        val target = keyOf(name)
+        var hit = false
+        val updated = readScoped(scope).map {
+            if (keyOf(it.name) == target) {
+                hit = true
+                it.copy(enabled = enabled)
+            } else {
+                it
+            }
+        }
+        if (hit) writeScoped(scope, updated)
+        return hit
+    }
+
     /** 当前项目生效的合并配置（项目优先覆盖同名），供 [McpManager] 连接使用。 */
     suspend fun getEffectiveServers(): List<McpServerConfig> =
         getEffectiveEntries().map { it.server }
@@ -329,8 +396,8 @@ class McpConfigRepository @Inject constructor(
     ): List<McpServerEntry> {
         val byName = LinkedHashMap<String, McpServerEntry>()
         // 小写作 key：与 skill/agent 两级合并一致。否则 `Foo`/`foo` 同时生效，且全局项不被项目项覆盖。
-        global.forEach { byName[it.name.lowercase()] = McpServerEntry(it, McpScope.GLOBAL) }
-        project.forEach { byName[it.name.lowercase()] = McpServerEntry(it, McpScope.PROJECT) }
+        global.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.GLOBAL) }
+        project.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.PROJECT) }
         return byName.values.toList()
     }
 }
