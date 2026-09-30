@@ -69,4 +69,17 @@ class SkillConfigRepositoryTest {
 
         assertTrue(File(tempFolder.root, "skills.json.tmp").let { !it.exists() })
     }
+
+    /**
+     * 回归：禁用名单写入侧必须归一大小写，否则「以混合大小写名禁用、用小写名启用」删不掉，
+     * 技能永远无法重新启用（判定侧 [SkillConfigRepository.disabledNames] 统一转小写）。
+     */
+    @Test
+    fun writeDisabled_normalizesCase() {
+        val file = File(tempFolder.root, "skills.json")
+
+        SkillConfigRepository.writeDisabled(file, setOf("FooSkill"))
+
+        assertEquals(setOf("fooskill"), SkillConfigRepository.readDisabled(file))
+    }
 }

@@ -81,8 +81,10 @@ class AgentDefinitionConfigRepository @Inject constructor(
     /** 在指定作用域的配置中启用/禁用某个子代理。 */
     fun setDisabled(name: String, disabled: Boolean, scope: AgentDefinitionScope) {
         val file = if (scope == AgentDefinitionScope.GLOBAL) globalFile() else projectFile()
-        val names = readDisabled(file).toMutableSet()
-        if (disabled) names.add(name) else names.removeAll { it.equals(name, ignoreCase = true) }
+        // 与 skill/MCP 统一：配置键一律小写存、ignoreCase 比，避免磁盘键大小写不一导致禁用/启用静默失效。
+        val names = readDisabled(file).mapTo(LinkedHashSet()) { it.lowercase() }
+        val key = name.trim().lowercase()
+        if (disabled) names.add(key) else names.remove(key)
         writeDisabled(file, names)
     }
 
@@ -122,7 +124,8 @@ class AgentDefinitionConfigRepository @Inject constructor(
 
         private fun writeDisabled(file: File, names: Set<String>) {
             file.parentFile?.mkdirs()
-            val json = serializeDisabled(names)
+            // 落盘单一出口：统一归一为小写（与 skill 侧一致）。
+            val json = serializeDisabled(names.mapTo(LinkedHashSet()) { it.lowercase() })
             // 临时文件 + rename 原子落盘，避免写一半崩溃损坏配置
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(json)

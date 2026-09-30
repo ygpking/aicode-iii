@@ -41,6 +41,9 @@ class SkillRepository @Inject constructor(
     fun isSkillDisabled(name: String): Boolean =
         name.lowercase() in skillConfigRepository.disabledNames()
 
+    /** 当前生效的禁用技能名集合（全局 + 项目并集，小写）。供批量列表一次读盘，代替逐行 isSkillDisabled。 */
+    fun disabledNames(): Set<String> = skillConfigRepository.disabledNames()
+
     /** 在指定作用域启用/禁用某个技能。 */
     fun setSkillDisabled(name: String, disabled: Boolean, scope: SkillScope) =
         skillConfigRepository.setDisabled(name, disabled, scope)

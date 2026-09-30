@@ -209,6 +209,21 @@ class McpJsonRpcTest {
         assertNull(decoded.inputSchema)
     }
 
+    /**
+     * 回归：JSON Schema 草案允许布尔 schema（`"inputSchema": true`）。
+     * 旧实现声明为 JsonObject?，遇到布尔整个 tools/list 解码失败 → 整条连接失败；
+     * 放宽为 JsonElement? 后不应抛异常。
+     */
+    @Test
+    fun toolDescriptor_booleanSchema_decodesWithoutFailure() {
+        val decoded = json.decodeFromString<McpToolDescriptor>(
+            """{"name":"cmd","inputSchema":true}"""
+        )
+
+        assertEquals("cmd", decoded.name)
+        assertTrue("布尔 schema 应原样保留为 JsonPrimitive(true)", decoded.inputSchema != null)
+    }
+
     // ---- McpToolsListResult ----
 
     @Test

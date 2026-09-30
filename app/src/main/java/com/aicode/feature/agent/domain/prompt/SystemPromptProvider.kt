@@ -373,7 +373,11 @@ class SystemPromptProvider @Inject constructor(
                 definition.prompt,
                 activeSkillsSource.build(agentContext),
                 memoryListSource.build(agentContext),
-                subAgentListSource.build(agentContext),
+                // 子代理不能嵌套派发（工具集已剔除 task），这里刻意不传子代理清单：
+                // 传了的话，definition.prompt 里的 {{AICODE_SUBAGENTS}} 会被替换成主代理的
+                // 可派发清单，与上方注释「不注入可用子代理清单」自相矛盾，还可能诱导子代理
+                // 去调一个它根本没有的工具。传 null，占位符展开为空串。
+                null,
                 projectRuleSource.build(agentContext),
                 workspaceSource.build(agentContext),
                 currentDate()

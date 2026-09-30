@@ -103,6 +103,7 @@ import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -1089,7 +1090,7 @@ class SettingsViewModel @Inject constructor(
     fun setMcpServerEnabled(name: String, enabled: Boolean, scope: McpScope) {
         viewModelScope.launch {
             val base = if (scope == McpScope.GLOBAL) mcpConfigRepository.getGlobalServers() else mcpConfigRepository.getProjectServers()
-            val updated = base.map { if (it.name == name) it.copy(enabled = enabled) else it }
+            val updated = base.map { if (it.name.equals(name, ignoreCase = true)) it.copy(enabled = enabled) else it }
             if (scope == McpScope.GLOBAL) mcpConfigRepository.setGlobalServers(updated) else mcpConfigRepository.setProjectServers(updated)
             _mcpReloading.value = true
             try {
@@ -1127,15 +1128,26 @@ class SettingsViewModel @Inject constructor(
     fun refreshSkills() {
         viewModelScope.launch {
             _skills.value = withContext(Dispatchers.IO) {
-                skillRepository.listAllSkills().map { entry ->
-                    SkillUiEntry(
-                        name = entry.skill.name,
-                        description = entry.skill.description,
-                        scope = entry.scope,
-                        disabled = skillRepository.isSkillDisabled(entry.skill.name),
-                        instructions = entry.skill.instructions,
-                        requiredTools = entry.skill.requiredTools
-                    )
+                try {
+                    // 禁用集合整表只读一次：isSkillDisabled 每次调用都会重读两个 skills.json，
+                    // 逐行调用在技能多时会重复几十次磁盘 IO。
+                    val disabled = skillRepository.disabledNames()
+                    skillRepository.listAllSkills().map { entry ->
+                        SkillUiEntry(
+                            name = entry.skill.name,
+                            description = entry.skill.description,
+                            scope = entry.scope,
+                            disabled = entry.skill.name.lowercase() in disabled,
+                            instructions = entry.skill.instructions,
+                            requiredTools = entry.skill.requiredTools
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // 扫盘失败（远程工作区断连等）不得让协程异常向上抛；退化为空列表，用户可重试。
+                    FileLogger.w("SettingsViewModel", "刷新技能列表失败", e)
+                    emptyList()
                 }
             }
         }
@@ -1144,7 +1156,9 @@ class SettingsViewModel @Inject constructor(
     /** 切换技能的启用/禁用状态（写入对应作用域的 skills.json）。 */
     fun setSkillEnabled(name: String, enabled: Boolean, scope: SkillScope) {
         viewModelScope.launch {
-            skillRepository.setSkillDisabled(name, !enabled, scope)
+            // 写 skills.json 是阻塞磁盘 IO（可能还是远程 SSH），必须离开主线程；
+            // 同文件其余技能/子代理操作均如此，这里原先遗漏。
+            withContext(Dispatchers.IO) { skillRepository.setSkillDisabled(name, !enabled, scope) }
             refreshSkills()
         }
     }
@@ -1152,7 +1166,8 @@ class SettingsViewModel @Inject constructor(
     /** 删除指定作用域的技能（删除其目录，不可恢复），随后立即刷新列表。 */
     fun deleteSkill(name: String, scope: SkillScope) {
         viewModelScope.launch {
-            skillRepository.deleteSkill(name, scope)
+            // 递归删除技能目录同样是阻塞 IO（本地含大量文件 / 远程更甚），必须离开主线程。
+            withContext(Dispatchers.IO) { skillRepository.deleteSkill(name, scope) }
             refreshSkills()
         }
     }
@@ -1248,22 +1263,32 @@ class SettingsViewModel @Inject constructor(
     fun refreshSubAgents() {
         viewModelScope.launch {
             _subAgents.value = withContext(Dispatchers.IO) {
-                agentDefinitionRepository.listAll().map { entry ->
-                    SubAgentUiEntry(
-                        name = entry.definition.name,
-                        description = entry.definition.description,
-                        scope = entry.scope,
-                        disabled = agentDefinitionRepository.isDisabled(entry.definition.name),
-                        providerId = entry.definition.providerId,
-                        model = entry.definition.model,
-                        reasoningEffort = entry.definition.reasoningEffort,
-                        mode = entry.definition.mode,
-                        allowedTools = entry.definition.allowedTools,
-                        disallowedTools = entry.definition.disallowedTools,
-                        inject = entry.definition.inject,
-                        prompt = entry.definition.prompt,
-                        filePath = entry.definition.filePath
-                    )
+                try {
+                    // 禁用集合整表只读一次：isDisabled 每次调用都会重读两个 agents.json，
+                    // 逐行调用在定义多时会重复几十次磁盘 IO。
+                    val disabled = agentDefinitionRepository.disabledNames()
+                    agentDefinitionRepository.listAll().map { entry ->
+                        SubAgentUiEntry(
+                            name = entry.definition.name,
+                            description = entry.definition.description,
+                            scope = entry.scope,
+                            disabled = entry.definition.name.lowercase() in disabled,
+                            providerId = entry.definition.providerId,
+                            model = entry.definition.model,
+                            reasoningEffort = entry.definition.reasoningEffort,
+                            mode = entry.definition.mode,
+                            allowedTools = entry.definition.allowedTools,
+                            disallowedTools = entry.definition.disallowedTools,
+                            inject = entry.definition.inject,
+                            prompt = entry.definition.prompt,
+                            filePath = entry.definition.filePath
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    FileLogger.w("SettingsViewModel", "刷新子代理列表失败", e)
+                    emptyList()
                 }
             }
         }
@@ -1296,8 +1321,28 @@ class SettingsViewModel @Inject constructor(
             } else {
                 SubAgentSaveState.Failed(error)
             }
-            if (error == null) refreshSubAgents()
+            if (error == null) {
+                warnIfShadowed(form.name, scope)
+                refreshSubAgents()
+            }
         }
+    }
+
+    /**
+     * 同名定义跨作用域遮蔽提醒：同名时项目级覆盖全局（与技能/MCP 两级优先级一致），
+     * 但被覆盖的那份在设置页看起来「改了没生效」。保存成功后若另一作用域存在同名定义，
+     * 记一条告警留痕（列表侧另以「被项目级遮蔽」标签展示，见 SubAgentsSection）。
+     */
+    private suspend fun warnIfShadowed(name: String, scope: AgentDefinitionScope) {
+        val other = withContext(Dispatchers.IO) {
+            agentDefinitionRepository.listAll().firstOrNull {
+                it.scope != scope && it.definition.name.equals(name, ignoreCase = true)
+            }?.scope
+        } ?: return
+        FileLogger.w(
+            "SettingsViewModel",
+            "子代理「$name」在 $other 与 $scope 两级同时存在，实际生效的是项目级（遮蔽全局）；改另一级不会反映到主代理清单。"
+        )
     }
 
     fun clearSubAgentSaveState() {

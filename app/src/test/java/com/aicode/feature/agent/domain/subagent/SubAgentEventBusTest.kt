@@ -85,4 +85,46 @@ class SubAgentEventBusTest {
 
         assertEquals(setOf("sub-2"), bus.activeSubSessionIds.value)
     }
+
+    /**
+     * 回归：已完成子代理被 `send` 唤醒、起新一轮时，经由 markActive 补登记，否则该 id 自始至终
+     * 不在活跃集合——并发上限漏算、read/list 误报 completed、写租约被 pruneInactive 误删。
+     */
+    @Test
+    fun markActive_marksIdleSubAgentActive() {
+        val bus = SubAgentEventBus()
+        // 模拟一轮已完成：曾经 spawn 过并已归还
+        spawn(bus, "sub-1")
+        bus.emit(SubAgentEvent(subSessionId = "sub-1", parentSessionId = "parent", type = SubAgentEventType.COMPLETED))
+        assertEquals(emptySet<String>(), bus.activeSubSessionIds.value)
+
+        // 被 send 重新唤醒
+        bus.markActive("sub-1")
+
+        assertEquals(setOf("sub-1"), bus.activeSubSessionIds.value)
+        assertFalse(bus.isFull)
+    }
+
+    /** markActive 幂等：已在集合中再调用不重复计数。 */
+    @Test
+    fun markActive_isIdempotent() {
+        val bus = SubAgentEventBus()
+        bus.markActive("sub-1")
+        bus.markActive("sub-1")
+        spawn(bus, "sub-1")
+
+        assertEquals(setOf("sub-1"), bus.activeSubSessionIds.value)
+        assertEquals(1, bus.activeCount)
+    }
+
+    /** markActive 与 release 配对：唤醒后归还，名额回到零。 */
+    @Test
+    fun markActive_thenRelease_freesSlot() {
+        val bus = SubAgentEventBus()
+        bus.markActive("sub-1")
+        assertTrue(bus.activeSubSessionIds.value.contains("sub-1"))
+
+        assertTrue(bus.release("sub-1"))
+        assertEquals(emptySet<String>(), bus.activeSubSessionIds.value)
+    }
 }

@@ -33,7 +33,12 @@ enum class SkillImportError {
 }
 
 /** 批量导入中某个技能的失败记录。 */
-data class SkillImportFailure(val name: String, val error: SkillImportError)
+data class SkillImportFailure(
+    val name: String,
+    val error: SkillImportError,
+    /** 附加诊断（如审计拦截命中的规则/证据），供 UI 展示；无详细信息的失败为 null。 */
+    val detail: String? = null
+)
 
 /**
  * 一次导入的结果：[imported] 为成功写入的技能名；[failures] 为被跳过的技能及原因；
@@ -44,6 +49,8 @@ data class SkillImportReport(
     val imported: List<String>,
     val failures: List<SkillImportFailure> = emptyList(),
     val fatal: SkillImportError? = null,
+    /** [fatal] 的附加诊断（如审计拦截命中的规则/证据）；无则为 null。 */
+    val fatalDetail: String? = null,
     val warnings: List<SkillAuditFinding> = emptyList()
 )
 
@@ -85,8 +92,13 @@ internal object SkillImporter {
         val content = SkillParser.serialize(name, parsed.description, parsed.requiredTools, parsed.instructions)
         val audit = SkillContentAuditor.audit(mapOf(SKILL_FILE to content))
         if (audit.blocked.isNotEmpty()) {
-            FileLogger.w(TAG, "导入技能被审计拦截: $name（${audit.blocked.first().rule}）")
-            return SkillImportReport(emptyList(), fatal = SkillImportError.BLOCKED_BY_AUDIT)
+            val hit = audit.blocked.first()
+            FileLogger.w(TAG, "导入技能被审计拦截: $name（${hit.rule}）")
+            return SkillImportReport(
+                emptyList(),
+                fatal = SkillImportError.BLOCKED_BY_AUDIT,
+                fatalDetail = auditDetail(hit)
+            )
         }
         return try {
             provider.writeFile("${rootFor(skillsRoot, name)}/$SKILL_FILE", content, overwrite = true)
@@ -126,8 +138,9 @@ internal object SkillImporter {
             // 内容审计：含危险内容整技能拒绝（不落盘），仅告警则放行并随报告提示。
             val audit = SkillContentAuditor.audit(auditableText(skill.files))
             if (audit.blocked.isNotEmpty()) {
-                FileLogger.w(TAG, "技能被审计拦截: $name（${audit.blocked.first().rule}）")
-                failures += SkillImportFailure(name, SkillImportError.BLOCKED_BY_AUDIT)
+                val hit = audit.blocked.first()
+                FileLogger.w(TAG, "技能被审计拦截: $name（${hit.rule}）")
+                failures += SkillImportFailure(name, SkillImportError.BLOCKED_BY_AUDIT, auditDetail(hit))
                 continue
             }
             warnings += audit.warnings
@@ -150,6 +163,10 @@ internal object SkillImporter {
         name.lowercase() in existingNames -> SkillImportError.NAME_CONFLICT
         else -> null
     }
+
+    /** 审计拦截的用户可见诊断：命中的规则、文件与证据片段（证据压成单行，避免对话框被长文本撑开）。 */
+    private fun auditDetail(finding: SkillAuditFinding): String =
+        "命中规则：${finding.rule}｜文件：${finding.path}\n证据：${finding.evidence.replace(Regex("\\s+"), " ").trim()}"
 
     private fun rootFor(skillsRoot: String, name: String) = "${skillsRoot.trimEnd('/')}/$name"
 
@@ -222,7 +239,10 @@ internal object SkillImporter {
                 .firstOrNull { isInstructionFile(it.key.substringAfterLast('/')) }
                 ?.value?.toString(Charsets.UTF_8).orEmpty()
             val dirFallback = dir.substringAfterLast('/').ifBlank { fallbackName }
-            ArchivedSkill(name = SkillParser.parseText(instructionText, dirFallback).name, files = files)
+            // 单个技能解析失败只影响自己的名字（回退目录名），不让一个坏文件拖垮整包导入。
+            val parsedName = runCatching { SkillParser.parseText(instructionText, dirFallback).name }
+                .getOrDefault(dirFallback)
+            ArchivedSkill(name = parsedName, files = files)
         }
         return ArchiveRead.Ok(skills)
     }
