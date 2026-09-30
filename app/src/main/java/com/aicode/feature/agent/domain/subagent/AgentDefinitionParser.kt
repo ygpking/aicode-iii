@@ -1,10 +1,10 @@
 package com.aicode.feature.agent.domain.subagent
 
+import com.aicode.core.text.FrontmatterCodec
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.workspace.domain.FileAccessProvider
-import org.yaml.snakeyaml.Yaml
 
 /**
  * 解析单个子代理定义文件（`agents/<name>.md`）：YAML frontmatter 为配置，正文为 agent 提示词。
@@ -71,27 +71,19 @@ object AgentDefinitionParser {
         return parsed.ifEmpty { AgentDefinition.DEFAULT_INJECT }
     }
 
+    /**
+     * 切分并解析 frontmatter。切分/空 frontmatter 边界由 [FrontmatterCodec] 唯一实现，
+     * 与 SkillParser/MemoryParser 不再各持一份副本。
+     *
+     * 不启用 `repair`：本类原先没有裸标量补引号能力，抽取时保持行为不变（不扩大也不缩小）。
+     */
     private fun splitAndParseFrontmatter(text: String): Pair<Map<String, Any>, String> {
-        val normalized = text.replace("\r\n", "\n")
-        if (!normalized.startsWith("---\n")) return emptyMap<String, Any>() to normalized
-
-        val end = normalized.indexOf("\n---", startIndex = 3)
-        if (end < 0) return emptyMap<String, Any>() to normalized
-
-        // 空 frontmatter（`---\n---`）时闭合符紧跟起始符，end == 3：substring(4, end) 越界崩。
-        // 与 SkillParser 同源的坑，这里必须同样挡住。视为「无元数据」，正文取闭合符之后。
-        if (end < 4) return emptyMap<String, Any>() to normalized.substring(end + 4).removePrefix("\n")
-
-        val block = normalized.substring(4, end)
-        val rest = normalized.substring(end + 4).removePrefix("\n")
-
-        val map = try {
-            Yaml().load<Map<String, Any>>(block) ?: emptyMap()
-        } catch (e: Exception) {
-            FileLogger.w(TAG, "解析子代理定义 YAML 失败", e)
-            emptyMap()
+        val (block, body) = FrontmatterCodec.split(text)
+        if (block == null) return emptyMap<String, Any>() to body
+        val meta = FrontmatterCodec.parse(block, repair = false) { kind, e ->
+            FileLogger.w(TAG, "$kind（子代理定义）", e)
         }
-        return map to rest
+        return meta to body
     }
 
     private val VALID_EFFORTS = ReasoningEffort.entries.map { it.apiValue }.toSet()

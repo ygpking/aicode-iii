@@ -1,7 +1,7 @@
 package com.aicode.feature.agent.domain.memory
 
+import com.aicode.core.text.FrontmatterCodec
 import com.aicode.core.util.FileLogger
-import org.yaml.snakeyaml.Yaml
 import java.io.File
 
 object MemoryParser {
@@ -84,28 +84,17 @@ object MemoryParser {
         }
     }
 
+    /**
+     * 切分并解析 frontmatter。切分/空 frontmatter 边界由 [FrontmatterCodec] 唯一实现，
+     * 与 SkillParser/AgentDefinitionParser 不再各持一份副本。
+     * 不启用 `repair`（本类原先无裸标量补引号能力，保持行为不变）。
+     */
     private fun splitAndParseFrontmatter(text: String): Pair<Map<String, Any>, String> {
-        val normalized = text.replace("\r\n", "\n")
-        if (!normalized.startsWith("---\n")) return emptyMap<String, Any>() to normalized
-
-        val end = normalized.indexOf("\n---", startIndex = 3)
-        if (end < 0) return emptyMap<String, Any>() to normalized
-
-        // 空 frontmatter（`---\n---`）时 end == 3，substring(4, 3) 越界崩。与 SkillParser/AgentDefinitionParser 同源。
-        if (end < 4) return emptyMap<String, Any>() to normalized.substring(end + 4).removePrefix("\n")
-
-        val block = normalized.substring(4, end)
-        val rest = normalized.substring(end + 4).removePrefix("\n")
-
-        val map = try {
-            val yaml = Yaml()
-            val loaded = yaml.load<Map<String, Any>>(block)
-            loaded ?: emptyMap()
-        } catch (e: Exception) {
-            FileLogger.w(TAG, "解析 YAML 失败", e)
-            emptyMap()
+        val (block, body) = FrontmatterCodec.split(text)
+        if (block == null) return emptyMap<String, Any>() to body
+        val meta = FrontmatterCodec.parse(block, repair = false) { kind, e ->
+            FileLogger.w(TAG, "$kind（记忆）", e)
         }
-
-        return map to rest
+        return meta to body
     }
 }
