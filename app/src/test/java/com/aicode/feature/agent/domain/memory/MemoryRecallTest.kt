@@ -146,4 +146,51 @@ class MemoryRecallTest {
         val docs = (1..5).map { RecallDoc("p$it", MemoryScope.GLOBAL, "正文", pinned = true) }
         assertEquals(2, MemoryRecall.select("任意查询词", docs, maxHits = 2).size)
     }
+
+    // ---------- renderIndexBlock（只用摘要，不内联正文） ----------
+
+    @Test
+    fun renderIndexBlockOmitsBodyBeyondPerBlockLimit() {
+        val long = "A".repeat(300)
+        val doc = RecallDoc("m", MemoryScope.GLOBAL, long)
+        val block = MemoryRecall.renderIndexBlock(listOf(doc))
+        // 默认每块 120 字符，正文不应被完整内联
+        assertTrue(block.contains("A".repeat(120)))
+        assertTrue(!block.contains("A".repeat(121)))
+    }
+
+    @Test
+    fun renderIndexBlockIsMuchSmallerThanFullBlock() {
+        val body = "正文内容".repeat(400) // 1600 字符
+        val docs = (1..5).map { RecallDoc("d$it", MemoryScope.GLOBAL, body) }
+        val full = MemoryRecall.renderBlock(docs)
+        val index = MemoryRecall.renderIndexBlock(docs)
+        // 同一批 docs，索引块应显著小于全量块（预期 ~1/10 以下）
+        assertTrue(index.length * 5 < full.length)
+    }
+
+    @Test
+    fun renderIndexBlockKeepsSameIdsAndMarkers() {
+        val docs = listOf(
+            RecallDoc("a", MemoryScope.GLOBAL, "x".repeat(500)),
+            RecallDoc("b", MemoryScope.PROJECT, "y".repeat(500), pinned = true),
+        )
+        val index = MemoryRecall.renderIndexBlock(docs)
+        // 标签、id、scope、pinned 标记与全量块一致——只有正文宽度不同
+        assertTrue(index.startsWith("<recalled_memory>"))
+        assertTrue(index.endsWith("\n</recalled_memory>"))
+        assertTrue(index.contains("[a scope=global]"))
+        assertTrue(index.contains("[b scope=project pinned]"))
+        assertEquals(
+            MemoryRecall.renderBlock(docs).split("\n[").size,
+            index.split("\n[").size,
+        )
+    }
+
+    @Test
+    fun renderIndexBlockRespectsTotalBudget() {
+        val docs = (1..5).map { RecallDoc("d$it", MemoryScope.GLOBAL, "z".repeat(500)) }
+        val index = MemoryRecall.renderIndexBlock(docs, maxTotalChars = 300)
+        assertTrue(index.length <= 300 + "\n</recalled_memory>".length)
+    }
 }

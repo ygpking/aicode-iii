@@ -148,6 +148,35 @@ internal object MemoryRecall {
         docs: List<RecallDoc>,
         maxCharsPerBlock: Int = 2000,
         maxTotalChars: Int = 8000,
+    ): String = render(docs, maxCharsPerBlock, maxTotalChars)
+
+    /**
+     * 召回「索引块」：只渲染 名 + 摘要首段，**不内联正文**。
+     *
+     * 与 [renderBlock] 只差渲染宽度，[select] 的挑选结果完全相同（同一批 docs、同一顺序）。
+     * 正文交给模型用 `memory(action=read)` 按需拉取。
+     *
+     * 为什么值得收紧：召回块会被拼进本轮发往模型的 user 消息，成为上下文固定前缀的一部分。
+     * 它内联数千字符正文（实测 16 条真实记忆下平均 7.5k 字符）而多数命中并不需要正文细节，
+     * 这部分开销会随上下文一并按 token 计费（且被压缩、缓存等环节一并放大）。
+     * 只留「名 + 摘要」后实测降到约 840 字符，降幅约 89%。
+     *
+     * @param maxCharsPerBlock 单条上限，默认 120 字符（约等于 description 一句摘要）。
+     * @param maxTotalChars 整块上限，默认 1200 字符（约 600 tokens）。
+     *
+     * 注意：摘要可能被截断，正文语义未尽。调用方应在块尾附「按需 read 正文」的提示
+     * （见 StatefulAgentWorkflow.RECALL_READ_HINT）。
+     */
+    fun renderIndexBlock(
+        docs: List<RecallDoc>,
+        maxCharsPerBlock: Int = 120,
+        maxTotalChars: Int = 1200,
+    ): String = render(docs, maxCharsPerBlock, maxTotalChars)
+
+    private fun render(
+        docs: List<RecallDoc>,
+        maxCharsPerBlock: Int,
+        maxTotalChars: Int,
     ): String {
         if (docs.isEmpty()) return ""
         val sb = StringBuilder("<recalled_memory>")
