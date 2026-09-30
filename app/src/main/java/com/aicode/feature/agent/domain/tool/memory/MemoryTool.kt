@@ -108,7 +108,8 @@ class MemoryTool @Inject constructor(
             description = "save 可选：用户在提问时可能用到的词/同义词/英文写法（如 [\"发版\",\"正式版\",\"release\"]，建议 3-8 项，每项不超 16 字）。" +
                 "用途：当用户的话与你写的正文没有共同字词时（如说「发个正式版」而你写的是「构建环境」），" +
                 "检索会命中不了；这些词就是那条「用户没说的字」的桥。" +
-                "不传则保留该记忆已有的 triggers，因此更新记忆时无需重复填写。",
+                "不传则保留该记忆已有的 triggers，因此更新记忆时无需重复填写；" +
+                "显式传空数组 [] 表示清空该记忆的全部触发词。",
             required = false,
             itemsSchema = mapOf("type" to "string")
         )
@@ -170,6 +171,7 @@ class MemoryTool @Inject constructor(
         val triggers = parseTriggers(args)
         val success = memoryRepository.saveMemory(name, description, content, scope, projectRoot, triggers)
         return if (success) {
+            FileLogger.i(TAG, "memory save: name=$name scope=${scope.name.lowercase()} triggers=${describeTriggers(triggers)}")
             val triggerNote = if (triggers.isNullOrEmpty()) "" else "（含 ${triggers.size} 个触发词）"
             ToolResult.Success(JsonPrimitive("已成功保存记忆「$name」到 ${scope.name.lowercase()} 作用域$triggerNote。它将在下一次会话启动时自动注入摘要。当前会话若需立即使用，请通过 read 操作读取。"))
         } else {
@@ -190,6 +192,13 @@ class MemoryTool @Inject constructor(
             .distinct()
     }
 
+    /** 日志用的 triggers 摘要：null=保留既有；空列表=已清空；非空=数量与前 5 个。 */
+    private fun describeTriggers(triggers: List<String>?): String = when {
+        triggers == null -> "保留既有"
+        triggers.isEmpty() -> "已清空"
+        else -> "${triggers.size} 个（${triggers.take(5).joinToString(",")}）"
+    }
+
     private fun handleEdit(args: Map<String, JsonElement>, name: String?, scope: MemoryScope, projectRoot: String?): ToolResult {
         if (name.isNullOrEmpty()) return ToolResult.Error("edit 操作需要 name 参数", "MISSING_NAME")
 
@@ -201,8 +210,10 @@ class MemoryTool @Inject constructor(
         }
 
         return when (val result = memoryRepository.editMemory(name, edits, scope, projectRoot)) {
-            is MemoryEditResult.Success ->
+            is MemoryEditResult.Success -> {
+                FileLogger.i(TAG, "memory edit: name=$name scope=${scope.name.lowercase()} edits=${edits.size} 条")
                 ToolResult.Success(JsonPrimitive("已成功编辑记忆「$name」的正文（${scope.name.lowercase()} 作用域）。"))
+            }
             is MemoryEditResult.NotFound ->
                 ToolResult.Error("未找到记忆「${result.name}」，请先通过 save 创建，或确认 name 与作用域是否正确。", "MEMORY_NOT_FOUND")
             is MemoryEditResult.Error ->

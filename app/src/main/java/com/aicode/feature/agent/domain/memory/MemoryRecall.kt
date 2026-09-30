@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.memory
 
+import com.aicode.core.util.FileLogger
 import kotlin.math.ln
 
 /**
@@ -98,6 +99,8 @@ internal data class RecallDoc(
  */
 internal object MemoryRecall {
 
+    private const val TAG = "MemoryRecall"
+
     /** 单条记忆参与索引的正文上限，避免超长记忆拖慢每轮打分。 */
     private const val MAX_INDEX_CHARS = 4000
 
@@ -135,7 +138,13 @@ internal object MemoryRecall {
         // 只收窄不放空：命中过少（0）或过宽（超过半数候选）时回退全集，避免误杀。
         val queryRaw = tokenizeForRecall(stripStopTerms(query))
         val gated = scored.filter { triggerHits(queryRaw, it.triggers) > 0 }
-        val candidates = if (gated.isNotEmpty() && gated.size * 2 <= scored.size) gated else scored
+        // 门控过宽回退：gate 有候选但超过半数，放弃收窄、回退全集避免误杀。
+        // 只在「有候选但被放弃」时记日志；命中门控或完全无候选都不记，避免每轮刷屏。
+        val useGate = gated.isNotEmpty() && gated.size * 2 <= scored.size
+        if (!useGate && gated.isNotEmpty()) {
+            FileLogger.i(TAG, "召回门控过宽回退: query=${query.take(60)} gated=${gated.size} scored=${scored.size} 门控候选超过半数回退全集")
+        }
+        val candidates = if (useGate) gated else scored
         val candidateTokens = if (candidates === scored) docTokens
             else candidates.map { tokenizeForRecall(stripStopTerms(it.text.take(MAX_INDEX_CHARS))) }
 

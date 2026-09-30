@@ -17,12 +17,13 @@
 
 ### 记忆文件
 
-每条记忆是一个 Markdown 文件，由 YAML frontmatter（`name`、`description`）与正文组成：
+每条记忆是一个 Markdown 文件，由 YAML frontmatter（`name`、`description`，可选 `triggers`）与正文组成：
 
 ```markdown
 ---
 name: conventions
 description: 项目代码规范与命名约定
+triggers: [规范, 命名, 约定]
 ---
 （正文）
 ```
@@ -41,6 +42,9 @@ description: 项目代码规范与命名约定
 | `content` | 正文（Markdown），`save` 时必填 |
 | `edits` | 局部编辑列表，语义与编辑文件一致 |
 | `scope` | `project`（默认）或 `global` |
+| `triggers` | 触发词列表（可选），用于后续对话自动召回该记忆；`save` 时不传则保留该记忆已有触发词，传空数组 `[]` 则清空 |
+
+保存时可带 `triggers` 触发词列表：对话中用户提到触发词时，AI 会按主题召回对应记忆。
 
 同名记忆项目级优先于全局。更新既有记忆时建议使用 `edit` 局部编辑；涉及踩坑经验的内容，应在验证根因后记录。
 
