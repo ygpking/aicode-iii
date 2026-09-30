@@ -1,10 +1,28 @@
 package com.aicode.feature.agent.domain.container
 
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CommandSleepGuardTest {
+
+    @Test
+    fun `拦截信息显示原始数字而非 Double 形式`() {
+        val reason = CommandSleepGuard.blockReason("sleep 40")
+        assertNotNull(reason)
+        assertTrue(reason!!.contains("检测到独立 sleep 40（40s）"))
+        assertFalse(reason.contains("40.0"))
+    }
+
+    @Test
+    fun `带单位拦截信息不重复小数点`() {
+        val reason = CommandSleepGuard.blockReason("sleep 45s")
+        assertNotNull(reason)
+        assertTrue(reason!!.contains("检测到独立 sleep 45s（45s）"))
+        assertFalse(reason.contains("45.0"))
+    }
 
     @Test
     fun `长 sleep 拦截`() {

@@ -8,6 +8,7 @@ import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicApi
 import com.aicode.feature.agent.data.remote.gemini.GeminiApi
 import com.aicode.feature.agent.data.remote.openai.OpenAIApi
+import com.aicode.feature.agent.domain.container.CommandSleepGuard
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
@@ -816,15 +817,30 @@ class StatefulAgentWorkflow @Inject constructor(
                     is AgentSideEffect.RequestPermission -> {
                         val tool = toolRegistry.getTool(effect.toolCall.name)
                         val argsPreview = JsonObject(effect.toolCall.arguments).toString().take(500)
-                        val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)
-
-                        if (!checkResult.approved) {
-                            val rawResult = ToolResult.Error(checkResult.denyReason, checkResult.errorCode).toTransportString()
-                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, effect.toolCall.name, rawResult, true, argsPreview))
+                        // sleep 守卫前置：弹窗之前就拦下含独立长 sleep 的 Bash 命令，避免用户白点一次允许。
+                        // 拦截仍走 PermissionEvaluated(false)（非 USER_REJECTED）让 batch 状态机正常推进：
+                        // 该 call 以拒绝结果回放给模型；直接跳过会把 pendingPermissionCalls 卡死。
+                        val command = (effect.toolCall.arguments["command"] as? JsonPrimitive)?.contentOrNull
+                        val sleepBlock = if (effect.toolCall.name == "Bash" && command != null) {
+                            CommandSleepGuard.blockReason(command)
                         } else {
-                            send(AgentEvent.ToolCallStarted(effect.toolCall.id, effect.toolCall.name, argsPreview))
+                            null
                         }
-                        actionQueue.addLast(AgentAction.PermissionEvaluated(effect.toolCall, checkResult.approved, argsPreview, checkResult.denyReason, checkResult.errorCode))
+                        if (sleepBlock != null) {
+                            FileLogger.i(TAG, "命令被 sleep 守卫前置拦截: $command")
+                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, "Bash", ToolResult.Error(sleepBlock).toTransportString(), true, argsPreview))
+                            actionQueue.addLast(AgentAction.PermissionEvaluated(effect.toolCall, false, argsPreview, sleepBlock, "SYSTEM_DENIED"))
+                        } else {
+                            val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)
+
+                            if (!checkResult.approved) {
+                                val rawResult = ToolResult.Error(checkResult.denyReason, checkResult.errorCode).toTransportString()
+                                send(AgentEvent.ToolCallFinished(effect.toolCall.id, effect.toolCall.name, rawResult, true, argsPreview))
+                            } else {
+                                send(AgentEvent.ToolCallStarted(effect.toolCall.id, effect.toolCall.name, argsPreview))
+                            }
+                            actionQueue.addLast(AgentAction.PermissionEvaluated(effect.toolCall, checkResult.approved, argsPreview, checkResult.denyReason, checkResult.errorCode))
+                        }
                     }
                     is AgentSideEffect.CancelToolBatch -> {
                         // 整批取消：已批准未执行的工具补发完成事件（内容为未执行），

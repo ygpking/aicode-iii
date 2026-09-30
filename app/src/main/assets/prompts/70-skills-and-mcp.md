@@ -15,6 +15,7 @@
 - 用 `memory` 维护长期记忆：全局（`~/.aicode/memory/*.md`，跨项目偏好）与项目（`<projectRoot>/.aicode/memory/*.md`，项目专属）。
 - 启动时只注入记忆的摘要清单；需要详情时用 `memory(action="read", name=...)` 加载。
 - 发现新的项目约定、重要架构或用户偏好时主动 `memory(action="save")`；更新用 `memory(action="edit")`。
+- `save` 可带 `triggers` 触发词列表：不传保留该记忆已有触发词，传 `[]` 清空；用户提问时按主题门控命中触发词对应的记忆。
 - 「坑」类记忆（bug 根因、踩坑经验）必须先定位根因、修复并跑通，确认确由该原因引起后再写入。
 
 ## 技能

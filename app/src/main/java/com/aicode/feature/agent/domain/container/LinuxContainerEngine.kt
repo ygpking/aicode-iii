@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.InputStreamReader
@@ -87,6 +88,14 @@ class LinuxContainerEngine @Inject constructor(
     private val initMutex = Mutex()
 
     /**
+     * 全局命令并发信号量：限制同时在跑的「命令执行」proot 进程数（[MAX_CONCURRENT_COMMANDS]）。
+     * 多会话并行调工具时防止无限开 proot 进程；排队等待期间调用方取消会由 acquire 抛
+     * CancellationException 自然传播，不吞掉。终端 PTY / MCP stdio（[startProotProcess]/[startStdioProcess]）
+     * 有自己的会话语义，刻意不圈。
+     */
+    private val commandSemaphore = Semaphore(MAX_CONCURRENT_COMMANDS)
+
+    /**
      * 容器初始化的独立协程作用域：不随任何页面/调用方取消而中断，
      * 保证退出终端页后初始化仍在后台继续，下次进入可复用或等待其完成。
      */
@@ -146,6 +155,14 @@ class LinuxContainerEngine @Inject constructor(
          */
         private val STDIN_FROM_DEV_NULL: ProcessBuilder.Redirect =
             ProcessBuilder.Redirect.from(java.io.File("/dev/null"))
+
+        /**
+         * 全局并发的命令执行上限：手机上 4 路并发已是上限，防止多会话无限开 proot 进程。
+         * 多会话（多个 AI 会话并行）同时调工具 = 同时 N 个 proot+bash 进程，内存全部计入宿主 App；
+         * 宿主高负载时并发进程互相拖累，所有命令出现随机长尾。信号量只圈「命令执行」路径
+         * （[execCaptured]/[streamExecNoInstall]），终端 PTY / MCP stdio 有自己的会话语义，不圈。
+         */
+        const val MAX_CONCURRENT_COMMANDS = 4
 
         /** 命令默认超时（毫秒）：未显式指定时套用，避免命令卡死时永久占用会话。 */
         const val DEFAULT_TIMEOUT_MS = 120_000L
@@ -218,63 +235,71 @@ class LinuxContainerEngine @Inject constructor(
         projectPath: String?,
         timeoutMs: Long
     ): Flow<CommandEvent> = flow {
-        val effectiveTimeout = timeoutMs.coerceIn(1L, MAX_TIMEOUT_MS)
-        FileLogger.d(TAG, "执行命令(流式) cwd=$projectPath timeout=${effectiveTimeout}ms: ${sanitizeCommandForLog(command)}")
-        val process = startContainerProcess(command, projectPath)
-        val timedOut = AtomicBoolean(false)
-        // 看门狗跑在独立 scope（独立 Job）上：若放进包裹 emit 的 coroutineScope 里，emit 的
-        // Job 与 flow 收集者不一致会触发「Flow invariant is violated」。这里仅用它在超时时杀进程。
-        val watchScope = CoroutineScope(Dispatchers.IO + Job())
-        val watchdog = launchKillWatchdog(watchScope, process, effectiveTimeout, timedOut, command)
-        val cancellationHook = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
-            if (cause is CancellationException && process.isAlive) {
-                FileLogger.i(TAG, "命令被取消，终止进程: ${sanitizeCommandForLog(command)}")
-                runCatching { process.destroy() }
-                runCatching { process.destroyForcibly() }
-            }
-        }
-        val reader = BoundedLineReader(InputStreamReader(process.inputStream))
+        // 信号量：全局限制在跑的「命令执行」proot 进程数。排队期间若调用方取消，acquire 抛
+        // CancellationException 自然传播（不在此吞掉），acquire 未成功也不 release；成功进入
+        // try 后由最外层 finally 保证 release（无论正常结束/取消/异常/超时）。
+        commandSemaphore.acquire()
         try {
-            while (true) {
-                val line = reader.readLine() ?: break
-                emit(CommandEvent.Line(if (line.truncated) "${line.text}\n$LINE_TRUNCATED_NOTE" else line.text))
+            val effectiveTimeout = timeoutMs.coerceIn(1L, MAX_TIMEOUT_MS)
+            FileLogger.d(TAG, "执行命令(流式) cwd=$projectPath timeout=${effectiveTimeout}ms: ${sanitizeCommandForLog(command)}")
+            val process = startContainerProcess(command, projectPath)
+            val timedOut = AtomicBoolean(false)
+            // 看门狗跑在独立 scope（独立 Job）上：若放进包裹 emit 的 coroutineScope 里，emit 的
+            // Job 与 flow 收集者不一致会触发「Flow invariant is violated」。这里仅用它在超时时杀进程。
+            val watchScope = CoroutineScope(Dispatchers.IO + Job())
+            val watchdog = launchKillWatchdog(watchScope, process, effectiveTimeout, timedOut, command)
+            val cancellationHook = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+                if (cause is CancellationException && process.isAlive) {
+                    FileLogger.i(TAG, "命令被取消，终止进程: ${sanitizeCommandForLog(command)}")
+                    runCatching { process.destroy() }
+                    runCatching { process.destroyForcibly() }
+                }
             }
-            val exitCode = process.waitFor()
-            watchdog.cancel()
-            if (timedOut.get()) {
-                FileLogger.w(TAG, "命令超时(${effectiveTimeout}ms)已终止: ${sanitizeCommandForLog(command)}")
-                emit(CommandEvent.Line(timeoutNotice(effectiveTimeout)))
-                emit(CommandEvent.Exit(null))
-            } else {
-                if (exitCode != 0) FileLogger.w(TAG, "命令退出码=$exitCode: ${sanitizeCommandForLog(command)}")
-                else FileLogger.v(TAG, "命令完成(退出码 0): ${sanitizeCommandForLog(command)}")
-                emit(CommandEvent.Exit(exitCode))
-            }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // 看门狗超时 destroy 进程会关闭 stdout 管道，使阻塞中的 readLine 抛 IOException
-            //（而非返回 null）。若不在此吸收，异常会让 flow 异常终止、CommandEvent.Exit 不再 emit，
-            // 上层 executeStream 的 collect 随即中断，已逐行展示给用户的输出在最终 ToolResult 里丢失。
-            // 故此处按是否超时分流：超时则 emit 超时提示 + Exit(null)，保留已 emit 的各行；
-            // 非 IO 异常也转成一行提示 + Exit，避免 flow 异常终止丢掉已输出内容。
-            watchdog.cancel()
-            if (timedOut.get()) {
-                FileLogger.w(TAG, "命令超时(${effectiveTimeout}ms)已终止(readLine 异常): ${sanitizeCommandForLog(command)}", e)
-                emit(CommandEvent.Line(timeoutNotice(effectiveTimeout)))
-                emit(CommandEvent.Exit(null))
-            } else {
-                FileLogger.e(TAG, "命令读输出异常(已保留此前输出): ${sanitizeCommandForLog(command)}", e)
-                emit(CommandEvent.Line("[命令执行异常：${e.message}]"))
-                emit(CommandEvent.Exit(null))
+            val reader = BoundedLineReader(InputStreamReader(process.inputStream))
+            try {
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    emit(CommandEvent.Line(if (line.truncated) "${line.text}\n$LINE_TRUNCATED_NOTE" else line.text))
+                }
+                val exitCode = process.waitFor()
+                watchdog.cancel()
+                if (timedOut.get()) {
+                    FileLogger.w(TAG, "命令超时(${effectiveTimeout}ms)已终止: ${sanitizeCommandForLog(command)}")
+                    emit(CommandEvent.Line(timeoutNotice(effectiveTimeout)))
+                    emit(CommandEvent.Exit(null))
+                } else {
+                    if (exitCode != 0) FileLogger.w(TAG, "命令退出码=$exitCode: ${sanitizeCommandForLog(command)}")
+                    else FileLogger.v(TAG, "命令完成(退出码 0): ${sanitizeCommandForLog(command)}")
+                    emit(CommandEvent.Exit(exitCode))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 看门狗超时 destroy 进程会关闭 stdout 管道，使阻塞中的 readLine 抛 IOException
+                //（而非返回 null）。若不在此吸收，异常会让 flow 异常终止、CommandEvent.Exit 不再 emit，
+                // 上层 executeStream 的 collect 随即中断，已逐行展示给用户的输出在最终 ToolResult 里丢失。
+                // 故此处按是否超时分流：超时则 emit 超时提示 + Exit(null)，保留已 emit 的各行；
+                // 非 IO 异常也转成一行提示 + Exit，避免 flow 异常终止丢掉已输出内容。
+                watchdog.cancel()
+                if (timedOut.get()) {
+                    FileLogger.w(TAG, "命令超时(${effectiveTimeout}ms)已终止(readLine 异常): ${sanitizeCommandForLog(command)}", e)
+                    emit(CommandEvent.Line(timeoutNotice(effectiveTimeout)))
+                    emit(CommandEvent.Exit(null))
+                } else {
+                    FileLogger.e(TAG, "命令读输出异常(已保留此前输出): ${sanitizeCommandForLog(command)}", e)
+                    emit(CommandEvent.Line("[命令执行异常：${e.message}]"))
+                    emit(CommandEvent.Exit(null))
+                }
+            } finally {
+                // 协程取消（用户离开页面等）时确保子进程被回收，避免泄漏
+                cancellationHook?.dispose()
+                watchdog.cancel()
+                watchScope.cancel()
+                runCatching { reader.close() }
+                runCatching { process.destroy() }
             }
         } finally {
-            // 协程取消（用户离开页面等）时确保子进程被回收，避免泄漏
-            cancellationHook?.dispose()
-            watchdog.cancel()
-            watchScope.cancel()
-            runCatching { reader.close() }
-            runCatching { process.destroy() }
+            commandSemaphore.release()
         }
     }.flowOn(Dispatchers.IO)
 
@@ -352,6 +377,10 @@ class LinuxContainerEngine @Inject constructor(
         timeoutMs: Long,
         unbounded: Boolean = false
     ): ExecResult = withContext(Dispatchers.IO) {
+        // 信号量：全局限制在跑的「命令执行」proot 进程数。acquire 在 try 外——排队期间调用方取消时
+        // CancellationException 直接从 acquire 抛出（不吞掉、也未成功取得许可故不 release）；
+        // 成功进入 try 后由 finally 保证 release（正常返回/取消/异常/超时路径均释放）。
+        commandSemaphore.acquire()
         try {
             val effectiveTimeout = timeoutMs.coerceIn(1L, MAX_TIMEOUT_MS)
             FileLogger.d(TAG, "执行命令(同步) cwd=$projectPath timeout=${effectiveTimeout}ms: ${sanitizeCommandForLog(command)}")
@@ -406,6 +435,8 @@ class LinuxContainerEngine @Inject constructor(
         } catch (e: Exception) {
             FileLogger.e(TAG, "执行命令异常: ${sanitizeCommandForLog(command)}", e)
             ExecResult("Error: ${e.message}", null)
+        } finally {
+            commandSemaphore.release()
         }
     }
 
