@@ -1,6 +1,7 @@
 package com.aicode.core.net
 
 import android.content.Context
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.settings.data.repository.DEFAULT_NO_PROXY
 import com.aicode.feature.settings.data.repository.ProviderProxyEntry
 import com.aicode.feature.settings.data.repository.ProviderProxyRegistry
@@ -34,6 +35,8 @@ import java.net.URLEncoder
  *   环境变量，由 LinuxContainerEngine 叠加进容器进程环境。
  */
 object AppProxy {
+
+    private const val TAG = "AppProxy"
 
     @Volatile
     private var appContext: Context? = null
@@ -324,14 +327,26 @@ object AppProxy {
         return try {
             client.newCall(okhttp3.Request.Builder().url(probeUrl.ifBlank { PROBE_URL }).build()).execute().use { resp ->
                 val body = resp.body?.string().orEmpty().trim()
-                if (resp.isSuccessful) {
+                val result = if (resp.isSuccessful) {
                     ProxyTestResult(true, context.getString(com.aicode.R.string.proxy_test_ok, resp.code))
                 } else {
                     ProxyTestResult(false, context.getString(com.aicode.R.string.proxy_test_http_error, resp.code, body.take(120)))
                 }
+                logProxyTest(sel, result)
+                result
             }
         } catch (e: Exception) {
-            ProxyTestResult(false, context.getString(com.aicode.R.string.proxy_test_connect_failed, e.message ?: ""))
+            val result = ProxyTestResult(false, context.getString(com.aicode.R.string.proxy_test_connect_failed, e.message ?: ""))
+            logProxyTest(sel, result)
+            result
         }
+    }
+
+    /** 代理连通性测试结果落日志：只记类型/host/port 与结论，不含用户名密码。 */
+    private fun logProxyTest(sel: SelectedProxy, result: ProxyTestResult) {
+        FileLogger.i(
+            TAG,
+            "代理连通性测试 ${sel.type} ${sel.host}:${sel.port} -> ${if (result.ok) "成功" else "失败"}: ${result.message.take(160)}"
+        )
     }
 }

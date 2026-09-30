@@ -691,7 +691,7 @@ class ProviderDashboardRunner @Inject constructor(
         }
 
         parseDashboardJson(output)
-    }
+    }.onFailure { FileLogger.w(TAG, "面板脚本执行/解析失败 provider=${provider.name}: ${it.message?.take(120)}", it) }
 
     private fun resolveContainerScriptPath(path: String): String {
         return when {

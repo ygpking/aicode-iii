@@ -238,8 +238,10 @@ class MemoryTool @Inject constructor(
         
         val success = memoryRepository.deleteMemory(name, scope, projectRoot)
         return if (success) {
+            FileLogger.i(TAG, "memory delete: name=$name scope=${scope.name.lowercase()}")
             ToolResult.Success(JsonPrimitive("已成功删除 ${scope.name.lowercase()} 作用域的记忆「$name」。"))
         } else {
+            FileLogger.w(TAG, "memory delete 失败（未找到）: name=$name scope=${scope.name.lowercase()}")
             ToolResult.Error("删除失败，记忆「$name」可能不存在于该作用域。", "DELETE_FAILED")
         }
     }

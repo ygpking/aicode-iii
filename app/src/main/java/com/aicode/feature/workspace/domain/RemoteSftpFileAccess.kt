@@ -58,7 +58,10 @@ class RemoteSftpFileAccess @Inject constructor(
 
     /** 当前选中工作区在远程服务器上的真实路径（如 /data/.../test/111）。 */
     private fun currentWorkspaceRoot(): String {
-        val cfg = connection.config ?: throw IllegalStateException("SSH 未连接")
+        val cfg = connection.config ?: run {
+            FileLogger.w(TAG, "获取远程工作区根失败：SSH 未连接/未配置")
+            throw IllegalStateException("SSH 未连接")
+        }
         // currentPath() 远程模式返回选中工作区的远程绝对路径；未选中时回退到 remoteWorkspacePath
         val path = workspaceRepository.currentPath()
         return if (path.isNotBlank() && path != "/") path else cfg.remoteWorkspacePath.trimEnd('/')
@@ -106,6 +109,20 @@ class RemoteSftpFileAccess @Inject constructor(
         }
         throw e
     }
+
+    /**
+     * 关键文件操作失败落日志：异常原样抛出（调用方继续按业务处理），只在日志里留下轨迹。
+     * 跳过的三类是文档约定的正常业务结果（不存在/已存在/内容过大→提示分段读取），不属故障噪音。
+     */
+    private fun <T> logFailure(remote: String, action: String, block: () -> T): T =
+        try {
+            block()
+        } catch (e: Exception) {
+            if (e !is NoSuchFileException && e !is FileAlreadyExistsException && e !is RemoteOutputTooLargeException) {
+                FileLogger.e(TAG, "$action 失败: $remote (${e.javaClass.simpleName}: ${e.message})")
+            }
+            throw e
+        }
 
     override fun readFile(path: String): String = String(readAll(toRemotePath(path)), Charsets.UTF_8)
 
@@ -196,11 +213,13 @@ class RemoteSftpFileAccess @Inject constructor(
 
     override fun writeBytes(path: String, bytes: ByteArray, overwrite: Boolean) {
         val remote = toRemotePath(path)
-        withSftp { sftp ->
-            if (sftp.statExistence(remote) != null && !overwrite) throw FileAlreadyExistsException(File(remote))
-            ensureParent(sftp, remote)
-            sftp.open(remote, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
-                writeAll(rf, bytes)
+        logFailure(remote, "写入远程文件") {
+            withSftp { sftp ->
+                if (sftp.statExistence(remote) != null && !overwrite) throw FileAlreadyExistsException(File(remote))
+                ensureParent(sftp, remote)
+                sftp.open(remote, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
+                    writeAll(rf, bytes)
+                }
             }
         }
     }
@@ -209,30 +228,32 @@ class RemoteSftpFileAccess @Inject constructor(
         val remote = toRemotePath(path)
         // 先落到 .aicode-part 再改名：传输中途断开时不会在目标位置留下半截文件
         val tmp = "$remote.aicode-part"
-        return withSftp { sftp ->
-            if (sftp.statExistence(remote) != null && !overwrite) throw FileAlreadyExistsException(File(remote))
-            ensureParent(sftp, remote)
-            val written = try {
-                sftp.open(tmp, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
-                    val buf = ByteArray(IO_CHUNK)
-                    var offset = 0L
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        if (n == 0) continue
-                        rf.write(offset, buf, 0, n)
-                        offset += n
+        return logFailure(remote, "流式写入远程文件") {
+            withSftp { sftp ->
+                if (sftp.statExistence(remote) != null && !overwrite) throw FileAlreadyExistsException(File(remote))
+                ensureParent(sftp, remote)
+                val written = try {
+                    sftp.open(tmp, EnumSet.of(OpenMode.WRITE, OpenMode.CREAT, OpenMode.TRUNC)).use { rf ->
+                        val buf = ByteArray(IO_CHUNK)
+                        var offset = 0L
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            if (n == 0) continue
+                            rf.write(offset, buf, 0, n)
+                            offset += n
+                        }
+                        offset
                     }
-                    offset
+                } catch (e: Exception) {
+                    runCatching { sftp.rm(tmp) }
+                    throw e
                 }
-            } catch (e: Exception) {
-                runCatching { sftp.rm(tmp) }
-                throw e
+                // 目标已存在时先删再改名（SFTP v3 无跨平台可靠的「覆盖改名」）
+                if (sftp.statExistence(remote) != null) runCatching { sftp.rm(remote) }
+                sftp.rename(tmp, remote)
+                written
             }
-            // 目标已存在时先删再改名（SFTP v3 无跨平台可靠的「覆盖改名」）
-            if (sftp.statExistence(remote) != null) runCatching { sftp.rm(remote) }
-            sftp.rename(tmp, remote)
-            written
         }
     }
 
@@ -257,56 +278,68 @@ class RemoteSftpFileAccess @Inject constructor(
     override fun delete(path: String) {
         val remote = toRemotePath(path)
         // 接口约定 delete 只删文件或空目录：目录非空时 rmdir 失败 → 抛异常（与本地 File.delete() 对齐）。
-        withSftp { sftp ->
-            val attrs = sftp.statExistence(remote) ?: return@withSftp
-            if (attrs.type == FileMode.Type.DIRECTORY) sftp.rmdir(remote) else sftp.rm(remote)
+        logFailure(remote, "删除远程文件") {
+            withSftp { sftp ->
+                val attrs = sftp.statExistence(remote) ?: return@withSftp
+                if (attrs.type == FileMode.Type.DIRECTORY) sftp.rmdir(remote) else sftp.rm(remote)
+            }
         }
     }
 
     override fun deleteRecursively(path: String) {
         val remote = toRemotePath(path)
-        withSftp { sftp -> deleteRecursive(sftp, remote) }
+        logFailure(remote, "递归删除远程路径") {
+            withSftp { sftp -> deleteRecursive(sftp, remote) }
+        }
     }
 
     override fun rename(path: String, newPath: String) {
         val from = toRemotePath(path)
         val to = toRemotePath(newPath)
-        withSftp { sftp ->
-            if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
-            if (sftp.statExistence(to) != null) throw FileAlreadyExistsException(File(to))
-            sftp.rename(from, to)
+        logFailure(from, "重命名远程文件") {
+            withSftp { sftp ->
+                if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
+                if (sftp.statExistence(to) != null) throw FileAlreadyExistsException(File(to))
+                sftp.rename(from, to)
+            }
         }
     }
 
     override fun copy(path: String, newPath: String, overwrite: Boolean) {
         val from = toRemotePath(path)
         val to = toRemotePath(newPath)
-        withSftp { sftp ->
-            if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
-            if (sftp.statExistence(to) != null) {
-                if (!overwrite) throw FileAlreadyExistsException(File(to))
-                deleteRecursive(sftp, to)
+        logFailure(from, "复制远程路径") {
+            withSftp { sftp ->
+                if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
+                if (sftp.statExistence(to) != null) {
+                    if (!overwrite) throw FileAlreadyExistsException(File(to))
+                    deleteRecursive(sftp, to)
+                }
+                copyRecursive(sftp, from, to)
             }
-            copyRecursive(sftp, from, to)
         }
     }
 
     override fun move(path: String, newPath: String, overwrite: Boolean) {
         val from = toRemotePath(path)
         val to = toRemotePath(newPath)
-        withSftp { sftp ->
-            if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
-            if (sftp.statExistence(to) != null) {
-                if (!overwrite) throw FileAlreadyExistsException(File(to))
-                deleteRecursive(sftp, to)
+        logFailure(from, "移动远程路径") {
+            withSftp { sftp ->
+                if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
+                if (sftp.statExistence(to) != null) {
+                    if (!overwrite) throw FileAlreadyExistsException(File(to))
+                    deleteRecursive(sftp, to)
+                }
+                sftp.rename(from, to)
             }
-            sftp.rename(from, to)
         }
     }
 
     override fun mkdirs(path: String) {
         val remote = toRemotePath(path)
-        withSftp { it.mkdirs(remote) }
+        logFailure(remote, "创建远程目录") {
+            withSftp { it.mkdirs(remote) }
+        }
     }
 
     override fun parentPath(path: String): String? {
@@ -319,15 +352,17 @@ class RemoteSftpFileAccess @Inject constructor(
     override fun toDisplayPath(path: String): String = toDisplayPathFromRemote(toRemotePath(path))
 
     /** 读取远程文件全部字节；不存在抛 [NoSuchFileException]，超过 [MAX_REMOTE_READ_BYTES] 抛 [RemoteOutputTooLargeException]。 */
-    private fun readAll(remote: String): ByteArray = withSftp { sftp ->
-        val attrs = sftp.statExistence(remote) ?: throw NoSuchFileException(File(remote))
-        if (attrs.type == FileMode.Type.DIRECTORY) throw IOException("是目录，无法按文件读取: $remote")
-        if (attrs.size > MAX_REMOTE_READ_BYTES) {
-            throw RemoteOutputTooLargeException(
-                "远程文件超过 ${MAX_REMOTE_READ_BYTES / 1024 / 1024}MB，请改用 start_line/end_line 分段读取"
-            )
+    private fun readAll(remote: String): ByteArray = logFailure(remote, "读取远程文件") {
+        withSftp { sftp ->
+            val attrs = sftp.statExistence(remote) ?: throw NoSuchFileException(File(remote))
+            if (attrs.type == FileMode.Type.DIRECTORY) throw IOException("是目录，无法按文件读取: $remote")
+            if (attrs.size > MAX_REMOTE_READ_BYTES) {
+                throw RemoteOutputTooLargeException(
+                    "远程文件超过 ${MAX_REMOTE_READ_BYTES / 1024 / 1024}MB，请改用 start_line/end_line 分段读取"
+                )
+            }
+            sftp.open(remote).use { rf -> readFully(rf) }
         }
-        sftp.open(remote).use { rf -> readFully(rf) }
     }
 
     private fun readFully(rf: RemoteFile): ByteArray {
@@ -466,6 +501,7 @@ private fun confineRemote(base: String, relative: String): String {
     val baseNorm = normalizeRemote(base)
     val target = normalizeRemote("$baseNorm/$relative")
     if (target != baseNorm && !target.startsWith("$baseNorm/")) {
+        FileLogger.w(TAG, "远程路径越出工作区已拒绝: $relative (base=$baseNorm)")
         throw IllegalArgumentException("远程路径越出工作区：$relative")
     }
     return target

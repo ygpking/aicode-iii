@@ -237,7 +237,7 @@ class RemoteSshEngine @Inject constructor(
             connection.connect()
             _initProgress.value = ContainerInitState.Ready
         } catch (e: Exception) {
-            FileLogger.e(TAG, "SSH 连接失败", e)
+            FileLogger.e(TAG, "SSH 连接失败: ${friendlySshError(e)}", e)
             val friendly = friendlySshError(e)
             _initProgress.value = ContainerInitState.Failed(friendly)
             throw RuntimeException(friendly, e)

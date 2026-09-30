@@ -355,6 +355,7 @@ class McpManager @Inject constructor(
             val key = activeClients.keys.firstOrNull { it.equals(name, ignoreCase = true) } ?: return
             val client = activeClients.remove(key) ?: return
             runCatching { client.close() }
+            FileLogger.i(TAG, "[$key] 断开连接，反注册 ${client.tools.size} 个工具")
             client.tools.forEach { tool ->
                 toolRegistry.unregister(tool.name)
                 registeredToolNames.remove(tool.name)

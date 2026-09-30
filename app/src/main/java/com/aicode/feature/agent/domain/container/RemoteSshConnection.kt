@@ -122,10 +122,15 @@ class RemoteSshConnection @Inject constructor(
     }
 
     private fun disconnectInternal() {
+        val wasConnected = sshClient != null
         closeSftpInternal()
         runCatching { sshClient?.disconnect() }
         sshClient = null
         _connectionState.value = ConnectionState.DISCONNECTED
+        if (wasConnected) {
+            val c = config
+            FileLogger.i(TAG, "SSH 断开 ${c?.host ?: "?"}:${c?.port ?: "?"}")
+        }
     }
 
     /** 关闭并清空独立 SFTP 通道；下次 [sftp] 会按当前 config 重建。 */
@@ -199,9 +204,19 @@ class RemoteSshConnection @Inject constructor(
             ?.takeIf { sftpSshClient?.isConnected == true && sftpSshClient?.isAuthenticated == true }
             ?.let { return@withLock it }
         closeSftpInternal()
-        val client = withContext(Dispatchers.IO) { newSshClient(cfg) }
+        val client = try {
+            withContext(Dispatchers.IO) { newSshClient(cfg) }
+        } catch (e: Exception) {
+            FileLogger.w(TAG, "SFTP 通道建立失败: ${cfg.host}:${cfg.port} as ${cfg.username}", e)
+            throw e
+        }
         sftpSshClient = client
-        val sftp = withContext(Dispatchers.IO) { client.newSFTPClient() }
+        val sftp = try {
+            withContext(Dispatchers.IO) { client.newSFTPClient() }
+        } catch (e: Exception) {
+            FileLogger.w(TAG, "SFTPClient 初始化失败: ${cfg.host}:${cfg.port}", e)
+            throw e
+        }
         sftpClient = sftp
         sftp
     }
@@ -243,7 +258,8 @@ class RemoteSshConnection @Inject constructor(
                     backoffMs = 15000 // 连接正常，拉长探活间隔（仅兜底，断开有 DisconnectListener 即时通知）
                     continue
                 }
-                // 连接已断，尝试重连
+                // 连接已断，尝试重连（DisconnectListener 记断开原因，此处记重连触发时机）
+                FileLogger.i(TAG, "SSH 断线，触发自动重连")
                 tryReconnectIfDisconnected()
                 // 重连失败后指数退避
                 if (!isConnected()) {

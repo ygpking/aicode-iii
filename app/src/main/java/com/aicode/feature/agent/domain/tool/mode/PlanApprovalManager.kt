@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.tool.mode
 
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,6 +22,10 @@ import kotlinx.coroutines.launch
 class PlanApprovalManager @Inject constructor(
     private val chatSessionDao: ChatSessionDao
 ) {
+    private companion object {
+        const val TAG = "PlanApprovalManager"
+    }
+
     private val _pendingApproval = MutableStateFlow<PlanApprovalRequest?>(null)
     val pendingApproval: StateFlow<PlanApprovalRequest?> = _pendingApproval.asStateFlow()
 
@@ -77,6 +82,7 @@ class PlanApprovalManager @Inject constructor(
     /** 回滚会话模式到 PLAN（SwitchModeTool 已提前写入目标模式，未获批准时还原）。 */
     private fun rollbackModeToPlan(sessionId: String?) {
         val sid = sessionId ?: return
+        FileLogger.w(TAG, "PLAN 审批未通过，回滚模式到 PLAN: session=$sid")
         scope.launch {
             val entity = chatSessionDao.getById(sid)
             if (entity != null && entity.mode != "PLAN") {

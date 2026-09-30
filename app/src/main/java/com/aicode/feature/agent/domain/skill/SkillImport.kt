@@ -85,8 +85,12 @@ internal object SkillImporter {
     ): SkillImportReport {
         val parsed = SkillParser.parseText(text, fallbackName)
         val name = parsed.name.trim()
-        validate(name, existingNames)?.let { return SkillImportReport(emptyList(), fatal = it) }
+        validate(name, existingNames)?.let {
+            FileLogger.w(TAG, "导入技能被拒绝: $name（${it.name}）")
+            return SkillImportReport(emptyList(), fatal = it)
+        }
         if (parsed.instructions.isBlank()) {
+            FileLogger.w(TAG, "导入技能被拒绝: $name（EMPTY_CONTENT）")
             return SkillImportReport(emptyList(), fatal = SkillImportError.EMPTY_CONTENT)
         }
         val content = SkillParser.serialize(name, parsed.description, parsed.requiredTools, parsed.instructions)
@@ -102,6 +106,7 @@ internal object SkillImporter {
         }
         return try {
             provider.writeFile("${rootFor(skillsRoot, name)}/$SKILL_FILE", content, overwrite = true)
+            FileLogger.i(TAG, "导入技能成功: $name（${content.length} 字符）")
             SkillImportReport(imported = listOf(name), warnings = audit.warnings)
         } catch (e: Exception) {
             FileLogger.e(TAG, "导入技能失败: $name", e)
@@ -155,7 +160,9 @@ internal object SkillImporter {
                 failures += SkillImportFailure(name, SkillImportError.IO_FAILED)
             }
         }
-        return SkillImportReport(imported = imported, failures = failures, warnings = warnings)
+        val report = SkillImportReport(imported = imported, failures = failures, warnings = warnings)
+        FileLogger.i(TAG, "压缩包导入完成: 成功=${imported.size}, 失败=${failures.size}")
+        return report
     }
 
     private fun validate(name: String, existingNames: Set<String>): SkillImportError? = when {

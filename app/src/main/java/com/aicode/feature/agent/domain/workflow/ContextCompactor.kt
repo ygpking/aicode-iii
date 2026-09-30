@@ -121,6 +121,7 @@ class ContextCompactor @Inject constructor(
             splitIndex = messages.size - 1
         }
         if (splitIndex <= 0) {
+            FileLogger.i(TAG, "压缩放弃：拆分点落在消息最前端，无可压缩内容，跳过压缩")
             onEvent(AgentEvent.CompactionFinished)
             return messages.toList()
         }

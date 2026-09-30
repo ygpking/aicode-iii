@@ -281,7 +281,10 @@ class StatefulAgentWorkflow @Inject constructor(
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
         val provider = createStandaloneProvider(config, sessionId)
         val history = messagePersistenceUseCase.buildHistory(sessionId, "__manual_compress__")
-        if (history.size <= 2) return false
+        if (history.size <= 2) {
+            FileLogger.i(TAG, "手动压缩跳过：历史消息仅 ${history.size} 条，无可压缩内容")
+            return false
+        }
         val compactionProvider = resolveCompactionFallbackProvider(sessionId) ?: provider
         val compacted = contextCompactor.compactIfNeeded(history, compactionProvider, sessionId, force = true, onEvent = onEvent)
         return compacted.size != history.size
@@ -561,6 +564,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         // 轮次预算治理：段尾先注入收束提示（软收敛），预算耗尽才硬停。
                         when (val turnVerdict = turnGovernor.beginTurn()) {
                             is TurnVerdict.HardStop -> {
+                                FileLogger.w(TAG, "轮次预算耗尽（共 $totalLlmRounds 轮），硬停本轮请求")
                                 state = state.copy(
                                     isFinished = true,
                                     error = "本轮达到最大迭代上限（共 $totalLlmRounds 轮），已自动停止以避免无限循环。"
@@ -568,6 +572,8 @@ class StatefulAgentWorkflow @Inject constructor(
                                 continue
                             }
                             TurnVerdict.InjectWrapUpNotice -> {
+                                // 段尾软收敛：跨段边界低频提醒一次，提示模型先收束再续跑。
+                                FileLogger.i(TAG, "轮次预算段尾，注入收束提示（软收敛）")
                                 state = state.copy(
                                     messages = state.messages + AgentMessage.UserMessage(content = TURN_WRAP_UP_NOTICE)
                                 )
@@ -582,7 +588,12 @@ class StatefulAgentWorkflow @Inject constructor(
                             val sessionLastInputTokens = currentContext.sessionId?.let { sessionUseCase.getSessionById(it)?.lastInputTokens } ?: 0
                             compactedMessages = contextCompactor.compactIfNeeded(state.messages, compactionProvider, context.sessionId, lastInputTokens = sessionLastInputTokens, windowProvider = aiProvider) { event ->
                                 // 仅确定性失败关停本轮后续压缩；临时性失败（网关 503 等）下轮 LLM 调用前还可再试。
-                                if (event is AgentEvent.CompactionFailed && !event.transient) compactionAttemptFailed = true
+                                if (event is AgentEvent.CompactionFailed && !event.transient) {
+                                    if (!compactionAttemptFailed) {
+                                        FileLogger.w(TAG, "压缩确定性失败（${event.reason}），本次请求内不再自动压缩")
+                                    }
+                                    compactionAttemptFailed = true
+                                }
                                 send(event)
                             }
                             if (compactedMessages !== state.messages) {
@@ -753,7 +764,12 @@ class StatefulAgentWorkflow @Inject constructor(
                                     lastInputTokens = 0, windowProvider = aiProvider, force = true
                                 ) { event ->
                                     // 同上：临时性失败不关停，给后续轮次的自动压缩留机会。
-                                    if (event is AgentEvent.CompactionFailed && !event.transient) compactionAttemptFailed = true
+                                    if (event is AgentEvent.CompactionFailed && !event.transient) {
+                                        if (!compactionAttemptFailed) {
+                                            FileLogger.w(TAG, "压缩确定性失败（${event.reason}），本次请求内不再自动压缩")
+                                        }
+                                        compactionAttemptFailed = true
+                                    }
                                     send(event)
                                 }
                                 if (!compactionAttemptFailed) {
@@ -1391,18 +1407,26 @@ class StatefulAgentWorkflow @Inject constructor(
             when (val verdict = sentinel.observe(toolCall.name, toolCallFingerprint(toolCall), br.isError, br.result.hashCode())) {
                 is LoopVerdict.Blocked -> if (stopReason == null) {
                     stopReason = "检测到工具调用进入死循环（${verdict.reason}），已自动停止。"
+                    FileLogger.w(TAG, "循环治理硬停：工具调用死循环（${verdict.reason}）")
                 }
-                is LoopVerdict.SuspectedLoop -> appendNotice(
-                    "检测到重复调用（${verdict.reason}），请换用不同思路或参数，不要用相同参数重试。"
-                )
+                is LoopVerdict.SuspectedLoop -> {
+                    FileLogger.i(TAG, "循环治理软收敛：疑似重复调用（${verdict.reason}），已注入纠偏提示")
+                    appendNotice(
+                        "检测到重复调用（${verdict.reason}），请换用不同思路或参数，不要用相同参数重试。"
+                    )
+                }
                 LoopVerdict.Ok -> Unit
             }
         }
         when (val state = breaker.record(batchResults.all { it.isError })) {
             is BreakerState.Tripped -> if (stopReason == null) {
                 stopReason = "连续 ${state.consecutiveFailures} 轮工具调用全部失败，已熔断停止以避免持续失败与费用浪费。"
+                FileLogger.w(TAG, "循环治理硬停：连续 ${state.consecutiveFailures} 轮工具调用全部失败，熔断")
             }
-            BreakerState.WarnedOnce -> appendNotice("已连续多轮工具调用失败，请先核对失败原因与参数，再决定是否继续。")
+            BreakerState.WarnedOnce -> {
+                FileLogger.w(TAG, "循环治理软收敛：连续 ${breaker.consecutiveFailures} 轮工具调用全部失败，注入纠偏提示")
+                appendNotice("已连续多轮工具调用失败，请先核对失败原因与参数，再决定是否继续。")
+            }
             BreakerState.Closed -> Unit
         }
         return stopReason
@@ -1435,6 +1459,8 @@ class StatefulAgentWorkflow @Inject constructor(
         }
         val hits = MemoryRecall.select(query, docs)
         if (hits.isEmpty()) return null
+        // 每轮一次的低频日志：记录本次召回注入条数，供排查「记忆该生效却没生效 / 注入过多撑大上下文」。
+        FileLogger.i(TAG, "本轮注入 ${hits.size} 条记忆召回块")
         // 只给「名 + 摘要」，不内联正文：召回块会成为上下文固定前缀的一部分，内联数千字符正文
         // 而多数命中只需知道「有这么一条」。需要细节时用 memory(action=read, ...) 按需拉取。
         // select() 的挑选结果未变，只是渲染宽度收紧（见 MemoryRecall.renderIndexBlock）。
@@ -1489,6 +1515,7 @@ class StatefulAgentWorkflow @Inject constructor(
         if (tool.name == "planMode" && mode == AgentMode.PLAN) {
             val action = (arguments["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
             if (action == "exit") {
+                FileLogger.i(TAG, "权限判定放行 ${tool.name}（exit PLAN：计划审查面板兜底，跳过弹窗）")
                 return PermissionCheckResult(true)
             }
         }
@@ -1497,6 +1524,7 @@ class StatefulAgentWorkflow @Inject constructor(
         if (eval.verdict == ToolPermissionPolicyEngine.Verdict.DENY) {
             val reason = eval.denyReason ?: "该工具被项目安全规则策略禁止执行"
             val code = if (mode == AgentMode.PLAN) "PLAN_MODE_REJECTED" else "SYSTEM_DENIED"
+            FileLogger.i(TAG, "权限判定拒绝 ${tool.name}：$reason（$code）")
             return PermissionCheckResult(false, reason, code)
         }
 
@@ -1516,9 +1544,16 @@ class StatefulAgentWorkflow @Inject constructor(
                     sessionId = sessionId.orEmpty()
                 )
                 when (permissionManager.awaitApproval(request)) {
-                    PermissionChoice.REJECT -> PermissionCheckResult(false, "用户拒绝执行该工具", "USER_REJECTED")
-                    PermissionChoice.ONCE -> PermissionCheckResult(true)
+                    PermissionChoice.REJECT -> {
+                        FileLogger.i(TAG, "权限判定拒绝 ${tool.name}：用户拒绝（USER_REJECTED）")
+                        PermissionCheckResult(false, "用户拒绝执行该工具", "USER_REJECTED")
+                    }
+                    PermissionChoice.ONCE -> {
+                        FileLogger.i(TAG, "权限判定放行 ${tool.name}：用户单次允许（ONCE）")
+                        PermissionCheckResult(true)
+                    }
                     PermissionChoice.ALWAYS -> {
+                        FileLogger.i(TAG, "权限判定放行 ${tool.name}：用户始终允许，记忆 ${eval.rememberablePatterns.size} 条规则")
                         if (eval.rememberablePatterns.isNotEmpty()) {
                             policyEngine.remember(tool.name, eval.rememberablePatterns, PermissionScope.PROJECT)
                         }

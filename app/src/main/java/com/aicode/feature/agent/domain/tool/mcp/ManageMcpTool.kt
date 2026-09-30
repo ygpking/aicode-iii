@@ -131,6 +131,7 @@ class ManageMcpTool @Inject constructor(
                     val removed = servers.removeIf { it.name.equals(name, ignoreCase = true) }
                     if (removed) {
                         writeServers(servers)
+                        FileLogger.i(TAG, "manage_mcp remove: server=$name scope=$scopeLabel")
                         ToolResult.Success(JsonPrimitive("已成功移除 $scopeLabel MCP server: $name"))
                     } else {
                         ToolResult.Error("未找到 $scopeLabel MCP server: $name")
@@ -155,6 +156,7 @@ class ManageMcpTool @Inject constructor(
                     servers.add(newServer)
                     writeServers(servers)
                     
+                    FileLogger.i(TAG, "manage_mcp add_stdio: server=$name scope=$scopeLabel command=$command")
                     ToolResult.Success(JsonPrimitive("成功添加 $scopeLabel 本地 MCP server: $name。配置将在下一次会话生效。若命令依赖 Node/Python 等运行时，请通过命令工具在用户确认后安装。"))
                 }
                 "add_http" -> {
@@ -174,6 +176,7 @@ class ManageMcpTool @Inject constructor(
                     servers.add(newServer)
                     writeServers(servers)
                     
+                    FileLogger.i(TAG, "manage_mcp add_http: server=$name scope=$scopeLabel url=$url")
                     ToolResult.Success(JsonPrimitive("成功添加 $scopeLabel HTTP MCP server: $name. 配置将在下一次会话生效。"))
                 }
                 else -> ToolResult.Error("未知的 action: $action")

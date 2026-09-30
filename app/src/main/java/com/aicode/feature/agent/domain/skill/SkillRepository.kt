@@ -32,7 +32,10 @@ class SkillRepository @Inject constructor(
 
     /** 读取指定 skill 的完整指令正文；不存在 / 解析失败 / 已被禁用时返回 null。 */
     fun loadInstructions(name: String): String? {
-        if (name.lowercase() in skillConfigRepository.disabledNames()) return null
+        if (name.lowercase() in skillConfigRepository.disabledNames()) {
+            FileLogger.w(TAG, "load_skill 命中禁用名单，返回 null: $name")
+            return null
+        }
         return localDirectorySkillSource.loadInstructions(name)
             ?: projectDirectorySkillSource.loadInstructions(name)
     }
@@ -85,6 +88,7 @@ class SkillRepository @Inject constructor(
             provider.mkdirs(dir)
             val target = instructionFile(provider, dir) ?: "${dir.trimEnd('/')}/$INSTRUCTION_FILE"
             provider.writeFile(target, text, overwrite = true)
+            FileLogger.i(TAG, "保存技能成功: $name (scope=${scope.name.lowercase()}, original=${originalName ?: "新建"})")
             null
         } catch (e: Exception) {
             FileLogger.e(TAG, "保存技能失败: $name", e)
@@ -119,9 +123,18 @@ class SkillRepository @Inject constructor(
     fun deleteSkill(name: String, scope: SkillScope): Boolean {
         val entry = listAllSkills().firstOrNull {
             it.skill.name.equals(name, ignoreCase = true) && it.scope == scope
-        } ?: return false
-        val dirPath = entry.skill.dirPath ?: return false
-        return safeDeleteSkillDir(providerFor(scope), dirPath)
+        } ?: run {
+            FileLogger.w(TAG, "删除技能未找到: $name (scope=${scope.name.lowercase()})")
+            return false
+        }
+        val dirPath = entry.skill.dirPath ?: run {
+            FileLogger.w(TAG, "删除技能缺少目录路径: $name (scope=${scope.name.lowercase()})")
+            return false
+        }
+        val ok = safeDeleteSkillDir(providerFor(scope), dirPath)
+        if (ok) FileLogger.i(TAG, "删除技能: $name (scope=${scope.name.lowercase()}, dir=$dirPath)")
+        else FileLogger.w(TAG, "删除技能失败: $name (scope=${scope.name.lowercase()}, dir=$dirPath)")
+        return ok
     }
 
     /** 全局技能固定在本地私有目录，项目级技能跟随工作区（可能是远程）。 */
@@ -172,7 +185,9 @@ class SkillRepository @Inject constructor(
                 !it.isDirectory && (it.name.equals("SKILL.md", ignoreCase = true) || it.name.equals("CLAUDE.md", ignoreCase = true))
             } ?: false
             if (!hasInstruction) return false
-            return runCatching { provider.deleteRecursively(dirPath); true }.getOrDefault(false)
+            return runCatching { provider.deleteRecursively(dirPath); true }
+                .onFailure { FileLogger.e(TAG, "删除技能目录失败: $dirPath", it) }
+                .getOrDefault(false)
         }
     }
 }

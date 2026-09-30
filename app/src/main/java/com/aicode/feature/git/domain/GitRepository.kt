@@ -2,6 +2,7 @@ package com.aicode.feature.git.domain
 
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.container.CommandEngine
+import com.aicode.feature.agent.domain.container.sanitizeCommandForLog
 import com.aicode.feature.git.domain.model.GitBranch
 import com.aicode.feature.git.domain.model.GitCommit
 import com.aicode.feature.git.domain.model.GitFileChange
@@ -68,11 +69,18 @@ class GitRepository @Inject constructor(
         timeoutMs: Long,
         vararg args: String
     ): String {
+        val cmd = buildGitCommand(args)
         // 用不限幅执行：diff 内容/文件内容可能远超 AI 工具链路的 4 万字符限幅，
         // 截断占位符会混入 diff 数据流被 UI 渲染成伪 diff 行。
-        val result = engine.runCommandSyncUnbounded(buildGitCommand(args), workspaceRepository.currentPath(), timeoutMs)
-        if (result.outputTruncated) throw GitOutputTooLargeException()
+        val result = engine.runCommandSyncUnbounded(cmd, workspaceRepository.currentPath(), timeoutMs)
+        if (result.outputTruncated) {
+            FileLogger.e(TAG, "git 输出过大已截断: ${sanitizeCommandForLog(cmd)}")
+            throw GitOutputTooLargeException()
+        }
         if (result.exitCode == 0) return result.output
+        // 只补语义失败（提交被拒/冲突/认证失败等命令执行层看不到的判定）；
+        // 命令层的执行/退出码由 LinuxContainerEngine/RemoteSshEngine 已记。
+        FileLogger.w(TAG, "git 命令失败 exit=${result.exitCode}: ${sanitizeCommandForLog(cmd)}")
         throw GitCommandFailureException(result.output.ifBlank { "git 退出码 ${result.exitCode}" })
     }
 
@@ -183,6 +191,9 @@ class GitRepository @Inject constructor(
             }
         }
         val isMerging = hasMergeHead() || conflicted.isNotEmpty()
+        if (conflicted.isNotEmpty()) {
+            FileLogger.w(TAG, "检测到合并冲突: ${conflicted.joinToString { it.path }}")
+        }
         return GitStatus(branch, ahead, behind, staged, unstaged, untracked, conflicted, isMerging, upstream, isDetached)
     }
 
@@ -533,6 +544,7 @@ class GitRepository @Inject constructor(
         val appendCmd = "printf '%s\\n' ${shellQuote(normalized)} >> .gitignore"
         val appendResult = engine.runCommandSyncUnbounded(appendCmd, workspaceRepository.currentPath())
         if (appendResult.exitCode != 0) {
+            FileLogger.w(TAG, "写入 .gitignore 失败 exit=${appendResult.exitCode}: ${sanitizeCommandForLog(appendCmd)}")
             throw GitCommandFailureException(appendResult.output.ifBlank { "写入 .gitignore 失败" })
         }
         return normalized

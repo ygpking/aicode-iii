@@ -85,12 +85,14 @@ class StorageUsageScanner @Inject constructor(
 
     /** 执行一项清理，返回释放的字节数。 */
     suspend fun clean(kind: CleanupKind): Long = withContext(Dispatchers.IO) {
-        when (kind) {
+        val freed = when (kind) {
             CleanupKind.Caches -> clearDirContents(context.cacheDir) + clearDirContents(context.codeCacheDir)
             CleanupKind.Logs -> FileLogger.clearLogs() + AILogger.clearLogs() + EventTrace.clearTraceFiles()
             CleanupKind.ToolOutput -> clearDirContents(toolOutputStore.outputDir)
             CleanupKind.VisionSessions -> clearDirContents(visionSessionStore.sessionDir)
         }
+        FileLogger.i(TAG, "清理完成 kind=$kind 释放 ${formatStorageSize(freed)}（$freed 字节）")
+        freed
     }
 
     // ── 各分类 ──────────────────────────────────────────────────────────────

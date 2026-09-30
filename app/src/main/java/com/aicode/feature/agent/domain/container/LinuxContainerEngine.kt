@@ -747,7 +747,13 @@ class LinuxContainerEngine @Inject constructor(
         val pb = buildProcessBuilder(buildProotInvocation(command, projectPath))
         pb.redirectErrorStream(true)
         pb.redirectInput(STDIN_FROM_DEV_NULL)
-        return pb.start()
+        val process = pb.start()
+        // 秒退取证：长驻进程刚起就退出（exec 失败/缺库/环境错）是启动失败的最直接证据，
+        // 调用方拿到 Process 后通常直接读/丢弃流，不会察觉进程已死。
+        if (!process.isAlive) {
+            FileLogger.w(TAG, "proot 进程启动后秒退 exit=${runCatching { process.exitValue() }.getOrDefault(-1)}: ${sanitizeCommandForLog(command)}")
+        }
+        return process
     }
 
     /**
@@ -772,7 +778,12 @@ class LinuxContainerEngine @Inject constructor(
         val pb = buildProcessBuilder(invocation)
         // 刻意不 redirectErrorStream：stdout 留给 JSON-RPC，stderr 由调用方单独消费。
         // 同样刻意不重定向 stdin：这里的 stdin 就是 JSON-RPC 的请求通道，接 /dev/null 会让 server 立刻收到 EOF 退出。
-        return pb.start()
+        val process = pb.start()
+        // 秒退取证：stdio server 刚起就退出会让调用方拿到一个已死的进程（stdout 立刻 EOF）。
+        if (!process.isAlive) {
+            FileLogger.w(TAG, "stdio 进程启动后秒退 exit=${runCatching { process.exitValue() }.getOrDefault(-1)}: $program ${programArgs.joinToString(" ")}")
+        }
+        return process
     }
 
     /**
