@@ -45,6 +45,7 @@ import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.agent.domain.tool.ToolOutputStore
+import com.aicode.feature.agent.domain.tool.ToolRunBudget
 import com.aicode.feature.agent.domain.tool.ToolStreamEvent
 import com.aicode.feature.agent.domain.tool.modelToolResultText
 import com.aicode.feature.agent.domain.tool.toTransportString
@@ -164,6 +165,16 @@ class StatefulAgentWorkflow @Inject constructor(
             "轮次预算已用去一段。请先收束：用一小段总结当前已完成的工作、仍待解决的事项与下一步计划，然后继续推进；不要开启与本任务无关的新工作。若任务已全部完成，请用 todo 工具清理或归档已完成的条目，保持清单与实际进度一致。"
         /** 单轮工具调用数上限：超出部分当轮不执行、回写说明让模型下一轮再调，避免一次梭哈。 */
         const val MAX_TOOLS_PER_ROUND = 12
+
+        /**
+         * run 级工具输出字符预算（本次请求内累计喂进上下文的正文总量）。
+         *
+         * 取值权衡：单个大输出最大内联 40000 字符，一条 Bash 吐 20 万字符很常见。
+         * 阈值设得偏保守（≈100k token 量级），**只在病态 run 才触发**，避免影响正常会话；
+         * 触发后的效果是「后续输出落盘、内联只留预览」，模型可自行用 retrieveToolResult 回取。
+         * 设为 [ToolRunBudget.DISABLED] 即完全关闭。
+         */
+        const val RUN_OUTPUT_CHAR_BUDGET: Long = 400_000L
         val LEADING_COMMENT = Regex("(?s)^\\s*<!--.*?-->\\s*")
         /** 模型直出图片落盘目录（与 GenerateImageTool 保持一致）。 */
         const val GENERATED_IMAGE_DIR = "~/.aicode/generated-images"
@@ -537,6 +548,10 @@ class StatefulAgentWorkflow @Inject constructor(
         )
         val circuitBreaker = FailureCircuitBreaker()
         val loopSentinel = ToolLoopSentinel()
+        // run 级累积预算：限制本次请求内工具输出喂进上下文的字符总量。默认关闭（DISABLED），
+        // 启用后超限的后续输出一律落盘、内联只留紧凑预览，需回取时用 retrieveToolResult。
+        // 随 run 新建，与轮次预算/熔断/哨兵同一生命周期。
+        val runBudget = ToolRunBudget(RUN_OUTPUT_CHAR_BUDGET)
         // 模式提醒仅在模式变化时随最新用户消息注入一次（不进 system，避免切换时 system 前缀变化打断缓存）。
         val modeReminder = takeModeReminderIfChanged(currentContext.sessionId, currentContext.mode)
         val recallBlock = buildMemoryRecallBlock(userRequest, currentContext.projectRoot)
@@ -934,9 +949,9 @@ class StatefulAgentWorkflow @Inject constructor(
                             ) { toolCall ->
                                 val tool = toolRegistry.getTool(toolCall.name)
                                 if (tool is StreamingAgentTool) {
-                                    runToolStream(tool, toolCall, currentContext) { send(it) }
+                                    runToolStream(tool, toolCall, currentContext, runBudget) { send(it) }
                                 } else {
-                                    runToolSync(tool, toolCall, currentContext)
+                                    runToolSync(tool, toolCall, currentContext, runBudget)
                                 }
                             }
                         }
@@ -1048,7 +1063,7 @@ class StatefulAgentWorkflow @Inject constructor(
         send(AgentEvent.Completed)
     }
 
-    private suspend fun runToolSync(tool: AgentTool?, toolCall: ToolCall, context: AgentContext): ToolRunResult {
+    private suspend fun runToolSync(tool: AgentTool?, toolCall: ToolCall, context: AgentContext, runBudget: ToolRunBudget? = null): ToolRunResult {
         val name = toolCall.name
         if (tool == null) {
             val guidance = unknownToolGuidance(name, toolRegistry.getToolNames())
@@ -1059,7 +1074,7 @@ class StatefulAgentWorkflow @Inject constructor(
             val attachments = if (name == "sendFile" || name == "generateImage") extractAttachments(result) else emptyList()
             val images = if (result is ToolResult.Success) result.images else emptyList()
             val transportResult = if (attachments.isNotEmpty()) stripAttachments(result) else result
-            val processed = toolOutputStore.process(name, toolCall.id, transportResult)
+            val processed = toolOutputStore.process(name, toolCall.id, transportResult, runBudget)
             ToolRunResult(processed.toTransportString(), processed is ToolResult.Error, attachments, images)
         } catch (e: CancellationException) {
             throw e
@@ -1214,6 +1229,7 @@ class StatefulAgentWorkflow @Inject constructor(
         tool: StreamingAgentTool, 
         toolCall: ToolCall,
         context: AgentContext,
+        runBudget: ToolRunBudget? = null,
         onEvent: suspend (AgentEvent) -> Unit
     ): ToolRunResult {
         val live = StringBuilder()
@@ -1237,7 +1253,7 @@ class StatefulAgentWorkflow @Inject constructor(
                 }
             }
             val result = finalResult ?: ToolResult.Error("流式工具未返回结果", "MISSING_STREAM_RESULT")
-            val processed = toolOutputStore.process(toolCall.name, toolCall.id, result)
+            val processed = toolOutputStore.process(toolCall.name, toolCall.id, result, runBudget)
             val images = if (result is ToolResult.Success) result.images else emptyList()
             return ToolRunResult(processed.toTransportString(), processed is ToolResult.Error, images = images)
         } catch (e: CancellationException) {

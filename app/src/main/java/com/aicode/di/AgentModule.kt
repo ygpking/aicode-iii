@@ -53,6 +53,7 @@ import com.aicode.feature.agent.domain.permission.ToolPermissionPolicyEngine
 import com.aicode.core.net.AppProxy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.agent.domain.tool.ToolOutputStore
+import com.aicode.feature.agent.domain.tool.RetrieveToolResultTool
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.terminal.domain.DelegatingTerminalSessionProvider
 import com.aicode.feature.terminal.domain.RemoteTerminalSessionManager
@@ -301,6 +302,7 @@ object AgentModule {
         planModeTool: PlanModeTool,
         todoTool: TodoTool,
         memoryTool: MemoryTool,
+        retrieveToolResultTool: RetrieveToolResultTool,
         taskTool: TaskTool,
         messageParentTool: MessageParentTool,
         browserTool: BrowserTool,
@@ -326,6 +328,7 @@ object AgentModule {
             register("planMode", planModeTool)
             register("todo", todoTool)
             register("memory", memoryTool)
+            register("retrieveToolResult", retrieveToolResultTool)
             register("task", taskTool)
             register("messageParent", messageParentTool)
             register("browser", browserTool)

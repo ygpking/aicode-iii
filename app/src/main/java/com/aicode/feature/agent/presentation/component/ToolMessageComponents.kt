@@ -502,7 +502,7 @@ internal fun ToolStatusIcon(running: Boolean, isError: Boolean, toolName: String
 /** 工具名字形映射：键与 [com.aicode.feature.agent.domain.tool.ToolRegistry] 注册名一致（比对时忽略大小写）。 */
 private fun toolIcon(toolName: String?): ImageVector = when (toolName?.lowercase()) {
     "editfile", "writefile", "generateimage" -> FeatherIcons.Edit3
-    "readfile", "list", "sendfile", "viewimage" -> FeatherIcons.FileText
+    "readfile", "list", "sendfile", "viewimage", "retrievetoolresult" -> FeatherIcons.FileText
     "search", "websearch", "webfetch", "browser" -> FeatherIcons.Search
     "bash", "terminal" -> FeatherIcons.Terminal
     "todo" -> FeatherIcons.Check
@@ -523,7 +523,7 @@ private fun toolIcon(toolName: String?): ImageVector = when (toolName?.lowercase
 @StringRes
 internal fun toolRunningLabelRes(toolName: String?): Int = when (toolName?.lowercase()) {
     "editfile", "writefile" -> R.string.chat_status_editing_file
-    "readfile", "list", "sendfile", "viewimage" -> R.string.chat_status_reading_file
+    "readfile", "list", "sendfile", "viewimage", "retrievetoolresult" -> R.string.chat_status_reading_file
     "search", "websearch", "webfetch" -> R.string.chat_status_searching_web
     "browser" -> R.string.chat_status_operating_browser
     "bash", "terminal" -> R.string.chat_status_running_command
