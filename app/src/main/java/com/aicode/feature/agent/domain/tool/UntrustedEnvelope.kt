@@ -70,12 +70,18 @@ object UntrustedEnvelope {
         escapeXml(text).replace("\"", "&quot;")
 
     /**
-     * 包裹一段正文。空串原样返回（不值得为空内容加信封）；
-     * 已包裹的内容原样返回（幂等，避免嵌套信封）。
+     * 包裹一段正文。空串原样返回（不值得为空内容加信封）。
+     *
+     * **不做「已包裹就跳过」的字符串启发式判定**：任何基于字符串的幂等检测都可被伪造——
+     * 只要内容以 `<untrusted source="` 开头，就能完全绕过包裹并伪造 source 标签冒充可信来源
+     * （本实现的第一版就有此漏洞，被测试捕获）。故这里无条件转义并包裹：内容里的 `<` 一律变
+     * 为 `&lt;`，信封边界永远只可能来自平台自身。
+     *
+     * 重复调用会产生嵌套信封，因此调用方应保证每个结果只应用一次
+     * （[apply] 的唯一调用点在 [ToolOutputStore.process]，每个工具结果恰好一次）。
      */
     fun wrap(source: String, body: String): String {
         if (body.isEmpty()) return body
-        if (body.startsWith(OPEN_PREFIX)) return body
         return "$OPEN_PREFIX${escapeAttribute(source)}\">${escapeXml(body)}</untrusted>"
     }
 
@@ -85,6 +91,8 @@ object UntrustedEnvelope {
      *
      * 调用时机：应放在输出已被截断/落盘**之后**（见 [ToolOutputStore.process]）——
      * 否则截断可能切断闭合标签，留下未闭合的信封。
+     *
+     * 每个结果只应调用一次（重复调用会嵌套信封，但不会造成安全问题——内容仍被逐层转义）。
      */
     fun apply(toolName: String, result: ToolResult): ToolResult {
         val source = sourceFor(toolName) ?: return result
