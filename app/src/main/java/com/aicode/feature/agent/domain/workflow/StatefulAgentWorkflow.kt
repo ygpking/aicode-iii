@@ -1414,6 +1414,7 @@ class StatefulAgentWorkflow @Inject constructor(
                 text = if (m.description.isBlank()) m.content else "${m.description}\n${m.content}",
                 pinned = m.pinned,
                 updatedAtMs = m.file?.lastModified() ?: 0L,
+                triggers = m.triggers,
             )
         }
         val hits = MemoryRecall.select(query, docs)

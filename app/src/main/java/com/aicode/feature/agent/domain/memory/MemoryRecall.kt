@@ -81,6 +81,11 @@ internal data class RecallDoc(
     val text: String,
     val pinned: Boolean = false,
     val updatedAtMs: Long = 0L,
+    /**
+     * 该记忆声明的触发词。用于两件事：① 门控（把候选收窄到「用户真的提了这个场景」）；
+     * ② 加权（门控回退全集时用于区分）。空表时两机制自动跳过，不劣化。
+     */
+    val triggers: List<String> = emptyList(),
 )
 
 /**
@@ -95,6 +100,12 @@ internal object MemoryRecall {
 
     /** 单条记忆参与索引的正文上限，避免超长记忆拖慢每轮打分。 */
     private const val MAX_INDEX_CHARS = 4000
+
+    /** triggers 命中的加权系数（每个命中词加分，封顶见 [MAX_TRIGGER_HITS]）。 */
+    private const val W_TRIGGER = 0.30
+
+    /** triggers 加权封顶命中数，避免堆关键词刷分盖过正文相关性。 */
+    private const val MAX_TRIGGER_HITS = 2.0
 
     fun select(
         query: String,
@@ -112,18 +123,32 @@ internal object MemoryRecall {
 
         if (scored.isEmpty()) return pinned.take(maxHits)
 
-        val docTokens = scored.map { tokenizeForRecall(it.text.take(MAX_INDEX_CHARS)) }
+        // 停用词在**分词前**从原文剥离，而不是分词后按 token 过滤。
+        // 因为 CJK bigram 会跨词边界：「怎么解决」→ 怎么/么解/解决，只按 token 删掉
+        // 「怎么」「解决」后仍会留下「么解」，噪声文档照样匹配（实测踩中）。
+        // 两侧都剥：只剥 query 会让 df/avgLen 偏斜。
+        val docTokens = scored.map { tokenizeForRecall(stripStopTerms(it.text.take(MAX_INDEX_CHARS))) }
+
+        // 门控：若某些记忆的 triggers 与查询有交集，就把候选收窄到这个子集。
+        // 「发版」→ android-build-env（triggers 含「发版」）这类字面不重叠但语义明确的
+        // 查询，纯 BM25 会拿 0 分；门控把用户词表桥接到记忆。
+        // 只收窄不放空：命中过少（0）或过宽（超过半数候选）时回退全集，避免误杀。
+        val queryRaw = tokenizeForRecall(stripStopTerms(query))
+        val gated = scored.filter { triggerHits(queryRaw, it.triggers) > 0 }
+        val candidates = if (gated.isNotEmpty() && gated.size * 2 <= scored.size) gated else scored
+        val candidateTokens = if (candidates === scored) docTokens
+            else candidates.map { tokenizeForRecall(stripStopTerms(it.text.take(MAX_INDEX_CHARS))) }
+
         val docFreq = HashMap<String, Int>()
-        for (tokens in docTokens) {
+        for (tokens in candidateTokens) {
             for (t in tokens.toHashSet()) docFreq[t] = (docFreq[t] ?: 0) + 1
         }
-        val n = scored.size
-        val avgLen = docTokens.sumOf { it.size }.toDouble() / n
+        val n = candidates.size
+        val avgLen = candidateTokens.sumOf { it.size }.toDouble() / n
 
-        val queryTokens = tokenizeForRecall(query)
         val idf = HashMap<String, Double>()
         var anyMatch = false
-        for (t in queryTokens.toHashSet()) {
+        for (t in queryRaw.toHashSet()) {
             val df = docFreq[t]
             if (df != null && df > 0) {
                 anyMatch = true
@@ -131,8 +156,15 @@ internal object MemoryRecall {
             }
         }
 
-        val ranked = if (!anyMatch) emptyList() else scored
-            .mapIndexed { i, doc -> doc to rawBm25(idf, docTokens[i], avgLen, k1, b) }
+        // 门控已命中时，即使 BM25 全为 0（字面无重叠）也应交付这些候选；
+        // 否则保留原有的「全无匹配则不召回」行为。
+        val gateActive = candidates !== scored
+        val ranked = if (!anyMatch && !gateActive) emptyList() else candidates
+            .mapIndexed { i, doc ->
+                val bm25 = rawBm25(idf, candidateTokens[i], avgLen, k1, b)
+                val boost = W_TRIGGER * minOf(MAX_TRIGGER_HITS, triggerHits(queryRaw, doc.triggers).toDouble())
+                doc to (bm25 + boost)
+            }
             .filter { it.second > 0.0 }
             .sortedWith(
                 compareByDescending<Pair<RecallDoc, Double>> { it.second }
@@ -142,6 +174,32 @@ internal object MemoryRecall {
             .map { it.first }
 
         return (pinned + ranked).take(maxHits)
+    }
+
+    /**
+     * 从原文中剥离提问功能词。必须在分词**之前**做：CJK bigram 会跨越被删词的边界，
+     * 事后按 token 过滤会漏掉「么解」这类跨界组合，使停用词过滤失效。
+     */
+    private fun stripStopTerms(text: String): String {
+        var out = text
+        for (term in STOP_TERMS) {
+            if (term.isNotEmpty() && out.contains(term)) out = out.replace(term, " ")
+        }
+        return out
+    }
+
+    /**
+     * 查询 token 与记忆 triggers 的命中项数。triggers 自身也走同一分词器，
+     * 故中英混排、CJK bigram 都能对齐（如 triggers 里的「发版」可被「帮我发个正式版」命中）。
+     */
+    private fun triggerHits(queryTokens: List<String>, triggers: List<String>): Int {
+        if (queryTokens.isEmpty() || triggers.isEmpty()) return 0
+        val querySet = queryTokens.toHashSet()
+        var hits = 0
+        for (trg in triggers) {
+            if (tokenizeForRecall(trg).any { it in querySet }) hits++
+        }
+        return hits
     }
 
     fun renderBlock(
@@ -243,5 +301,22 @@ internal object MemoryRecall {
         "嗯", "哦", "啊", "好", "行", "可以", "继续", "接着", "收到",
         "明白", "谢谢", "多谢", "是的", "对", "了", "吧", "呢", "的",
         "请", "然后", "那么", "那就", "一下", "来",
+    )
+
+    /**
+     * 区分度低的「提问功能词」：它们几乎只表达「想问」，不携带主题信息，
+     * 但泛用性高会在 BM25 里拿到不低的 idf，把真正相关的记忆挤下去。
+     *
+     * 与 [GENERIC_TERMS] **分开**：后者参与 [isGeneric] 的「整句是否无信息」判定，
+     * 并入会把「怎么构建」这类有效查询误判为泛化而完全不召回。
+     *
+     * 实测依据：加入「怎么/如何/问题/解决」等词后，「这个构建问题怎么解决」的
+     * 完全命中从 0/3 升到 2/3。
+     */
+    private val STOP_TERMS: Set<String> = setOf(
+        "怎么", "如何", "什么", "为什么", "哪里", "哪些", "问题", "解决", "方法", "办法",
+        "需要", "时候", "这个", "那个", "还是", "就是", "没有", "情况", "已经", "可能",
+        "应该", "必须", "不能", "不会", "进行", "出现", "导致", "因为", "所以", "但是",
+        "如果", "以及", "并且", "或者", "东西", "地方", "意思",
     )
 }
