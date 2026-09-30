@@ -4,6 +4,7 @@ import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.memory.MemoryEdit
 import com.aicode.feature.agent.domain.memory.MemoryEditResult
 import com.aicode.feature.agent.domain.memory.MemoryRepository
+import com.aicode.feature.agent.domain.memory.MemoryRetention
 import com.aicode.feature.agent.domain.memory.MemoryScope
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
@@ -65,8 +66,8 @@ class MemoryTool @Inject constructor(
         "action" to ToolParameter(
             name = "action",
             type = ParameterType.STRING,
-            description = "操作类型：read=读取记忆正文；save=保存记忆（创建或全量覆盖）；edit=对已有记忆正文做局部编辑；delete=删除记忆；list=列出所有记忆摘要",
-            enum = listOf("read", "save", "edit", "delete", "list"),
+            description = "操作类型：read=读取记忆正文；save=保存记忆（创建或全量覆盖）；edit=对已有记忆正文做局部编辑；delete=删除记忆；list=列出所有记忆摘要；prune=清理超过指定天数未更新的陈旧记忆（破坏性，默认先预览）",
+            enum = listOf("read", "save", "edit", "delete", "list", "prune"),
             required = true
         ),
         "name" to ToolParameter(
@@ -112,6 +113,19 @@ class MemoryTool @Inject constructor(
                 "显式传空数组 [] 表示清空该记忆的全部触发词。",
             required = false,
             itemsSchema = mapOf("type" to "string")
+        ),
+        "stale_days" to ToolParameter(
+            name = "stale_days",
+            type = ParameterType.INTEGER,
+            description = "prune 必填：超过多少天未更新即视为陈旧。必须为正数；为 0 或负数不会删任何东西。" +
+                "不确定时先用较大值（如 180）预览。pinned 记忆永不被清理。",
+            required = false
+        ),
+        "dry_run" to ToolParameter(
+            name = "dry_run",
+            type = ParameterType.BOOLEAN,
+            description = "prune 可选，默认 true：只列出将被清理的记忆，不真删。确认名单无误后传 false 执行删除。",
+            required = false
         )
     )
 
@@ -133,6 +147,7 @@ class MemoryTool @Inject constructor(
                 "save" -> handleSave(args, memoryName, scope, context.projectRoot)
                 "edit" -> handleEdit(args, memoryName, scope, context.projectRoot)
                 "delete" -> handleDelete(memoryName, scope, context.projectRoot)
+                "prune" -> handlePrune(args, context.projectRoot)
                 else -> ToolResult.Error("不支持的操作: $action", "UNSUPPORTED_ACTION")
             }
         } catch (e: Exception) {
@@ -144,9 +159,65 @@ class MemoryTool @Inject constructor(
     private fun handleList(projectRoot: String?): ToolResult {
         val memories = memoryRepository.listMemories(projectRoot)
         if (memories.isEmpty()) return ToolResult.Success(JsonPrimitive("当前没有任何记忆。"))
-        
-        val list = memories.joinToString("\n") { "- ${it.name} (${it.scope.name.lowercase()}): ${it.description}" }
-        return ToolResult.Success(JsonPrimitive("当前记忆列表：\n$list"))
+
+        // 只读评估陈旧度，仅作标注供参考——不在这里删任何东西，清理必须由 prune 显式触发。
+        val report = memoryRepository.assessStaleness(projectRoot)
+        val list = memories.joinToString("\n") { memory ->
+            val staleTag = if (report.isStale(memory.name)) " [陈旧]" else ""
+            "- ${memory.name} (${memory.scope.name.lowercase()}): ${memory.description}$staleTag"
+        }
+        val staleNote = if (report.staleCount > 0) {
+            "\n\n提示：有 ${report.staleCount} 条记忆超过 ${MemoryRetention.DEFAULT_STALE_DAYS} 天未更新（标 [陈旧]），" +
+                "如确认无用可调 memory(action=prune, stale_days=${MemoryRetention.DEFAULT_STALE_DAYS}) 预览并清理。"
+        } else {
+            ""
+        }
+        return ToolResult.Success(JsonPrimitive("当前记忆列表：\n$list$staleNote"))
+    }
+
+    /**
+     * 清理陈旧记忆。**破坏性操作**，默认 dry-run 先预览。
+     * 不做后台自动删除：记忆不可再生，自动按时间删会误删「长期有效但久未更新」的约定。
+     */
+    private fun handlePrune(args: Map<String, JsonElement>, projectRoot: String?): ToolResult {
+        val staleDays = args["stale_days"]?.jsonPrimitive?.contentOrNull?.trim()?.toLongOrNull()
+            ?: return ToolResult.Error(
+                "prune 操作需要 stale_days 参数（正整数）：超过多少天未更新即视为陈旧。建议先用 180 预览。",
+                "MISSING_STALE_DAYS"
+            )
+        if (staleDays <= 0) {
+            return ToolResult.Error("stale_days 必须为正整数（传 0 或负数不会删任何东西）", "INVALID_STALE_DAYS")
+        }
+        val dryRun = args["dry_run"]?.jsonPrimitive?.booleanOrNull ?: true
+
+        val result = memoryRepository.pruneStaleMemories(projectRoot, staleDays, dryRun)
+        val scopeNote = if (result.skipped > 0) "（${result.skipped} 条 pinned 记忆已豁免）" else ""
+
+        if (result.names.isEmpty()) {
+            return ToolResult.Success(
+                JsonPrimitive("没有超过 $staleDays 天未更新的记忆，无需清理$scopeNote。")
+            )
+        }
+
+        return if (dryRun) {
+            FileLogger.i(TAG, "memory prune 预览: staleDays=$staleDays candidates=${result.names.size}")
+            ToolResult.Success(
+                JsonPrimitive(
+                    "【预览】超过 $staleDays 天未更新的记忆共 ${result.names.size} 条$scopeNote：\n" +
+                        result.names.joinToString("\n") { "- $it" } +
+                        "\n\n确认无误后调 memory(action=prune, stale_days=$staleDays, dry_run=false) 执行删除。"
+                )
+            )
+        } else {
+            FileLogger.i(TAG, "memory prune 执行: staleDays=$staleDays deleted=${result.names.size} failed=${result.failed}")
+            val failNote = if (result.failed > 0) "，${result.failed} 条删除失败（见日志）" else ""
+            ToolResult.Success(
+                JsonPrimitive(
+                    "已删除 ${result.names.size} 条超过 $staleDays 天未更新的记忆$scopeNote$failNote：\n" +
+                        result.names.joinToString("\n") { "- $it" }
+                )
+            )
+        }
     }
 
     private fun handleRead(name: String?, projectRoot: String?): ToolResult {

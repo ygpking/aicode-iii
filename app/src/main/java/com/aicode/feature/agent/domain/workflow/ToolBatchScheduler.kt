@@ -31,6 +31,7 @@ private val READ_ONLY_TOOLS: Set<String> = setOf(
     "viewImage",
     "websearch",
     "webfetch",
+    "retrieveToolResult",
 )
 
 /**

@@ -82,4 +82,71 @@ class MemoryRepository @Inject constructor(
             }
         }
     }
+
+    /**
+     * 评估记忆陈旧度（只读，不删任何东西）。
+     *
+     * @param staleDays 视为陈旧的天数阈值；`<= 0` 关闭评估。
+     */
+    fun assessStaleness(
+        projectRoot: String?,
+        staleDays: Long = MemoryRetention.DEFAULT_STALE_DAYS,
+        nowMs: Long = System.currentTimeMillis()
+    ): MemoryRetention.Report =
+        MemoryRetention.assess(listMemories(projectRoot), nowMs, staleDays)
+
+    /**
+     * 显式清理陈旧记忆（**破坏性操作**，仅在调用方明确给出 [staleDays] 时执行）。
+     *
+     * 这是「只读扫描 + 显式清理」策略的落地：不做后台自动删除，因为 AiCode 的记忆全是具名
+     * 常青记忆，自动按时间删会误删「长期有效但久未更新」的约定，而记忆不可再生。
+     *
+     * 安全约束：
+     * - `pinned: true` 的记忆永不删（对应上游 `exempt_files` 豁免名单）。
+     * - `mtime` 读不到（返回 0）的记忆不删——信息缺失时不赌。
+     * - [dryRun] 为 true（默认）时只返回将被删除的名单，不实际删除。
+     *
+     * @return 被删除（或将被删除）的记忆名，以及跳过数与失败数。
+     */
+    fun pruneStaleMemories(
+        projectRoot: String?,
+        staleDays: Long,
+        dryRun: Boolean = true,
+        nowMs: Long = System.currentTimeMillis()
+    ): PruneResult {
+        // staleDays <= 0 视为未启用：绝不因参数缺省或写错而全删。
+        if (staleDays <= 0) {
+            return PruneResult(emptyList(), skipped = 0, failed = 0, enabled = false)
+        }
+        val memories = listMemories(projectRoot)
+        val report = MemoryRetention.assess(memories, nowMs, staleDays)
+        val staleNames = report.ages.filter { it.stale }.map { it.name }
+        if (dryRun) {
+            return PruneResult(staleNames, skipped = report.pinnedExemptCount, failed = 0, enabled = true)
+        }
+
+        var failed = 0
+        val deleted = mutableListOf<String>()
+        staleNames.forEach { name ->
+            val target = memories.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: return@forEach
+            val ok = deleteMemory(target.name, target.scope, projectRoot)
+            if (ok) deleted += target.name else failed++
+        }
+        return PruneResult(deleted, skipped = report.pinnedExemptCount, failed = failed, enabled = true)
+    }
+
+    /**
+     * [pruneStaleMemories] 的结果。
+     *
+     * @param names 已删除（dryRun 时为「将被删除」）的记忆名。
+     * @param skipped 因 pinned 而豁免的记忆数。
+     * @param failed 删除失败的条数（如文件已被并发删除外的 IO 错误）。
+     * @param enabled false 表示 `staleDays <= 0`、本次未启用淘汰。
+     */
+    data class PruneResult(
+        val names: List<String>,
+        val skipped: Int,
+        val failed: Int,
+        val enabled: Boolean,
+    )
 }

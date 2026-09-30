@@ -33,7 +33,7 @@
 ## 工具使用约定
 - 直接调用工具，不要把工具调用写成文本或代码块。
 - 无依赖的调用并行发起；有依赖则按顺序。
-- 结果含 `output_truncated=true` 与 `output_path` 时，用 `readFile` 分段读取，不因截断而重复执行命令。
+- 结果含 `output_truncated=true` 与 `output_path` 时，用 `retrieveToolResult` 按行分页回取（返回 `total_lines`/`has_more`，续读用 `end_line+1`），不因截断而重复执行命令。
 
 ### 命令执行纪律
 - 读代码/搜内容/列目录优先 `readFile`/`search`/`list`（App 内通道，不走容器，最快最稳）；只有它们做不了的事才用 Bash。

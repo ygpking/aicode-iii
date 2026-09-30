@@ -1,0 +1,37 @@
+本目录包含 AiCode iii 移植/借鉴的第三方开源组件的许可与来源说明。
+
+================================================================================
+OpenSquilla — Apache License 2.0
+================================================================================
+上游项目：https://github.com/TokenRhythm/opensquilla
+版权：Copyright OpenSquilla contributors
+许可：Apache License, Version 2.0（全文见 OpenSquilla-Apache-2.0.txt）
+上游未提供 NOTICE 文件。
+
+AiCode iii 以「跨语言重写（Python → Kotlin）」的方式移植了以下设计，
+每个落地文件头部均标注了对应的上游源文件与函数：
+
+  1. safety/injection_guard.py::wrap_untrusted
+     → feature/agent/domain/tool/UntrustedEnvelope.kt
+       （收窄了转义集：仅转义 '&' 与 '<'，因 XML 文本内容中 '>' 无法开标签，
+         保留原样以免把代码里的 ->、List<String> 写成 -&gt; 降低可读性；
+         并删除了可被内容伪造的字符串幂等判定）
+
+  2. memory/retrieval.py::MemoryRetriever.search（时间衰减 + MMR）
+     → feature/agent/domain/memory/MemoryRecall.kt
+       （默认参数全关，保证既有排序行为零变更）
+
+  3. tools/builtin/tool_results.py + engine/tool_result_query.py（有界分页回取）
+     → feature/agent/domain/tool/ToolResultPager.kt
+       + feature/agent/domain/tool/RetrieveToolResultTool.kt
+
+  4. result_budget.py + tools/builtin/shell.py（预留/提交/回滚三段式预算）
+     → feature/agent/domain/tool/ToolRunBudget.kt
+
+  5. memory/retention.py::prune_expired_memory_files（记忆 TTL 淘汰）
+     → feature/agent/domain/memory/MemoryRetention.kt
+       （刻意改为「只读评估 + 显式清理」：AiCode 的记忆全为具名常青记忆，
+         无上游的「临时笔记」概念，自动按时间删会误删长期有效的约定；
+         详见该文件头注释与移植评估文档）
+
+完整移植评估见项目内文档：.aicode/squilla/port/移植评估.md
