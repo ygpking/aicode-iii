@@ -10,6 +10,9 @@ import org.junit.Test
  *
  * 重点是**空 frontmatter**：`---\n---` 曾让三份副本各自越界崩溃（`substring(4, 3)`），
  * 且上一轮只修了一处、同一崩溃随即在另一份里复发（commit `9661b83`）。收敛后此边界只此一处。
+ *
+ * 另一类边界是「**视觉上空**」的块（`---\n\n---`、仅空白行）：它在旧实现下虽不崩溃，
+ * 却会得到一个空 `block`，使调用方多走一套「有元数据」流程（多一次解析、误报 name 回退告警）。
  */
 class FrontmatterCodecTest {
 
@@ -74,5 +77,51 @@ class FrontmatterCodecTest {
 
         // 不启用 repair 时保持原行为（解析失败 → 空表）。
         assertTrue(FrontmatterCodec.parse(block, repair = false).isEmpty())
+    }
+
+    /** `---\n\n---`：含空白行的空 frontmatter，语义应与 `---\n---` 一致（无元数据）。 */
+    @Test
+    fun blankLineEmptyFrontmatter_treatedAsNoMetadata() {
+        val split = FrontmatterCodec.split("---\n\n---\nbody text")
+        assertNull("含空白行的空块同样视为无元数据", split.block)
+        assertEquals("body text", split.body)
+    }
+
+    /** `---\n   \n---`：仅含空格的空 frontmatter。 */
+    @Test
+    fun whitespaceOnlyFrontmatter_treatedAsNoMetadata() {
+        val split = FrontmatterCodec.split("---\n   \n---\nbody")
+        assertNull(split.block)
+        assertEquals("body", split.body)
+    }
+
+    /** 只含注释的块：YAML 视为「无元数据」，不得谎报「解析失败」。 */
+    @Test
+    fun commentOnlyBlock_doesNotWarnButStaysAsBlock() {
+        val split = FrontmatterCodec.split("---\n# just a comment\n---\nbody")
+        assertEquals("块本身仍保留给调用方", "# just a comment", split.block)
+
+        val warns = mutableListOf<String>()
+        val meta = FrontmatterCodec.parse(split.block!!) { m, _ -> warns.add(m) }
+        assertTrue("注释块应解析为空表而非报错", meta.isEmpty())
+        assertTrue("注释块是合法输入，不应产生告警（旧实现亦然）", warns.isEmpty())
+    }
+
+    /** 空串块的解析同样不告警（旧实现用 `?: emptyMap()`，无日志）。 */
+    @Test
+    fun blankBlock_parseDoesNotWarn() {
+        val warns = mutableListOf<String>()
+        val meta = FrontmatterCodec.parse("   ") { m, _ -> warns.add(m) }
+        assertTrue(meta.isEmpty())
+        assertTrue("纯空白块不是解析失败", warns.isEmpty())
+    }
+
+    /** 真失败仍必须告警：未闭合的流式映射是确定的 YAML 语法错误。 */
+    @Test
+    fun realParseFailure_stillWarns() {
+        val warns = mutableListOf<String>()
+        val meta = FrontmatterCodec.parse("{a: 1") { m, _ -> warns.add(m) }
+        assertTrue(meta.isEmpty())
+        assertEquals("语法错误必须告警，不得静默", listOf(FrontmatterCodec.FAILED), warns)
     }
 }

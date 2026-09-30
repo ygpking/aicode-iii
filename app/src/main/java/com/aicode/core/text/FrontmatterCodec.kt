@@ -24,11 +24,14 @@ object FrontmatterCodec {
     /**
      * 切分 Markdown 的 YAML frontmatter，兼容三种输入：
      * - **无 frontmatter**（不以 `---\n` 开头，或无闭合符）→ `block = null`，正文为全文；
-     * - **空 frontmatter**（`---\n---`）→ `block = null`（这是合法写法，视为无元数据），正文为闭合符之后；
+     * - **空 frontmatter**（`---\n---`、`---\n\n---`、仅含空白的块）→ `block = null`
+     *   （这是合法写法，视为无元数据），正文为闭合符之后；
      * - **正常 frontmatter** → `block` 为两 `---` 之间的 YAML 文本，正文为闭合符之后。
      *
      * 空 frontmatter 必须显式挡下：此时闭合符紧跟起始符（`end == 3`），
      * `substring(4, end)` 会越界崩溃，把整个技能/子代理/记忆列表连同扫描一起打挂。
+     * 含空白行的空块（`end == 4`）虽不崩溃，但会得到一个空的 `block`，让调用方多走一套
+     * 「有元数据」流程（多一次解析、误报「name 回退兜底」告警），故一并归一为 `null`。
      */
     fun split(text: String): Split {
         val normalized = text.replace("\r\n", "\n")
@@ -38,8 +41,10 @@ object FrontmatterCodec {
         if (end < 0) return Split(null, normalized)
         if (end < 4) return Split(null, normalized.substring(end + 4).removePrefix("\n"))
 
+        val block = normalized.substring(4, end)
         return Split(
-            block = normalized.substring(4, end),
+            // 纯空白块视为「无元数据」：`---\n\n---` 与 `---\n---` 语义相同。
+            block = block.takeIf { it.isNotBlank() },
             body = normalized.substring(end + 4).removePrefix("\n")
         )
     }
@@ -54,7 +59,11 @@ object FrontmatterCodec {
      */
     fun parse(block: String, repair: Boolean = false, onWarn: (String, Throwable?) -> Unit = { _, _ -> }): Map<String, Any> {
         val first = runCatching { Yaml().load<Map<String, Any>>(block) }
+        // 空块与「只有注释」的块，snakeyaml 会正常返回 null（不抛异常）——这是合法输入，
+        // 不是解析失败，故与历史实现的 `?: emptyMap()` 保持一致：不打告警。
+        // 只有**抛异常**才真正意味着块内容有问题，此时才告警。
         first.getOrNull()?.let { return it }
+        if (first.isSuccess) return emptyMap()
 
         if (repair) {
             val repaired = quotePlainScalarsWithColon(block)
@@ -89,7 +98,7 @@ object FrontmatterCodec {
      * 只针对上述坏 frontmatter，不追求覆盖全部 YAML 语法——调用点本就在首次解析已失败之后，
      * 修不动也只是维持原状，不会更坏。
      */
-    fun quotePlainScalarsWithColon(block: String): String =
+    private fun quotePlainScalarsWithColon(block: String): String =
         block.lines().joinToString("\n") { line ->
             val m = PLAIN_SCALAR.matchEntire(line) ?: return@joinToString line
             val value = m.groupValues[2]
