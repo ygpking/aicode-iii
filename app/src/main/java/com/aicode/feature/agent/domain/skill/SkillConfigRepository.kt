@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.skill
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.core.watch.FileChange
 import com.aicode.core.watch.FileChangeHub
@@ -51,7 +52,7 @@ class SkillConfigRepository @Inject constructor(
     fun disabledNames(): Set<String> {
         val global = readDisabled(globalFile())
         val project = readDisabled(projectFile())
-        return (global + project).map { it.lowercase() }.toSet()
+        return (global + project).map { NameKey.of(it) }.toSet()
     }
 
     /** 在指定作用域的配置中启用/禁用某个技能。 */
@@ -59,11 +60,12 @@ class SkillConfigRepository @Inject constructor(
         val file = if (scope == SkillScope.GLOBAL) globalFile() else projectFile()
         // 配置键一律小写存、ignoreCase 比（与 disabledNames/isSkillDisabled 的判定一致），
         // 否则“禁用写原样、启用按小写 remove”删不掉，技能永远无法重新启用。
-        val names = readDisabled(file).mapTo(LinkedHashSet()) { it.lowercase() }
-        val key = name.trim().lowercase()
+        // 归一口径统一走 NameKey（存/删/查三侧同一变换）。
+        val names = readDisabled(file).mapTo(LinkedHashSet()) { NameKey.of(it) }
+        val key = NameKey.of(name)
         if (disabled) names.add(key) else names.remove(key)
         writeDisabled(file, names)
-        FileLogger.i(TAG, "${if (disabled) "禁用" else "启用"}技能: ${name.trim().lowercase()} (scope=${scope.name.lowercase()})")
+        FileLogger.i(TAG, "${if (disabled) "禁用" else "启用"}技能: $key (scope=${scope.name.lowercase()})")
     }
 
     // ── 外部变更监听：容器内/手工直接增删改技能目录或 skills.json 后，数秒内通知 UI 刷新 ──
@@ -134,7 +136,7 @@ class SkillConfigRepository @Inject constructor(
             file.parentFile?.mkdirs()
             // 落盘单一出口：统一归一为小写，保证磁盘上永远只存小写禁用名，
             // 与读取侧 disabledNames()/isSkillDisabled 的判定一致（否则大小写不对称会让技能无法重新启用）。
-            val json = serializeDisabled(names.mapTo(LinkedHashSet()) { it.lowercase() })
+            val json = serializeDisabled(names.mapTo(LinkedHashSet()) { NameKey.of(it) })
             // 临时文件 + rename 原子落盘，避免写一半崩溃损坏配置
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(json)
