@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.skill
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import com.aicode.feature.workspace.domain.LocalFileAccess
@@ -32,7 +33,7 @@ class SkillRepository @Inject constructor(
 
     /** 读取指定 skill 的完整指令正文；不存在 / 解析失败 / 已被禁用时返回 null。 */
     fun loadInstructions(name: String): String? {
-        if (name.lowercase() in skillConfigRepository.disabledNames()) {
+        if (NameKey.of(name) in skillConfigRepository.disabledNames()) {
             FileLogger.w(TAG, "load_skill 命中禁用名单，返回 null: $name")
             return null
         }
@@ -42,7 +43,7 @@ class SkillRepository @Inject constructor(
 
     /** 技能是否在任一作用域中被禁用。 */
     fun isSkillDisabled(name: String): Boolean =
-        name.lowercase() in skillConfigRepository.disabledNames()
+        NameKey.of(name) in skillConfigRepository.disabledNames()
 
     /** 当前生效的禁用技能名集合（全局 + 项目并集，小写）。供批量列表一次读盘，代替逐行 isSkillDisabled。 */
     fun disabledNames(): Set<String> = skillConfigRepository.disabledNames()
@@ -117,7 +118,7 @@ class SkillRepository @Inject constructor(
 
     /** 指定作用域下已有技能名（小写），供导入查重。 */
     private fun existingNamesIn(scope: SkillScope): Set<String> =
-        listAllSkills().filter { it.scope == scope }.map { it.skill.name.lowercase() }.toSet()
+        listAllSkills().filter { it.scope == scope }.map { NameKey.of(it.skill.name) }.toSet()
 
     /** 删除指定作用域的技能（删除其目录，不可恢复）。返回是否成功。 */
     fun deleteSkill(name: String, scope: SkillScope): Boolean {
@@ -169,14 +170,14 @@ class SkillRepository @Inject constructor(
         /** 合并两级来源：同名项目级覆盖全局，按名称排序。 */
         internal fun mergeAll(global: List<Skill>, project: List<Skill>): List<SkillEntry> {
             val byName = LinkedHashMap<String, SkillEntry>()
-            global.forEach { byName[it.name.lowercase()] = SkillEntry(it, SkillScope.GLOBAL) }
-            project.forEach { byName[it.name.lowercase()] = SkillEntry(it, SkillScope.PROJECT) }
-            return byName.values.sortedBy { it.skill.name.lowercase() }
+            global.forEach { byName[NameKey.of(it.name)] = SkillEntry(it, SkillScope.GLOBAL) }
+            project.forEach { byName[NameKey.of(it.name)] = SkillEntry(it, SkillScope.PROJECT) }
+            return byName.values.sortedBy { NameKey.of(it.skill.name) }
         }
 
         /** 过滤禁用技能（禁用名单已归一化为小写）。 */
         internal fun filterDisabled(entries: List<SkillEntry>, disabled: Set<String>): List<SkillEntry> =
-            entries.filterNot { it.skill.name.lowercase() in disabled }
+            entries.filterNot { NameKey.of(it.skill.name) in disabled }
 
         /** 仅当目录存在且含 SKILL.md/CLAUDE.md 指令文件时才删除，避免误删非技能目录。 */
         internal fun safeDeleteSkillDir(provider: FileAccessProvider, dirPath: String): Boolean {

@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.skill
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import java.io.InputStream
@@ -153,7 +154,7 @@ internal object SkillImporter {
                 skill.files.forEach { (relative, bytes) ->
                     provider.writeBytes("${rootFor(skillsRoot, name)}/$relative", bytes, overwrite = true)
                 }
-                used += name.lowercase()
+                used += NameKey.of(name)
                 imported += name
             } catch (e: Exception) {
                 FileLogger.e(TAG, "导入技能失败: $name", e)
@@ -167,7 +168,7 @@ internal object SkillImporter {
 
     private fun validate(name: String, existingNames: Set<String>): SkillImportError? = when {
         !SkillRepository.isValidName(name) -> SkillImportError.INVALID_NAME
-        name.lowercase() in existingNames -> SkillImportError.NAME_CONFLICT
+        NameKey.of(name) in existingNames -> SkillImportError.NAME_CONFLICT
         else -> null
     }
 
