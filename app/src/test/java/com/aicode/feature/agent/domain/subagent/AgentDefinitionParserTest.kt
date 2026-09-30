@@ -130,13 +130,32 @@ class AgentDefinitionParserTest {
         assertEquals("只有正文", def.prompt)
     }
 
-    /** 空 frontmatter（`---\n---`）：end == 3，旧代码 substring(4, 3) 越界崩。应当作无元数据。 */
+    /**
+     * 回归：空 frontmatter（`---\n---`）。闭合符紧跟起始符时 end == 3，旧代码 substring(4, 3)
+     * 越界抛 StringIndexOutOfBoundsException（与 SkillParser 同源的坑）。
+     */
     @Test
     fun parse_emptyFrontmatterDoesNotCrash() {
-        val def = parseFile(write("empty.md", "---\n---\n提示词"))!!
+        val def = parseFile(write("a.md", "---\n---\n正文"))!!
 
-        assertEquals("empty", def.name)
-        assertEquals("提示词", def.prompt)
+        assertEquals("a", def.name)
+        assertEquals("正文", def.prompt)
+        assertNull(def.mode)
+    }
+
+    @Test
+    fun parse_emptyFrontmatterWithoutBodyReturnsNull() {
+        assertNull(parseFile(write("a.md", "---\n---\n")))
+        assertNull(parseFile(write("a.md", "---\n---")))
+    }
+
+    /** 空 frontmatter + 正文中含分隔符：正文必须完整保留。 */
+    @Test
+    fun parse_emptyFrontmatterKeepsBodyWithSeparators() {
+        val def = parseFile(write("a.md", "---\n---\n# 标题\n\n---\n尾注"))!!
+
+        assertTrue(def.prompt.contains("# 标题"))
+        assertTrue(def.prompt.contains("尾注"))
     }
 
     @Test
@@ -155,6 +174,31 @@ class AgentDefinitionParserTest {
     @Test
     fun scan_missingRootReturnsEmpty() {
         assertTrue(AgentDefinitionDirectoryScanner.scan(provider, File(tempFolder.root, "not-exists").absolutePath).isEmpty())
+    }
+
+    /**
+     * 回归：一个定义文件是空 frontmatter 时，不得让整次扫描失败，其余定义必须照常列出；
+     * 坏文件自身也按正常语义解析（空 frontmatter 是合法写法，不应被当坏文件跳过）。
+     */
+    @Test
+    fun scan_emptyFrontmatterFileDoesNotFailWholeScan() {
+        write("healthy.md", "---\nname: healthy\n---\n正文")
+        write("empty-fm.md", "---\n---\nbody")
+
+        val defs = AgentDefinitionDirectoryScanner.scan(provider, tempFolder.root.absolutePath)
+
+        assertEquals(listOf("empty-fm", "healthy"), defs.map { it.name }.sorted())
+    }
+
+    /** 回归：名为 .md 的目录混进定义目录时，不得让整次扫描失败。 */
+    @Test
+    fun scan_toleratesMalformedEntryWithoutFailingAll() {
+        write("healthy.md", "---\nname: healthy\n---\n正文")
+        File(tempFolder.root, "broken.md").mkdirs()
+
+        val defs = AgentDefinitionDirectoryScanner.scan(provider, tempFolder.root.absolutePath)
+
+        assertEquals(listOf("healthy"), defs.map { it.name })
     }
 
     /**

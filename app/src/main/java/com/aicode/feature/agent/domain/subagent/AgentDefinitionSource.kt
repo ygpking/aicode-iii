@@ -17,7 +17,7 @@ internal object AgentDefinitionDirectoryScanner {
         val base = root.trimEnd('/')
         return provider.listFiles(root)
             .filter { !it.isDirectory && it.name.endsWith(".md", ignoreCase = true) }
-            // 单个坏定义只跳过自己，绝不连带整表（与 SkillDirectoryScanner/MemorySource 同一根因）。
+            // 单个坏定义只跳过自己，绝不连带整表：否则一个畸形 .md 会让全部子代理从列表与可派发清单中消失。
             .mapNotNull { entry ->
                 runCatching { AgentDefinitionParser.parse(provider, "$base/${entry.name}") }
                     .onFailure { FileLogger.w(TAG, "解析子代理定义失败，已跳过: ${entry.name}", it) }
@@ -25,4 +25,6 @@ internal object AgentDefinitionDirectoryScanner {
             }
             .sortedBy { it.name.lowercase() }
     }
+
+    private const val TAG = "AgentDefinitionDirectoryScanner"
 }

@@ -78,7 +78,8 @@ object AgentDefinitionParser {
         val end = normalized.indexOf("\n---", startIndex = 3)
         if (end < 0) return emptyMap<String, Any>() to normalized
 
-        // 空 frontmatter（`---\n---`）时 end == 3，substring(4, 3) 越界崩。与 SkillParser/MemoryParser 同源。
+        // 空 frontmatter（`---\n---`）时闭合符紧跟起始符，end == 3：substring(4, end) 越界崩。
+        // 与 SkillParser 同源的坑，这里必须同样挡住。视为「无元数据」，正文取闭合符之后。
         if (end < 4) return emptyMap<String, Any>() to normalized.substring(end + 4).removePrefix("\n")
 
         val block = normalized.substring(4, end)

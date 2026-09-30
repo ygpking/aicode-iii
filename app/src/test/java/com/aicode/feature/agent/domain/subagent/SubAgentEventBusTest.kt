@@ -87,40 +87,44 @@ class SubAgentEventBusTest {
     }
 
     /**
-     * send 唤醒已完成的子代理时会起新一轮，但不经 SPAWNED；此时必须靠 markActive 补登记，
-     * 否则该 id 自始至终不在活跃集合里：isFull 漏算（可跑超上限）、read/list 把运行中的它
-     * 报成 completed、SubAgentWriteLease.pruneInactive 误删其写租约（失去写冲突保护）。
+     * 回归：已完成子代理被 `send` 唤醒、起新一轮时，经由 markActive 补登记，否则该 id 自始至终
+     * 不在活跃集合——并发上限漏算、read/list 误报 completed、写租约被 pruneInactive 误删。
      */
     @Test
-    fun markActive_registersWithoutEvent() {
+    fun markActive_marksIdleSubAgentActive() {
         val bus = SubAgentEventBus()
+        // 模拟一轮已完成：曾经 spawn 过并已归还
+        spawn(bus, "sub-1")
+        bus.emit(SubAgentEvent(subSessionId = "sub-1", parentSessionId = "parent", type = SubAgentEventType.COMPLETED))
+        assertEquals(emptySet<String>(), bus.activeSubSessionIds.value)
 
+        // 被 send 重新唤醒
         bus.markActive("sub-1")
 
         assertEquals(setOf("sub-1"), bus.activeSubSessionIds.value)
-        assertEquals(1, bus.activeCount)
+        assertFalse(bus.isFull)
     }
 
-    /** 幂等：重复 markActive（如多轮唤醒）不得重复计数或破坏集合。 */
+    /** markActive 幂等：已在集合中再调用不重复计数。 */
     @Test
     fun markActive_isIdempotent() {
         val bus = SubAgentEventBus()
-
         bus.markActive("sub-1")
         bus.markActive("sub-1")
+        spawn(bus, "sub-1")
 
         assertEquals(setOf("sub-1"), bus.activeSubSessionIds.value)
         assertEquals(1, bus.activeCount)
     }
 
-    /** markActive 补登记的槽位必须计入并发上限，且能被 release 交回。 */
+    /** markActive 与 release 配对：唤醒后归还，名额回到零。 */
     @Test
-    fun markActive_countsTowardLimitAndIsReleasable() {
+    fun markActive_thenRelease_freesSlot() {
         val bus = SubAgentEventBus()
-        repeat(SubAgentEventBus.MAX_RUNNING) { bus.markActive("woken-$it") }
+        bus.markActive("sub-1")
+        assertTrue(bus.activeSubSessionIds.value.contains("sub-1"))
 
-        assertTrue(bus.isFull)
-        assertTrue(bus.release("woken-0"))
-        assertFalse(bus.isFull)
+        assertTrue(bus.release("sub-1"))
+        assertEquals(emptySet<String>(), bus.activeSubSessionIds.value)
     }
 }

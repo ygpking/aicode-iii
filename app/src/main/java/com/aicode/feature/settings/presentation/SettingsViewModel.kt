@@ -1264,7 +1264,8 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             _subAgents.value = withContext(Dispatchers.IO) {
                 try {
-                    // 禁用集合整表只读一次（与 refreshSkills 同一根因）。
+                    // 禁用集合整表只读一次：isDisabled 每次调用都会重读两个 agents.json，
+                    // 逐行调用在定义多时会重复几十次磁盘 IO。
                     val disabled = agentDefinitionRepository.disabledNames()
                     agentDefinitionRepository.listAll().map { entry ->
                         SubAgentUiEntry(
@@ -1320,8 +1321,28 @@ class SettingsViewModel @Inject constructor(
             } else {
                 SubAgentSaveState.Failed(error)
             }
-            if (error == null) refreshSubAgents()
+            if (error == null) {
+                warnIfShadowed(form.name, scope)
+                refreshSubAgents()
+            }
         }
+    }
+
+    /**
+     * 同名定义跨作用域遮蔽提醒：同名时项目级覆盖全局（与技能/MCP 两级优先级一致），
+     * 但被覆盖的那份在设置页看起来「改了没生效」。保存成功后若另一作用域存在同名定义，
+     * 记一条告警留痕（列表侧另以「被项目级遮蔽」标签展示，见 SubAgentsSection）。
+     */
+    private suspend fun warnIfShadowed(name: String, scope: AgentDefinitionScope) {
+        val other = withContext(Dispatchers.IO) {
+            agentDefinitionRepository.listAll().firstOrNull {
+                it.scope != scope && it.definition.name.equals(name, ignoreCase = true)
+            }?.scope
+        } ?: return
+        FileLogger.w(
+            "SettingsViewModel",
+            "子代理「$name」在 $other 与 $scope 两级同时存在，实际生效的是项目级（遮蔽全局）；改另一级不会反映到主代理清单。"
+        )
     }
 
     fun clearSubAgentSaveState() {
