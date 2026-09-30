@@ -222,7 +222,10 @@ internal object SkillImporter {
                 .firstOrNull { isInstructionFile(it.key.substringAfterLast('/')) }
                 ?.value?.toString(Charsets.UTF_8).orEmpty()
             val dirFallback = dir.substringAfterLast('/').ifBlank { fallbackName }
-            ArchivedSkill(name = SkillParser.parseText(instructionText, dirFallback).name, files = files)
+            // 单个技能解析失败只影响自己的名字（回退目录名），不让一个坏文件拖垮整包导入。
+            val parsedName = runCatching { SkillParser.parseText(instructionText, dirFallback).name }
+                .getOrDefault(dirFallback)
+            ArchivedSkill(name = parsedName, files = files)
         }
         return ArchiveRead.Ok(skills)
     }

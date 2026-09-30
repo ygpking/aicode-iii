@@ -127,7 +127,8 @@ class ManageMcpTool @Inject constructor(
                 "remove" -> {
                     val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("remove 缺少 server_name")
                     val servers = readServers().toMutableList()
-                    val removed = servers.removeIf { it.name == name }
+                    // ignoreCase：与合并（小写作 key）及 UI 的忽略大小写匹配一致，否则大小写不一致时删不掉。
+                    val removed = servers.removeIf { it.name.equals(name, ignoreCase = true) }
                     if (removed) {
                         writeServers(servers)
                         ToolResult.Success(JsonPrimitive("已成功移除 $scopeLabel MCP server: $name"))
@@ -150,7 +151,7 @@ class ManageMcpTool @Inject constructor(
                     )
                     
                     val servers = readServers().toMutableList()
-                    servers.removeIf { it.name == name }
+                    servers.removeIf { it.name.equals(name, ignoreCase = true) }
                     servers.add(newServer)
                     writeServers(servers)
                     
@@ -169,7 +170,7 @@ class ManageMcpTool @Inject constructor(
                     )
                     
                     val servers = readServers().toMutableList()
-                    servers.removeIf { it.name == name }
+                    servers.removeIf { it.name.equals(name, ignoreCase = true) }
                     servers.add(newServer)
                     writeServers(servers)
                     

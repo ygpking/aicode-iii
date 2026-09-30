@@ -35,8 +35,12 @@ class ProjectMemorySource(
         if (projectRoot.isBlank() || !memoryRoot.exists()) return emptyList()
         val files = memoryRoot.listFiles { file -> file.isFile && file.extension == "md" } ?: return emptyList()
         
-        return files.mapNotNull { file -> MemoryParser.parse(file, MemoryScope.PROJECT) }
-            .sortedBy { it.name.lowercase() }
+        return files.mapNotNull { file ->
+            // 单个坏记忆只跳过自己，绝不连带整表（与 Skill/Agent 扫描器同一根因）。
+            runCatching { MemoryParser.parse(file, MemoryScope.PROJECT) }
+                .onFailure { FileLogger.w("ProjectMemorySource", "解析项目记忆失败，已跳过: ${file.name}", it) }
+                .getOrNull()
+        }.sortedBy { it.name.lowercase() }
     }
 
     override fun loadContent(name: String): String? {

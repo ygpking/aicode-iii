@@ -78,33 +78,33 @@ fun McpServerEditDialog(
 ) {
     var selectedTab by remember { mutableIntStateOf(0) } // 0: 基础设置, 1: 工具
 
-    var name by remember { mutableStateOf(initial?.name ?: "") }
-    var enabled by remember { mutableStateOf(initial?.enabled ?: true) }
-    var isStdio by remember { mutableStateOf(initial?.isStdio ?: false) }
+    var name by remember(initial) { mutableStateOf(initial?.name ?: "") }
+    var enabled by remember(initial) { mutableStateOf(initial?.enabled ?: true) }
+    var isStdio by remember(initial) { mutableStateOf(initial?.isStdio ?: false) }
     // 作用域：新增默认当前项目，编辑保持原作用域。
-    var scope by remember { mutableStateOf(initialScope ?: McpScope.PROJECT) }
+    var scope by remember(initial, initialScope) { mutableStateOf(initialScope ?: McpScope.PROJECT) }
 
     // HTTP 形态字段
-    var url by remember { mutableStateOf(initial?.url ?: "") }
-    val headers = remember {
+    var url by remember(initial) { mutableStateOf(initial?.url ?: "") }
+    val headers = remember(initial) {
         mutableStateListOf<Pair<String, String>>().apply {
             addAll(initial?.headers?.toList() ?: emptyList())
         }
     }
 
     // stdio 形态字段
-    var command by remember { mutableStateOf(initial?.command ?: "") }
-    val argsList = remember {
+    var command by remember(initial) { mutableStateOf(initial?.command ?: "") }
+    val argsList = remember(initial) {
         mutableStateListOf<String>().apply { addAll(initial?.args ?: emptyList()) }
     }
-    val envList = remember {
+    val envList = remember(initial) {
         mutableStateListOf<Pair<String, String>>().apply {
             addAll(initial?.env?.toList() ?: emptyList())
         }
     }
 
     // 工具权限字段 (disabledTools)
-    val disabledToolsSet = remember {
+    val disabledToolsSet = remember(initial) {
         mutableStateListOf<String>().apply { addAll(initial?.disabledTools ?: emptyList()) }
     }
 

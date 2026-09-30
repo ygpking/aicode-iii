@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.res.stringResource
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.AppSwitch
 import com.aicode.core.ui.SwipeToDeleteRow
 import com.aicode.core.theme.semanticColors
 import com.aicode.feature.agent.domain.mcp.McpScope
@@ -118,7 +119,9 @@ internal fun McpSection(
                     scope = entry.scope,
                     status = statuses.firstOrNull { it.name == entry.server.name },
                     onClick = { onEdit(entry) },
-                    onDelete = { onDelete(entry.server.name, entry.scope) }
+                    onDelete = { onDelete(entry.server.name, entry.scope) },
+                    onToggle = { enabled -> onToggle(entry.server.name, enabled, entry.scope) },
+                    toggling = reloading
                 )
             }
         }
@@ -134,7 +137,9 @@ internal fun McpServerRow(
     scope: McpScope,
     status: McpServerStatus?,
     onClick: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onToggle: (Boolean) -> Unit,
+    toggling: Boolean
 ) {
     val isConnected = server.enabled && status?.state == McpServerStatus.State.CONNECTED
     val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
@@ -239,6 +244,16 @@ internal fun McpServerRow(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.width(Spacing.sm))
+
+            // 启用开关：切换即生效（启/禁用 + 重连），不进入编辑页。
+            // 操作中禁用开关，避免连续点击引发并发重连。
+            AppSwitch(
+                checked = server.enabled,
+                onCheckedChange = onToggle,
+                enabled = !toggling
+            )
 
             Spacer(modifier = Modifier.width(Spacing.sm))
 

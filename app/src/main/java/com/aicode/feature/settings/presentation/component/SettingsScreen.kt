@@ -1507,15 +1507,19 @@ private fun SkillImportResultDialog(state: SkillImportState, onDismiss: () -> Un
                                 )
                             }
                             if (report.warnings.isNotEmpty()) {
-                                Text(
-                                    text = stringResource(
-                                        R.string.skills_import_warning_line,
-                                        report.warnings.first().path,
-                                        report.warnings.first().rule
-                                    ),
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.error
-                                )
+                                // 逐条渲染：一只压缩包可含多条安全提示（如多份技能各自触规则），
+                                // 只显示 first() 会让用户以为包干净。
+                                report.warnings.forEach { warning ->
+                                    Text(
+                                        text = stringResource(
+                                            R.string.skills_import_warning_line,
+                                            warning.path,
+                                            warning.rule
+                                        ),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                }
                             }
                         }
                     }

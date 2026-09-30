@@ -46,8 +46,8 @@ object SkillParser {
     fun parseText(text: String, fallbackName: String, source: String? = null): Skill {
         val (frontmatter, body) = splitAndParseFrontmatter(text, source)
 
-        // name 优先取 frontmatter，缺省回退到兜底名
-        val name = frontmatter["name"]?.toString()?.takeIf { it.isNotBlank() } ?: fallbackName
+        // name 优先取 frontmatter，缺省回退到兜底名；统一 trim，避免尾随空白与保存侧（form.name.trim()）产生两个名字。
+        val name = frontmatter["name"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: fallbackName
         val description = (frontmatter["description"]?.toString() ?: "").take(MAX_DESC_CHARS)
 
         val requiredTools = try {
@@ -77,6 +77,10 @@ object SkillParser {
 
         val end = normalized.indexOf("\n---", startIndex = 3)
         if (end < 0) return emptyMap<String, Any>() to normalized
+
+        // 空 frontmatter（`---\n---`）时闭合符紧跟起始符，end == 3：substring(4, end) 越界崩。
+        // 与 AgentDefinitionParser / MemoryParser 同源，三份必须同步；视为「无元数据」。
+        if (end < 4) return emptyMap<String, Any>() to normalized.substring(end + 4).removePrefix("\n")
 
         val block = normalized.substring(4, end)
         val rest = normalized.substring(end + 4).removePrefix("\n")

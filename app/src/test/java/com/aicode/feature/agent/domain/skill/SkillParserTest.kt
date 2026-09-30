@@ -151,4 +151,17 @@ class SkillParserTest {
         assertEquals("", skill.description)
         assertEquals("只有正文", skill.instructions)
     }
+
+    /**
+     * 空 frontmatter（`---\n---`）：闭合符紧跟起始符时 end == 3，旧代码 substring(4, 3) 会越界崩。
+     * 应视为无元数据：name 回退兜底值，正文完整保留。
+     */
+    @Test
+    fun parse_emptyFrontmatterDoesNotCrash() {
+        val skill = SkillParser.parseText("---\n---\n正文", fallbackName = "fallback-name")
+
+        assertEquals("fallback-name", skill.name)
+        assertEquals("", skill.description)
+        assertEquals("正文", skill.instructions)
+    }
 }

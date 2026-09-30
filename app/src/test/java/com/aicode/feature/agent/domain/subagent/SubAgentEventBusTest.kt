@@ -85,4 +85,42 @@ class SubAgentEventBusTest {
 
         assertEquals(setOf("sub-2"), bus.activeSubSessionIds.value)
     }
+
+    /**
+     * send 唤醒已完成的子代理时会起新一轮，但不经 SPAWNED；此时必须靠 markActive 补登记，
+     * 否则该 id 自始至终不在活跃集合里：isFull 漏算（可跑超上限）、read/list 把运行中的它
+     * 报成 completed、SubAgentWriteLease.pruneInactive 误删其写租约（失去写冲突保护）。
+     */
+    @Test
+    fun markActive_registersWithoutEvent() {
+        val bus = SubAgentEventBus()
+
+        bus.markActive("sub-1")
+
+        assertEquals(setOf("sub-1"), bus.activeSubSessionIds.value)
+        assertEquals(1, bus.activeCount)
+    }
+
+    /** 幂等：重复 markActive（如多轮唤醒）不得重复计数或破坏集合。 */
+    @Test
+    fun markActive_isIdempotent() {
+        val bus = SubAgentEventBus()
+
+        bus.markActive("sub-1")
+        bus.markActive("sub-1")
+
+        assertEquals(setOf("sub-1"), bus.activeSubSessionIds.value)
+        assertEquals(1, bus.activeCount)
+    }
+
+    /** markActive 补登记的槽位必须计入并发上限，且能被 release 交回。 */
+    @Test
+    fun markActive_countsTowardLimitAndIsReleasable() {
+        val bus = SubAgentEventBus()
+        repeat(SubAgentEventBus.MAX_RUNNING) { bus.markActive("woken-$it") }
+
+        assertTrue(bus.isFull)
+        assertTrue(bus.release("woken-0"))
+        assertFalse(bus.isFull)
+    }
 }

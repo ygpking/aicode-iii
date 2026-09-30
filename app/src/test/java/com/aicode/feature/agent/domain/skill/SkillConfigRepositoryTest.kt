@@ -69,4 +69,17 @@ class SkillConfigRepositoryTest {
 
         assertTrue(File(tempFolder.root, "skills.json.tmp").let { !it.exists() })
     }
+
+    /**
+     * 落盘是单一出口：无论调用方传什么大小写，磁盘上只能存小写。
+     * 否则“禁用写原样、启用按小写 remove”会删不掉，技能永远无法重新启用。
+     */
+    @Test
+    fun writeDisabled_normalizesToLowercase() {
+        val file = File(tempFolder.root, "skills.json")
+
+        SkillConfigRepository.writeDisabled(file, setOf("PlotRail", "PROTOTYPE"))
+
+        assertEquals(setOf("plotrail", "prototype"), SkillConfigRepository.readDisabled(file))
+    }
 }

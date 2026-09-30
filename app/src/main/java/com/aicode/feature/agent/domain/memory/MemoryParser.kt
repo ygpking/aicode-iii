@@ -60,6 +60,9 @@ object MemoryParser {
         val end = normalized.indexOf("\n---", startIndex = 3)
         if (end < 0) return emptyMap<String, Any>() to normalized
 
+        // 空 frontmatter（`---\n---`）时 end == 3，substring(4, 3) 越界崩。与 SkillParser/AgentDefinitionParser 同源。
+        if (end < 4) return emptyMap<String, Any>() to normalized.substring(end + 4).removePrefix("\n")
+
         val block = normalized.substring(4, end)
         val rest = normalized.substring(end + 4).removePrefix("\n")
 

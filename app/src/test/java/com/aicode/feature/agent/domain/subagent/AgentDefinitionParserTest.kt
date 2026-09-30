@@ -130,6 +130,15 @@ class AgentDefinitionParserTest {
         assertEquals("只有正文", def.prompt)
     }
 
+    /** 空 frontmatter（`---\n---`）：end == 3，旧代码 substring(4, 3) 越界崩。应当作无元数据。 */
+    @Test
+    fun parse_emptyFrontmatterDoesNotCrash() {
+        val def = parseFile(write("empty.md", "---\n---\n提示词"))!!
+
+        assertEquals("empty", def.name)
+        assertEquals("提示词", def.prompt)
+    }
+
     @Test
     fun scan_onlyTopLevelMarkdownSortedByName() {
         write("b.md", "---\nname: b\n---\n正文")

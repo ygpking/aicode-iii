@@ -328,8 +328,9 @@ class McpConfigRepository @Inject constructor(
         project: List<McpServerConfig>
     ): List<McpServerEntry> {
         val byName = LinkedHashMap<String, McpServerEntry>()
-        global.forEach { byName[it.name] = McpServerEntry(it, McpScope.GLOBAL) }
-        project.forEach { byName[it.name] = McpServerEntry(it, McpScope.PROJECT) }
+        // 小写作 key：与 skill/agent 两级合并一致。否则 `Foo`/`foo` 同时生效，且全局项不被项目项覆盖。
+        global.forEach { byName[it.name.lowercase()] = McpServerEntry(it, McpScope.GLOBAL) }
+        project.forEach { byName[it.name.lowercase()] = McpServerEntry(it, McpScope.PROJECT) }
         return byName.values.toList()
     }
 }

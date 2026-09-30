@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.skill
 
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.workspace.domain.FileAccessProvider
 
 /**
@@ -9,6 +10,8 @@ import com.aicode.feature.workspace.domain.FileAccessProvider
  * 目录经 [FileAccessProvider] 以容器路径访问，本地与远程（SSH）同一套逻辑。
  */
 object SkillDirectoryScanner {
+    private const val TAG = "SkillDirectoryScanner"
+
     /** 允许一定的嵌套深度（比如 repo/skills/my-skill/SKILL.md）。 */
     private const val MAX_DEPTH = 4
     private const val SKILL_FILE = "SKILL.md"
@@ -30,7 +33,10 @@ object SkillDirectoryScanner {
         val base = root.trimEnd('/')
         return dirs.mapNotNull { relative ->
             val dirPath = if (relative.isEmpty()) base else "$base/$relative"
-            SkillParser.parse(provider, dirPath)
+            // 单个坏技能只跳过自己，绝不连带整表（与 AgentDefinitionDirectoryScanner/MemorySource 同一根因）。
+            runCatching { SkillParser.parse(provider, dirPath) }
+                .onFailure { FileLogger.w(TAG, "解析技能失败，已跳过: $dirPath", it) }
+                .getOrNull()
         }.sortedBy { it.name.lowercase() }
     }
 }

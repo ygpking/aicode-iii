@@ -257,16 +257,16 @@ class McpManager @Inject constructor(
      * 配置中不存在该 name 时静默返回。
      */
     suspend fun reloadServer(name: String) = reloadMutex.withLock {
-        val cfg = configRepository.getEffectiveServers().firstOrNull { it.name == name } ?: return@withLock
+        val cfg = configRepository.getEffectiveServers().firstOrNull { it.name.equals(name, ignoreCase = true) } ?: return@withLock
         // 用户主动保存/编辑该 server：清除其退避，立即重试（否则改了配置仍被冷却挡住）。
         connectBackoff.clear(name)
         teardownServer(name)
-        if (_statuses.value.none { it.name == name }) {
+        if (_statuses.value.none { it.name.equals(name, ignoreCase = true) }) {
             _statuses.value = _statuses.value + McpServerStatus(name, McpServerStatus.State.CONNECTING)
         }
         if (!cfg.enabled) {
             _statuses.value = _statuses.value.map {
-                if (it.name == name) McpServerStatus(name, McpServerStatus.State.DISABLED) else it
+                if (it.name.equals(name, ignoreCase = true)) McpServerStatus(name, McpServerStatus.State.DISABLED) else it
             }
             return@withLock
         }
@@ -345,12 +345,15 @@ class McpManager @Inject constructor(
     /** 删除 server 时仅断开其连接并反注册其工具，不影响其他 server。 */
     suspend fun removeServer(name: String) = reloadMutex.withLock {
         teardownServer(name)
-        _statuses.value = _statuses.value.filterNot { it.name == name }
+        _statuses.value = _statuses.value.filterNot { it.name.equals(name, ignoreCase = true) }
     }
 
     private fun teardownServer(name: String) {
         synchronized(activeClients) {
-            val client = activeClients.remove(name) ?: return
+            // activeClients 以配置里的 name 为 key；调用方传进来的 name 大小写可能不同，
+            // 精确匹配会断不掉旧连接、反注册不掉旧工具（与合并/ManageMcpTool 同一约定：一律 ignoreCase）。
+            val key = activeClients.keys.firstOrNull { it.equals(name, ignoreCase = true) } ?: return
+            val client = activeClients.remove(key) ?: return
             runCatching { client.close() }
             client.tools.forEach { tool ->
                 toolRegistry.unregister(tool.name)

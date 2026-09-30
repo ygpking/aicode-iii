@@ -80,6 +80,20 @@ class SubAgentEventBus @Inject constructor() {
         return removed
     }
 
+    /**
+     * 直接把某个子代理登记为活跃，不广播事件。
+     *
+     * 专供「已完成的子代理被 send 唤醒、起新一轮」的路径：该轮不经 [SubAgentEventType.SPAWNED]
+     * （只在 task create 时发），若不补登记，活跃集合会自始至终缺这个 id，导致
+     * [isFull] 漏算（可跑超 MAX_RUNNING）、read/list 把运行中的它报成 completed、
+     * [SubAgentWriteLease] 的 pruneInactive 误删其写租约（失去写冲突保护）。
+     *
+     * 幂等：已在集合中则无操作；调用方应在对应运行结束时 [release] 交回槽位。
+     */
+    fun markActive(subSessionId: String) {
+        _activeSubSessionIds.update { if (subSessionId in it) it else it + subSessionId }
+    }
+
     fun emit(event: SubAgentEvent) {
         // 同步维护活跃集合
         when (event.type) {
@@ -94,8 +108,12 @@ class SubAgentEventBus @Inject constructor() {
             }
         }
         val delivered = _events.tryEmit(event)
-        // SPAWNED 投递失败（缓冲满/瞬时无订阅者）时事件会丢，子代理永远不会被启动，
-        // 但活跃集合已 +1——名额会被永久占用（isFull 误判、activeCount 虚高）。回滚该次占位。
+        // SPAWNED 投递失败（缓冲满）时事件会丢，子代理永远不会被启动，但活跃集合已 +1——
+        // 名额被永久占用（isFull 误判、activeCount 虚高）。回滚该次占位。
+        //
+        // 为什么只看 tryEmit 的返回值、不额外判「无订阅者」：订阅是 AIAgentViewModel.init 里的
+        // 常驻 collect，只在 VM 未创建/已销毁时为 0，而 SPAWNED 只会在一次运行中的工具调用里发出
+        // （VM 必已订阅）；该窗口实际不可达，多判反而让「emit 即计入活跃」的契约不再成立。
         if (!delivered && event.type == SubAgentEventType.SPAWNED) {
             _activeSubSessionIds.update { it - event.subSessionId }
             FileLogger.w(
