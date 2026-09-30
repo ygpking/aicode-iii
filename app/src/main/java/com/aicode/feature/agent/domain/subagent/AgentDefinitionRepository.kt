@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.subagent
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import com.aicode.feature.workspace.domain.LocalFileAccess
@@ -29,7 +30,7 @@ class AgentDefinitionRepository @Inject constructor(
     /** 已启用的定义（注入主代理的可派发清单用）。 */
     fun listEnabled(): List<AgentDefinitionEntry> {
         val disabled = configRepository.disabledNames()
-        return listAll().filterNot { it.definition.name.lowercase() in disabled }
+        return listAll().filterNot { NameKey.of(it.definition.name) in disabled }
     }
 
     /** 按名称查找可派发的定义（忽略大小写）；不存在或已被禁用时返回 null。 */
@@ -44,7 +45,7 @@ class AgentDefinitionRepository @Inject constructor(
         listAll().firstOrNull { it.definition.name.equals(name, ignoreCase = true) }?.definition
 
     /** 该子代理是否在任一作用域中被禁用。 */
-    fun isDisabled(name: String): Boolean = name.lowercase() in configRepository.disabledNames()
+    fun isDisabled(name: String): Boolean = NameKey.of(name) in configRepository.disabledNames()
 
     /** 当前生效的禁用子代理名集合（全局 + 项目并集，小写）。供批量列表一次读盘、代替逐行 isDisabled。 */
     fun disabledNames(): Set<String> = configRepository.disabledNames()

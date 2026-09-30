@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.mcp
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.core.watch.FileChangeHub
 import com.aicode.feature.agent.domain.container.ContainerInstaller
@@ -218,14 +219,13 @@ class McpConfigRepository @Inject constructor(
         }
     }
 
-    // ── 名称主键的**唯一**归一入口 ──
+    // ── 名称主键的归一 ──
     // server 名是逻辑主键（用于合并、去重、匹配、重连）。写入侧与读取侧必须用同一个变换，
     // 否则会出现「写进去了但按同样的名字删不掉/查不到」的静默失效（见 e5be8bc：禁用名单
-    // 删除分支未归一导致技能永远无法重新启用）。此处 trim + lowercase 为全仓唯一实现，
-    // 上层不再各自写 filterNot/remove——与 skill/agent 两级合并的约定一致。
+    // 删除分支未归一导致技能永远无法重新启用）。归一定义收敛到 [NameKey]（与 skill/agent 同一份）。
 
-    /** 名称主键的归一键：大小写与首尾空白均无关。 */
-    private fun keyOf(name: String): String = name.trim().lowercase()
+    /** 名称主键的归一键。 */
+    private fun keyOf(name: String): String = NameKey.of(name)
 
     private suspend fun readScoped(scope: McpScope): List<McpServerConfig> =
         if (scope == McpScope.GLOBAL) getGlobalServers() else getProjectServers()

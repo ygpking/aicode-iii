@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.subagent
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.core.watch.FileChange
 import com.aicode.core.watch.FileChangeHub
@@ -76,14 +77,15 @@ class AgentDefinitionConfigRepository @Inject constructor(
 
     /** 当前生效的禁用子代理名集合（全局 + 项目并集，归一化为小写）。 */
     fun disabledNames(): Set<String> =
-        (readDisabled(globalFile()) + readDisabled(projectFile())).map { it.lowercase() }.toSet()
+        (readDisabled(globalFile()) + readDisabled(projectFile())).map { NameKey.of(it) }.toSet()
 
     /** 在指定作用域的配置中启用/禁用某个子代理。 */
     fun setDisabled(name: String, disabled: Boolean, scope: AgentDefinitionScope) {
         val file = if (scope == AgentDefinitionScope.GLOBAL) globalFile() else projectFile()
         // 与 skill/MCP 统一：配置键一律小写存、ignoreCase 比，避免磁盘键大小写不一导致禁用/启用静默失效。
-        val names = readDisabled(file).mapTo(LinkedHashSet()) { it.lowercase() }
-        val key = name.trim().lowercase()
+        // 归一口径统一走 NameKey（存/删/查三侧同一变换）。
+        val names = readDisabled(file).mapTo(LinkedHashSet()) { NameKey.of(it) }
+        val key = NameKey.of(name)
         if (disabled) names.add(key) else names.remove(key)
         writeDisabled(file, names)
     }
@@ -125,7 +127,7 @@ class AgentDefinitionConfigRepository @Inject constructor(
         private fun writeDisabled(file: File, names: Set<String>) {
             file.parentFile?.mkdirs()
             // 落盘单一出口：统一归一为小写（与 skill 侧一致）。
-            val json = serializeDisabled(names.mapTo(LinkedHashSet()) { it.lowercase() })
+            val json = serializeDisabled(names.mapTo(LinkedHashSet()) { NameKey.of(it) })
             // 临时文件 + rename 原子落盘，避免写一半崩溃损坏配置
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(json)
