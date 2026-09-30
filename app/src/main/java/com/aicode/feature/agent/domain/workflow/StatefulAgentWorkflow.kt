@@ -3,6 +3,7 @@ package com.aicode.feature.agent.domain.workflow
 import android.os.SystemClock
 import android.util.Base64
 import com.aicode.core.util.FileLogger
+import com.aicode.core.util.runCatchingCancellable
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicApi
@@ -1152,7 +1153,7 @@ class StatefulAgentWorkflow @Inject constructor(
      * 提示词来自 [SystemPromptProvider] 的 `agent/title-generator.md`。
      * 生成失败或取不到标题时返回 null（调用方保留临时标题）。
      */
-    override suspend fun generateTitle(sessionId: String, request: String): String? = runCatching {
+    override suspend fun generateTitle(sessionId: String, request: String): String? = runCatchingCancellable {
         val provider = resolveTitleFallbackProvider(sessionId) ?: getEffectiveProvider(sessionId)
         val prompt = promptProvider.resolvePrompt(TITLE_GENERATOR_FILE)
             .replace(LEADING_COMMENT, "")
@@ -1178,7 +1179,8 @@ class StatefulAgentWorkflow @Inject constructor(
             throw e
         } finally {
             val durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt()
-            runCatching {
+            // 记录 LLM 调用（挂起 DAO）：用 runCatchingCancellable，取消照常传播到外层。
+            runCatchingCancellable {
                 llmCallRecordDao.insert(
                     LlmCallRecordEntity(
                         sessionId = sessionId,
@@ -1204,8 +1206,8 @@ class StatefulAgentWorkflow @Inject constructor(
         FileLogger.w(TAG, "生成会话标题失败", e)
     }.getOrNull()
 
-    override suspend fun generateCommitMessage(diff: String): String? = runCatching {
-        if (diff.isBlank()) return@runCatching null
+    override suspend fun generateCommitMessage(diff: String): String? = runCatchingCancellable {
+        if (diff.isBlank()) return@runCatchingCancellable null
         val provider = getEffectiveProvider(sessionId = null)
         val prompt = promptProvider.resolvePrompt(COMMIT_GENERATOR_FILE)
             .replace(LEADING_COMMENT, "")

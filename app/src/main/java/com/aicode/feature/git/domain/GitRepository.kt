@@ -1,6 +1,7 @@
 package com.aicode.feature.git.domain
 
 import com.aicode.core.util.FileLogger
+import com.aicode.core.util.runCatchingCancellable
 import com.aicode.feature.agent.domain.container.CommandEngine
 import com.aicode.feature.agent.domain.container.sanitizeCommandForLog
 import com.aicode.feature.git.domain.model.GitBranch
@@ -690,15 +691,15 @@ class GitRepository @Inject constructor(
             gitChecked("config", "--local", "remote.origin.url", url)
         } else {
             // 空值删除 local 的 remote.origin.url，git config --unset 对不存在的 key 返回非零但不影响其它配置
-            runCatching { gitChecked("config", "--local", "--unset", "remote.origin.url") }
+            runCatchingCancellable { gitChecked("config", "--local", "--unset", "remote.origin.url") }
         }
         // 清除全局残留的 remote.origin.url（历史误写），避免污染后续 git clone 等命令。
-        runCatching { git("config", "--global", "--unset", "remote.origin.url") }
+        runCatchingCancellable { git("config", "--global", "--unset", "remote.origin.url") }
     }
 
     /** 读取 git 当前实际生效的 remote.origin.url（local→global→system），UI 回显与编辑框初值。失败返回空串。 */
     suspend fun getRepoUrl(): String =
-        runCatching { git("config", "--get", "remote.origin.url").trim() }.getOrDefault("").removeSuffix("\r")
+        runCatchingCancellable { git("config", "--get", "remote.origin.url").trim() }.getOrDefault("").removeSuffix("\r")
 
     /**
      * 读取指定 ref（提交/分支/标签）下某文件的完整内容（`git show <ref>:<path>`）。

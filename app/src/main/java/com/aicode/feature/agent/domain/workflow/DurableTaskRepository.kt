@@ -1,31 +1,19 @@
 package com.aicode.feature.agent.domain.workflow
 
 import com.aicode.core.util.FileLogger
+import com.aicode.core.util.runCatchingCancellable
 import com.aicode.feature.agent.data.local.dao.DurableTaskDao
 import com.aicode.feature.agent.data.local.entity.DurableTaskEntity
-import kotlinx.coroutines.CancellationException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 与标准库 [runCatching] 等价，但**不吞协程取消**。
- *
- * 标准 [runCatching] 会把 [CancellationException] 也当成普通异常捕获，后果是：
- * 本应交到取消传播的链上，却被降级成一次「失败」（只写一行日志），
- * 协程甚至会因此不被标记为已取消。实测（本地探针验证）：
- * 包装挂起调用的 runCatching 吞掉取消后，外层 job 的 isCancelled 仍为 false。
- *
- * 本仓库写入侧一律「尽力而为、失败只记日志」，但同时必须让取消照常传播，故用这个替代。
+ * 本仓库的写入侧一律「尽力而为、失败只记日志」，但必须让协程取消照常传播。
+ * 实现已提升为公共工具 [runCatchingCancellable]（全仓唯一答案，见 core/util/SafeCall.kt）；
+ * 此处保留本地名 `guarded` 仅为不惊动下列调用点。
  */
-private inline fun <T> guarded(block: () -> T): Result<T> =
-    try {
-        Result.success(block())
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: Throwable) {
-        Result.failure(e)
-    }
+private inline fun <T> guarded(block: () -> T): Result<T> = runCatchingCancellable(block)
 
 /**
  * durable 任务账本：记录每次长任务的生命周期状态，供崩溃恢复判定。
