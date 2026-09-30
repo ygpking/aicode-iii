@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.tool.shizuku
 
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.container.BoundedOutput
+import com.aicode.feature.agent.domain.container.CommandSleepGuard
 import com.aicode.feature.agent.domain.shizuku.ShizukuManager
 import com.aicode.feature.agent.domain.shizuku.ShizukuState
 import com.aicode.feature.agent.domain.tool.AgentTool
@@ -100,6 +101,10 @@ class ShizukuTool @Inject constructor(
 
         return try {
             val timeoutMs = resolveTimeoutMs(args)
+            CommandSleepGuard.blockReason(command)?.let { block ->
+                FileLogger.i(TAG, "Shizuku 命令被 sleep 守卫拦截: ${com.aicode.feature.agent.domain.container.sanitizeCommandForLog(command)}")
+                return ToolResult.Error(block)
+            }
             FileLogger.d(TAG, "Shizuku exec (timeout=${timeoutMs}ms): ${com.aicode.feature.agent.domain.container.sanitizeCommandForLog(command)}")
             val result = shizukuManager.runCommand(command, timeoutMs)
             val output = BoundedOutput().apply { append(result.output) }.build()

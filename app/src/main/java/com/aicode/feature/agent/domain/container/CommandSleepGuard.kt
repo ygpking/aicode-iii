@@ -39,7 +39,8 @@ internal object CommandSleepGuard {
             else -> value // "s" 或无单位（GNU sleep 默认秒）
         }
         if (seconds <= MAX_SLEEP_SECONDS) return null
-        return "命令被拦截：检测到独立 sleep $value$unit（${seconds}s），超过 ${MAX_SLEEP_SECONDS}s 上限。" +
+        val secondsText = seconds.toString().removeSuffix(".0")
+        return "命令被拦截：检测到独立 sleep ${m.groupValues[2]}$unit（${secondsText}s），超过 ${MAX_SLEEP_SECONDS.toInt()}s 上限。" +
             "固定延时等待外部状态是被禁止的坏模式（白等还易撞工具超时被杀）。" +
             "替代方案：1) 长任务（构建/测试/CI/服务）用 terminal(action=\"start\", notify=true) 后台跑，结束主动通知；" +
             "2) 等子代理等其完成通知，不轮询文件；" +
