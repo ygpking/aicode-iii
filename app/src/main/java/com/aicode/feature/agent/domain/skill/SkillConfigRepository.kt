@@ -57,8 +57,12 @@ class SkillConfigRepository @Inject constructor(
     /** 在指定作用域的配置中启用/禁用某个技能。 */
     fun setDisabled(name: String, disabled: Boolean, scope: SkillScope) {
         val file = if (scope == SkillScope.GLOBAL) globalFile() else projectFile()
-        val names = readDisabled(file).toMutableSet()
-        if (disabled) names.add(name) else names.remove(name)
+        // 归一为小写，与 [disabledNames]/[SkillRepository.isSkillDisabled] 的判定保持一致。
+        // 否则「禁用时写原始大小写、启用时用小写名去 remove」会删不掉，技能永远无法重新启用；
+        // 顺带把历史遗留的混大小写条目一并清洗落盘。
+        val names = readDisabled(file).mapTo(LinkedHashSet()) { it.lowercase() }
+        val key = name.lowercase()
+        if (disabled) names.add(key) else names.remove(key)
         writeDisabled(file, names)
     }
 
@@ -128,7 +132,9 @@ class SkillConfigRepository @Inject constructor(
 
         fun writeDisabled(file: File, names: Set<String>) {
             file.parentFile?.mkdirs()
-            val json = serializeDisabled(names)
+            // 落盘单一出口：统一归一为小写，保证磁盘上永远只存小写禁用名，
+            // 与读取侧 disabledNames()/isSkillDisabled 的判定一致（否则大小写不对称会让技能无法重新启用）。
+            val json = serializeDisabled(names.mapTo(LinkedHashSet()) { it.lowercase() })
             // 临时文件 + rename 原子落盘，避免写一半崩溃损坏配置
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(json)

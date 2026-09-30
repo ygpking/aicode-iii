@@ -57,7 +57,11 @@ class McpException(
 data class McpToolDescriptor(
     val name: String,
     val description: String? = null,
-    @SerialName("inputSchema") val inputSchema: JsonObject? = null
+    // 宽容解码：规范要求 inputSchema 是 JSON Schema 对象，但草案允许布尔 schema
+    // （`"inputSchema": true/false`，表示接受一切/拒绝一切）。若声明为 JsonObject?，
+    // 实际收到布尔时整个 tools/list 解码失败 → fetchTools 抛「解析工具列表失败」→ 整条连接失败。
+    // 故放宽为 JsonElement?，由下游判定是否为对象。
+    @SerialName("inputSchema") val inputSchema: JsonElement? = null
 )
 
 @Serializable

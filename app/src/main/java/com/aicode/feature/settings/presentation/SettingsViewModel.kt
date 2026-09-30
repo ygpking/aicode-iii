@@ -1144,7 +1144,9 @@ class SettingsViewModel @Inject constructor(
     /** 切换技能的启用/禁用状态（写入对应作用域的 skills.json）。 */
     fun setSkillEnabled(name: String, enabled: Boolean, scope: SkillScope) {
         viewModelScope.launch {
-            skillRepository.setSkillDisabled(name, !enabled, scope)
+            // 写 skills.json 是阻塞磁盘 IO（可能还是远程 SSH），必须离开主线程；
+            // 同文件其余技能/子代理操作均如此，这里原先遗漏。
+            withContext(Dispatchers.IO) { skillRepository.setSkillDisabled(name, !enabled, scope) }
             refreshSkills()
         }
     }
@@ -1152,7 +1154,8 @@ class SettingsViewModel @Inject constructor(
     /** 删除指定作用域的技能（删除其目录，不可恢复），随后立即刷新列表。 */
     fun deleteSkill(name: String, scope: SkillScope) {
         viewModelScope.launch {
-            skillRepository.deleteSkill(name, scope)
+            // 递归删除技能目录同样是阻塞 IO（本地含大量文件 / 远程更甚），必须离开主线程。
+            withContext(Dispatchers.IO) { skillRepository.deleteSkill(name, scope) }
             refreshSkills()
         }
     }

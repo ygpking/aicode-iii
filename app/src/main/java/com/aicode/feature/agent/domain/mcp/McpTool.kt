@@ -81,9 +81,9 @@ class McpTool(
     // MCP 工具直接用原始 schema，不走 parameters 这条路；保留空 map 满足基类契约。
     override val parameters: Map<String, ToolParameter> = emptyMap()
 
-    /** 透传 server 的 inputSchema；缺失时回退为空对象 schema。 */
+    /** 透传 server 的 inputSchema；非对象（如布尔 schema）或缺失时回退为空对象 schema。 */
     override fun toJsonSchema(): Map<String, Any> {
-        val schema = descriptor.inputSchema
+        val schema = descriptor.inputSchema as? JsonObject
         if (schema == null || schema.isEmpty()) {
             return mapOf("type" to "object", "properties" to emptyMap<String, Any>())
         }
