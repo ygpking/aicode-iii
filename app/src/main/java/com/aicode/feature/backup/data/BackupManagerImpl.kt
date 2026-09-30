@@ -132,9 +132,9 @@ class BackupManagerImpl @Inject constructor(
     override suspend fun exportSession(sessionId: String, output: OutputStream) {
         withContext(Dispatchers.IO) {
             FileLogger.i(TAG, "导出单会话开始 sessionId=$sessionId")
+            val session = chatSessionDao.getById(sessionId) ?: error("Session not found: $sessionId")
+            val temp = createTempFile()
             try {
-                val session = chatSessionDao.getById(sessionId) ?: error("Session not found: $sessionId")
-                val temp = createTempFile()
                 FileOutputStream(temp).use { fos ->
                     GzipCompressorOutputStream(fos).use { gz ->
                         TarArchiveOutputStream(gz).use { tar ->

@@ -33,7 +33,7 @@ class FileMigration(
                 db.endTransaction()
             }
         } catch (e: Throwable) {
-            FileLogger.e(FileMigration::class.simpleName, "迁移执行失败已回滚: $scriptName (v$version)", e)
+            FileLogger.e("MigrationLoader", "迁移执行失败已回滚: $scriptName (v$version)", e)
             throw e
         }
         FileLogger.i("MigrationLoader", "Applied migration: $scriptName")
