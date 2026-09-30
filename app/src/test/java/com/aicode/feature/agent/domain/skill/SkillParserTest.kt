@@ -153,15 +153,35 @@ class SkillParserTest {
     }
 
     /**
-     * 空 frontmatter（`---\n---`）：闭合符紧跟起始符时 end == 3，旧代码 substring(4, 3) 会越界崩。
-     * 应视为无元数据：name 回退兜底值，正文完整保留。
+     * 回归：空 frontmatter（`---\n---`）。闭合符紧跟起始符时 end == 3，旧代码 substring(4, 3)
+     * 越界抛 StringIndexOutOfBoundsException，会连带整个技能列表/斜杠命令一起挂掉。
      */
     @Test
     fun parse_emptyFrontmatterDoesNotCrash() {
-        val skill = SkillParser.parseText("---\n---\n正文", fallbackName = "fallback-name")
+        val skill = SkillParser.parseText("---\n---\nbody", fallbackName = "fallback")
 
-        assertEquals("fallback-name", skill.name)
-        assertEquals("", skill.description)
-        assertEquals("正文", skill.instructions)
+        assertEquals("fallback", skill.name)
+        assertEquals("body", skill.instructions)
+    }
+
+    @Test
+    fun parse_emptyFrontmatterWithoutBody() {
+        val withNewline = SkillParser.parseText("---\n---\n", fallbackName = "fb")
+        assertEquals("fb", withNewline.name)
+        assertEquals("", withNewline.instructions)
+
+        val withoutNewline = SkillParser.parseText("---\n---", fallbackName = "fb")
+        assertEquals("fb", withoutNewline.name)
+        assertEquals("", withoutNewline.instructions)
+    }
+
+    /** 空 frontmatter + 正文中含分隔符：正文必须完整保留，不能被截断或吞掉。 */
+    @Test
+    fun parse_emptyFrontmatterKeepsBodyWithSeparators() {
+        val skill = SkillParser.parseText("---\n---\n# 标题\n\n---\n尾注", fallbackName = "fb")
+
+        assertEquals("fb", skill.name)
+        assertTrue(skill.instructions.contains("# 标题"))
+        assertTrue(skill.instructions.contains("尾注"))
     }
 }

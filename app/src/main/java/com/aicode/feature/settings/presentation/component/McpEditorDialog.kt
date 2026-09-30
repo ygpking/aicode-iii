@@ -386,7 +386,7 @@ fun McpServerEditDialog(
                                             )
 
                                             val paramKeys = remember(tool.inputSchema) {
-                                                (tool.inputSchema?.get("properties") as? JsonObject)?.keys ?: emptySet()
+                                                ((tool.inputSchema as? JsonObject)?.get("properties") as? JsonObject)?.keys ?: emptySet()
                                             }
                                             if (paramKeys.isNotEmpty()) {
                                                 Spacer(modifier = Modifier.height(8.dp))

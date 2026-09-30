@@ -71,15 +71,15 @@ class SkillConfigRepositoryTest {
     }
 
     /**
-     * 落盘是单一出口：无论调用方传什么大小写，磁盘上只能存小写。
-     * 否则“禁用写原样、启用按小写 remove”会删不掉，技能永远无法重新启用。
+     * 回归：禁用名单写入侧必须归一大小写，否则「以混合大小写名禁用、用小写名启用」删不掉，
+     * 技能永远无法重新启用（判定侧 [SkillConfigRepository.disabledNames] 统一转小写）。
      */
     @Test
-    fun writeDisabled_normalizesToLowercase() {
+    fun writeDisabled_normalizesCase() {
         val file = File(tempFolder.root, "skills.json")
 
-        SkillConfigRepository.writeDisabled(file, setOf("PlotRail", "PROTOTYPE"))
+        SkillConfigRepository.writeDisabled(file, setOf("FooSkill"))
 
-        assertEquals(setOf("plotrail", "prototype"), SkillConfigRepository.readDisabled(file))
+        assertEquals(setOf("fooskill"), SkillConfigRepository.readDisabled(file))
     }
 }

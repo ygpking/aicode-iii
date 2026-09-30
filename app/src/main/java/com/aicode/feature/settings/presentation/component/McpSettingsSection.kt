@@ -247,14 +247,12 @@ internal fun McpServerRow(
 
             Spacer(modifier = Modifier.width(Spacing.sm))
 
-            // 启用开关：切换即生效（启/禁用 + 重连），不进入编辑页。
-            // 操作中禁用开关，避免连续点击引发并发重连。
+            // 行内启停开关：直接切换 server 启用/禁用，无需进详情弹窗；切换期间禁用防重复点击。
             AppSwitch(
                 checked = server.enabled,
-                onCheckedChange = onToggle,
+                onCheckedChange = { onToggle(it) },
                 enabled = !toggling
             )
-
             Spacer(modifier = Modifier.width(Spacing.sm))
 
             // 状态 pill 与右箭头垂直居中，与整行中心对齐

@@ -91,4 +91,38 @@ class SkillDirectoryScannerTest {
 
         assertEquals(1, skills.size)
     }
+
+    /**
+     * 回归：一个技能目录里存在空 frontmatter 的 SKILL.md 时，不得让整次扫描失败，
+     * 其余技能必须照常列出。
+     */
+    @Test
+    fun scan_emptyFrontmatterFileDoesNotFailWholeScan() {
+        val healthy = tempFolder.newFolder("healthy-skill")
+        File(healthy, "SKILL.md").writeText("---\nname: healthy-skill\n---\n正文")
+
+        val emptyFrontmatter = tempFolder.newFolder("empty-skill")
+        File(emptyFrontmatter, "SKILL.md").writeText("---\n---\nbody")
+
+        val skills = SkillDirectoryScanner.scan(provider, tempFolder.root.absolutePath)
+
+        assertEquals(listOf("empty-skill", "healthy-skill"), skills.map { it.name }.sorted())
+    }
+
+    /**
+     * 回归：目录里混入“看似是指令文件、实则是目录”的髒条目时，不得让整次扫描失败。
+     * （配合 [SkillDirectoryScanner.scan] 的 runCatching 兜底，保证单文件坏不影响其余技能。）
+     */
+    @Test
+    fun scan_toleratesMalformedEntryWithoutFailingAll() {
+        tempFolder.newFolder("good-skill").let {
+            File(it, "SKILL.md").writeText("---\nname: good-skill\n---\n正文")
+        }
+        // 名为 SKILL.md 的目录：非法指令文件，不应被当成技能，也不得拖垮扫描
+        File(tempFolder.newFolder("broken-skill"), "SKILL.md").mkdirs()
+
+        val skills = SkillDirectoryScanner.scan(provider, tempFolder.root.absolutePath)
+
+        assertEquals(listOf("good-skill"), skills.map { it.name })
+    }
 }

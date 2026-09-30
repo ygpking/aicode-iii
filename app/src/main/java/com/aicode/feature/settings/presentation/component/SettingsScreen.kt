@@ -1486,6 +1486,13 @@ private fun SkillImportResultDialog(state: SkillImportState, onDismiss: () -> Un
                         val fatal = report.fatal
                         if (fatal != null) {
                             Text(stringResource(fatal.messageRes()))
+                            report.fatalDetail?.let { detail ->
+                                Text(
+                                    text = detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         } else {
                             Text(
                                 stringResource(
@@ -1505,10 +1512,17 @@ private fun SkillImportResultDialog(state: SkillImportState, onDismiss: () -> Un
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                // 审计拦截等失败带具体规则/证据时一并展示，不再让人只能翻日志猜原因。
+                                failure.detail?.let { detail ->
+                                    Text(
+                                        text = detail,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
                             }
                             if (report.warnings.isNotEmpty()) {
-                                // 逐条渲染：一只压缩包可含多条安全提示（如多份技能各自触规则），
-                                // 只显示 first() 会让用户以为包干净。
+                                // 多条告警全量展示（原先只渲染 first，其余静默丢弃）。
                                 report.warnings.forEach { warning ->
                                     Text(
                                         text = stringResource(

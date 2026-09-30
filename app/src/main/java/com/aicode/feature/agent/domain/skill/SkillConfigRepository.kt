@@ -131,7 +131,8 @@ class SkillConfigRepository @Inject constructor(
 
         fun writeDisabled(file: File, names: Set<String>) {
             file.parentFile?.mkdirs()
-            // 落盘单一出口：统一归一为小写，保证磁盘上永远只存小写禁用名。
+            // 落盘单一出口：统一归一为小写，保证磁盘上永远只存小写禁用名，
+            // 与读取侧 disabledNames()/isSkillDisabled 的判定一致（否则大小写不对称会让技能无法重新启用）。
             val json = serializeDisabled(names.mapTo(LinkedHashSet()) { it.lowercase() })
             // 临时文件 + rename 原子落盘，避免写一半崩溃损坏配置
             val tmp = File(file.parentFile, "${file.name}.tmp")

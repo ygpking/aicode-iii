@@ -33,7 +33,7 @@ object SkillDirectoryScanner {
         val base = root.trimEnd('/')
         return dirs.mapNotNull { relative ->
             val dirPath = if (relative.isEmpty()) base else "$base/$relative"
-            // 单个坏技能只跳过自己，绝不连带整表（与 AgentDefinitionDirectoryScanner/MemorySource 同一根因）。
+            // 单个坏技能只跳过自己，绝不连带整表：否则一个畸形 SKILL.md 会让全部技能消失。
             runCatching { SkillParser.parse(provider, dirPath) }
                 .onFailure { FileLogger.w(TAG, "解析技能失败，已跳过: $dirPath", it) }
                 .getOrNull()

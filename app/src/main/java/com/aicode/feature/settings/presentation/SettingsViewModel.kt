@@ -1156,7 +1156,8 @@ class SettingsViewModel @Inject constructor(
     /** 切换技能的启用/禁用状态（写入对应作用域的 skills.json）。 */
     fun setSkillEnabled(name: String, enabled: Boolean, scope: SkillScope) {
         viewModelScope.launch {
-            // 写 skills.json 是阻塞磁盘 IO（可能还是远程 SSH），必须离开主线程。
+            // 写 skills.json 是阻塞磁盘 IO（可能还是远程 SSH），必须离开主线程；
+            // 同文件其余技能/子代理操作均如此，这里原先遗漏。
             withContext(Dispatchers.IO) { skillRepository.setSkillDisabled(name, !enabled, scope) }
             refreshSkills()
         }

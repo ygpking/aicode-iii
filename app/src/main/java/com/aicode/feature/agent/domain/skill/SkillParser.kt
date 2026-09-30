@@ -78,8 +78,9 @@ object SkillParser {
         val end = normalized.indexOf("\n---", startIndex = 3)
         if (end < 0) return emptyMap<String, Any>() to normalized
 
-        // 空 frontmatter（`---\n---`）时闭合符紧跟起始符，end == 3：substring(4, end) 越界崩。
-        // 与 AgentDefinitionParser / MemoryParser 同源，三份必须同步；视为「无元数据」。
+        // 空 frontmatter（`---\n---`）时闭合符紧跟起始符，end == 3：此时 substring(4, end)
+        // 会抛 StringIndexOutOfBoundsException，把整个技能列表连同扫描一起打挂。
+        // 视为「无元数据」，正文取闭合符之后的部分，不解析、不告警（这是合法写法）。
         if (end < 4) return emptyMap<String, Any>() to normalized.substring(end + 4).removePrefix("\n")
 
         val block = normalized.substring(4, end)
