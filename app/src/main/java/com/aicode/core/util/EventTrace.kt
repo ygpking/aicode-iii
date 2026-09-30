@@ -329,13 +329,24 @@ object EventTrace {
      *
      * @param key 作用域，通常是 sessionId——多会话并行时各自独立编号，避免混线。
      */
+    /**
+     * 按回合索引的内部状态键。
+     *
+     * `turnId` 只在**会话内**唯一（`t1`/`t2`…，见 [beginTurn]），故所有以回合为索引的
+     * map 都必须用 `scope/turnId` 组合键；否则并发会话会共用同一条目：既共享 seq
+     * （时序链错乱），又会在某一方 [endTurn] 时连带清掉另一方的活跃映射，
+     * 使其后续事件被误判为「回合已收尾」而丢弃（真机复现：同秒开启的 `t1` 相互干扰）。
+     */
+    private fun keyOf(scope: String?, turnId: String): String = "${scope ?: "-"}/$turnId"
+
     fun beginTurn(key: String): String {
         // 开启新回合前，先看同作用域上一回合是否留有未收尾状态。
         // 这是进程消失留下的自动痕迹之一：进程突然消失时，finally 与异常处理都不执行，
         // 上一回合永远等不到 endTurn。检测到就写一行显式说明，而不是留下一段无解释的空白。
         activeTurns[key]?.let { stale ->
-            if (seqCounters.containsKey(stale)) {
-                val total = recordCounters[stale] ?: 0L
+            val staleKey = keyOf(key, stale)
+            if (seqCounters.containsKey(staleKey)) {
+                val total = recordCounters[staleKey] ?: 0L
                 record(
                     stale, key, "TURN",
                     "上一回合 $stale 未见收尾（已记 $total 条）——进程可能被系统杀掉，非正常结束"
@@ -344,9 +355,10 @@ object EventTrace {
         }
         val n = turnCounters.computeIfAbsent(key) { AtomicLong(0) }.incrementAndGet()
         val turnId = "t$n"
-        seqCounters[turnId] = AtomicLong(0)
-        recordCounters[turnId] = 0L
-        droppedCounters.remove(turnId)
+        val mapKey = keyOf(key, turnId)
+        seqCounters[mapKey] = AtomicLong(0)
+        recordCounters[mapKey] = 0L
+        droppedCounters.remove(mapKey)
         activeTurns[key] = turnId
         record(turnId, key, "TURN", "轮次开始")
         return turnId
@@ -373,19 +385,20 @@ object EventTrace {
         }
         // 先判上限、再取 seq：seq 只为「已接受」的记录分配，保证连续无空洞，
         // 于是「上一条 = seq-1」恒成立（否则默认因果会指向被丢弃的序号）。
-        val count = recordCounters[turnId] ?: 0L
+        val mapKey = keyOf(scope, turnId)
+        val count = recordCounters[mapKey] ?: 0L
         if (count >= MAX_RECORDS_PER_TURN) {
-            droppedCounters[turnId] = (droppedCounters[turnId] ?: 0L) + 1
+            droppedCounters[mapKey] = (droppedCounters[mapKey] ?: 0L) + 1
             return null
         }
-        val seqCounter = seqCounters[turnId]
+        val seqCounter = seqCounters[mapKey]
         if (seqCounter == null) {
             // 回合已 endTurn（或从未 beginTurn）却仍在记录：同样不能静默。
             noteOrphan(scope, layer, detail, why = "回合 $turnId 已收尾")
             return null
         }
         val seq = seqCounter.incrementAndGet()
-        recordCounters[turnId] = count + 1
+        recordCounters[mapKey] = count + 1
 
         write(turnId, scope, seq, layer, detail, causeSeq ?: (seq - 1).takeIf { it >= 1 })
         return seq
@@ -457,14 +470,17 @@ object EventTrace {
     /** 回合结束：报告总量与被丢弃量，便于判断是否需要提高上限。 */
     fun endTurn(turnId: String?, scope: String?, outcome: String) {
         if (turnId == null) return
-        val total = recordCounters[turnId] ?: 0L
-        val dropped = droppedCounters[turnId] ?: 0L
+        val mapKey = keyOf(scope, turnId)
+        val total = recordCounters[mapKey] ?: 0L
+        val dropped = droppedCounters[mapKey] ?: 0L
         val suffix = if (dropped > 0) "（另有 $dropped 条超上限被丢弃）" else ""
         record(turnId, scope, "TURN", "轮次结束/$outcome 共 $total 条$suffix")
-        seqCounters.remove(turnId)
-        recordCounters.remove(turnId)
-        droppedCounters.remove(turnId)
-        activeTurns.entries.removeIf { it.value == turnId }
+        seqCounters.remove(mapKey)
+        recordCounters.remove(mapKey)
+        droppedCounters.remove(mapKey)
+        // 只摘掉本会话自己的活跃映射：原 `removeIf { it.value == turnId }` 会误删
+        // **其它会话**的映射（它们的 turnId 同样是 t1/t2…），令其后续事件被丢弃。
+        if (scope != null && activeTurns[scope] == turnId) activeTurns.remove(scope)
     }
 
     // ── 落盘 ────────────────────────────────────────────────────────────
