@@ -60,4 +60,56 @@ class MemoryParserTest {
         assertEquals("empty_fm", memory?.name)
         assertEquals("正文内容", memory?.content)
     }
+
+    // ---------- triggers（召回门控用；不注入清单） ----------
+
+    @Test
+    fun format_and_parse_triggersRoundtrip() {
+        val file = tempFolder.newFile("trg.md")
+        file.writeText(
+            MemoryParser.format(
+                "build-env", "构建环境", "正文",
+                triggers = listOf("发版", "正式版", "Release")
+            )
+        )
+        val memory = MemoryParser.parse(file, MemoryScope.GLOBAL)
+        assertEquals(listOf("发版", "正式版", "release"), memory?.triggers)
+    }
+
+    /** 存量 16 条记忆均无 triggers，必须缺省为空且不影响其他字段。 */
+    @Test
+    fun parse_absentTriggersIsEmptyAndKeepsOtherFields() {
+        val file = tempFolder.newFile("notrg.md")
+        file.writeText("---\nname: old\ndescription: 旧记忆\npinned: true\n---\n正文")
+
+        val memory = MemoryParser.parse(file, MemoryScope.GLOBAL)
+        assertEquals(emptyList<String>(), memory?.triggers)
+        assertEquals("旧记忆", memory?.description)
+        assertEquals(true, memory?.pinned)
+    }
+
+    /** 未传 triggers 时 format 输出应与旧实现逐字节相同，保证不破存量测试与已有文件。 */
+    @Test
+    fun format_withoutTriggersIsByteIdenticalToOldForm() {
+        assertEquals(
+            "---\nname: a\ndescription: b\n---\nc",
+            MemoryParser.format("a", "b", "c")
+        )
+        assertEquals(
+            "---\nname: a\ndescription: b\npinned: true\n---\nc",
+            MemoryParser.format("a", "b", "c", pinned = true)
+        )
+    }
+
+    /** 单标量写法（非 YAML 列表）也应接受，容错不抛异常。 */
+    @Test
+    fun parse_triggersAcceptsScalarAndDropsBlank() {
+        val file = tempFolder.newFile("scalar.md")
+        file.writeText("---\nname: s\ndescription: d\ntriggers: 发版\n---\n正文")
+        assertEquals(listOf("发版"), MemoryParser.parse(file, MemoryScope.GLOBAL)?.triggers)
+
+        val file2 = tempFolder.newFile("blank.md")
+        file2.writeText("---\nname: b\ndescription: d\ntriggers: [\"\", \"  \"]\n---\n正文")
+        assertEquals(emptyList<String>(), MemoryParser.parse(file2, MemoryScope.GLOBAL)?.triggers)
+    }
 }
