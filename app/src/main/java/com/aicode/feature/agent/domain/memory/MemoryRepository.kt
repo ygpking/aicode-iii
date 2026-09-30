@@ -46,12 +46,19 @@ class MemoryRepository @Inject constructor(
         return globalMemorySource.loadContent(name)
     }
 
-    fun saveMemory(name: String, description: String, content: String, scope: MemoryScope, projectRoot: String?): Boolean {
+    fun saveMemory(
+        name: String,
+        description: String,
+        content: String,
+        scope: MemoryScope,
+        projectRoot: String?,
+        triggers: List<String>? = null
+    ): Boolean {
         return when (scope) {
-            MemoryScope.GLOBAL -> globalMemorySource.saveMemory(name, description, content)
+            MemoryScope.GLOBAL -> globalMemorySource.saveMemory(name, description, content, triggers)
             MemoryScope.PROJECT -> {
                 if (projectRoot.isNullOrBlank()) false
-                else projectSource(projectRoot).saveMemory(name, description, content)
+                else projectSource(projectRoot).saveMemory(name, description, content, triggers)
             }
         }
     }

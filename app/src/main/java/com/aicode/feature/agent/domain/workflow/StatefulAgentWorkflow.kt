@@ -135,6 +135,10 @@ class StatefulAgentWorkflow @Inject constructor(
          * 靠 [TurnGovernor] 兜底。
          */
         const val TURN_ROUNDS_PER_SEGMENT = 10
+
+        /** 召回索引块尾部提示：命中只给摘要，正文需按需 read。与 renderIndexBlock 配套。 */
+        const val RECALL_READ_HINT =
+            "\n需要其中某条的完整正文时，先用 memory(action=read, name=..., scope=...) 读取；不要凭摘要猜测细节。"
         /**
          * 由总轮次推导续跑段数：段数 = ceil(总轮次 / 每段轮数) - 1。
          * 保证总预算恰好不减（向上取整的那一段由 [TurnGovernor] 的剩余轮数保护自然浪费）。
@@ -1410,11 +1414,15 @@ class StatefulAgentWorkflow @Inject constructor(
                 text = if (m.description.isBlank()) m.content else "${m.description}\n${m.content}",
                 pinned = m.pinned,
                 updatedAtMs = m.file?.lastModified() ?: 0L,
+                triggers = m.triggers,
             )
         }
         val hits = MemoryRecall.select(query, docs)
         if (hits.isEmpty()) return null
-        return MemoryRecall.renderBlock(hits)
+        // 只给「名 + 摘要」，不内联正文：召回块会成为上下文固定前缀的一部分，内联数千字符正文
+        // 而多数命中只需知道「有这么一条」。需要细节时用 memory(action=read, ...) 按需拉取。
+        // select() 的挑选结果未变，只是渲染宽度收紧（见 MemoryRecall.renderIndexBlock）。
+        return MemoryRecall.renderIndexBlock(hits) + RECALL_READ_HINT
     }
 
     /** 从工具定义派生参数规格；工具不存在时返回 null。 */

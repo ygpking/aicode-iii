@@ -33,13 +33,19 @@ class GlobalMemorySource @Inject constructor(
             ?.content
     }
 
-    override fun saveMemory(name: String, description: String, content: String): Boolean {
+    override fun saveMemory(name: String, description: String, content: String, triggers: List<String>?): Boolean {
         return try {
             if (!memoryRoot.exists()) memoryRoot.mkdirs()
             val file = MemorySource.resolveMemoryFile(memoryRoot, name)
-            // 保留既有 pinned 属性（全量覆盖不应丢失它）。
-            val pinned = listMemories().firstOrNull { it.name.equals(name, ignoreCase = true) }?.pinned ?: false
-            file.writeText(MemoryParser.format(MemorySource.sanitizeName(name), description, content, pinned))
+            // 保留既有 pinned 与 triggers（全量覆盖不应丢失元数据）；调用方显式传入 triggers 时以传入值为准。
+            val existing = listMemories().firstOrNull { it.name.equals(name, ignoreCase = true) }
+            val pinned = existing?.pinned ?: false
+            val effectiveTriggers = triggers ?: existing?.triggers ?: emptyList()
+            file.writeText(
+                MemoryParser.format(
+                    MemorySource.sanitizeName(name), description, content, pinned, effectiveTriggers
+                )
+            )
             true
         } catch (e: Exception) {
             FileLogger.e("GlobalMemorySource", "Failed to save memory: $name", e)

@@ -11,6 +11,9 @@ import java.io.File
  * @param file 记忆对应的本地文件
  * @param content 记忆正文（剥离 Frontmatter 后的详细内容）
  * @param pinned true 表示「必常驻」：召回时与相关性正交，直接置顶。在 frontmatter 中写 `pinned: true` 开启。
+ * @param triggers 用户在提问时可能用到的词/同义词/英文写法（frontmatter `triggers`）。
+ *   仅用于召回匹配（门控与加权），**不注入系统提示词清单**：它存在的意义正是让
+ *   「用户没说正文里那些字」的查询也能命中（如「发正式版」→ android-build-env）。
  */
 data class Memory(
     val name: String,
@@ -18,7 +21,8 @@ data class Memory(
     val scope: MemoryScope,
     val file: File? = null,
     val content: String,
-    val pinned: Boolean = false
+    val pinned: Boolean = false,
+    val triggers: List<String> = emptyList()
 )
 
 enum class MemoryScope {

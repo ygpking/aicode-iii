@@ -101,6 +101,16 @@ class MemoryTool @Inject constructor(
             description = "作用域：project=当前项目专属；global=跨项目通用。默认为 project。",
             enum = listOf("project", "global"),
             required = false
+        ),
+        "triggers" to ToolParameter(
+            name = "triggers",
+            type = ParameterType.ARRAY,
+            description = "save 可选：用户在提问时可能用到的词/同义词/英文写法（如 [\"发版\",\"正式版\",\"release\"]，建议 3-8 项，每项不超 16 字）。" +
+                "用途：当用户的话与你写的正文没有共同字词时（如说「发个正式版」而你写的是「构建环境」），" +
+                "检索会命中不了；这些词就是那条「用户没说的字」的桥。" +
+                "不传则保留该记忆已有的 triggers，因此更新记忆时无需重复填写。",
+            required = false,
+            itemsSchema = mapOf("type" to "string")
         )
     )
 
@@ -156,12 +166,28 @@ class MemoryTool @Inject constructor(
             return ToolResult.Error("当前未选择工作区，无法保存项目级记忆。请改用 scope=global", "NO_WORKSPACE")
         }
 
-        val success = memoryRepository.saveMemory(name, description, content, scope, projectRoot)
+        // 未传 triggers 时传 null，语义是「保留既有值」，与旧行为一致。
+        val triggers = parseTriggers(args)
+        val success = memoryRepository.saveMemory(name, description, content, scope, projectRoot, triggers)
         return if (success) {
-            ToolResult.Success(JsonPrimitive("已成功保存记忆「$name」到 ${scope.name.lowercase()} 作用域。它将在下一次会话启动时自动注入摘要。当前会话若需立即使用，请通过 read 操作读取。"))
+            val triggerNote = if (triggers.isNullOrEmpty()) "" else "（含 ${triggers.size} 个触发词）"
+            ToolResult.Success(JsonPrimitive("已成功保存记忆「$name」到 ${scope.name.lowercase()} 作用域$triggerNote。它将在下一次会话启动时自动注入摘要。当前会话若需立即使用，请通过 read 操作读取。"))
         } else {
             ToolResult.Error("保存记忆失败，请查看日志。", "SAVE_FAILED")
         }
+    }
+
+    /**
+     * 解析 `triggers` 数组。缺省（未传/非数组）返回 null，语义为「保留既有值」——
+     * 这样模型更新一条已有记忆时无需把触发词再抄一遍，也不会因漏写而把元数据抹掉。
+     * 显式传了数组（含空数组）则返回列表：空数组语义为「清空既有触发词」，与
+     * [MemorySource] 的数据层契约（非 null 即设为该值）保持一致。
+     */
+    private fun parseTriggers(args: Map<String, JsonElement>): List<String>? {
+        val arr = args["triggers"] as? JsonArray ?: return null
+        return arr.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
     }
 
     private fun handleEdit(args: Map<String, JsonElement>, name: String?, scope: MemoryScope, projectRoot: String?): ToolResult {

@@ -32,8 +32,18 @@ interface MemorySource {
     /** 读取指定 memory 的完整指令正文；不存在或解析失败时返回 null。 */
     fun loadContent(name: String): String?
 
-    /** 保存一条记忆（创建或覆盖） */
-    fun saveMemory(name: String, description: String, content: String): Boolean
+    /**
+     * 保存一条记忆（创建或覆盖）。
+     *
+     * @param triggers 触发词；null 表示「保留既有值」（工具未传时行为与旧实现一致），
+     *   非 null 表示设为该值（空表即清空）。
+     */
+    fun saveMemory(
+        name: String,
+        description: String,
+        content: String,
+        triggers: List<String>? = null
+    ): Boolean
 
     /**
      * 对已有记忆的正文做局部编辑（old_string/new_string 精确匹配），语义与 editFile 一致。
@@ -74,7 +84,13 @@ interface MemorySource {
         }
 
         return try {
-            file.writeText(MemoryParser.format(memory.name, memory.description, content, memory.pinned))
+            // 保留 name/description/pinned/triggers：edit 只改正文，不得顺手抹掉元数据
+            // （triggers 丢失会让该记忆从此无法被门控命中，且症状隐蔽）。
+            file.writeText(
+                MemoryParser.format(
+                    memory.name, memory.description, content, memory.pinned, memory.triggers
+                )
+            )
             MemoryEditResult.Success
         } catch (e: Exception) {
             FileLogger.e("MemorySource", "Failed to edit memory: $name", e)
