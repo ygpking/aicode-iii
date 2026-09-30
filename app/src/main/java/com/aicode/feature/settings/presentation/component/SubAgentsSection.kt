@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -55,6 +56,8 @@ internal fun SubAgentsSection(
 ) {
     val projectAgents = entries.filter { it.scope == AgentDefinitionScope.PROJECT }
     val globalAgents = entries.filter { it.scope == AgentDefinitionScope.GLOBAL }
+    // 同名时项目级覆盖全局：被遮蔽的全局行标一下，否则用户在全局那行怎么改都不生效。
+    val shadowed = remember(entries) { shadowedGlobalNames(entries) }
 
     if (entries.isEmpty()) {
         Box(
@@ -147,6 +150,7 @@ internal fun SubAgentsSection(
                         if (index > 0) SettingsDivider()
                         SubAgentRow(
                             entry = entry,
+                            shadowed = entry.name.lowercase() in shadowed,
                             onDelete = { onDelete(entry) },
                             onClick = { onOpenDetail(entry) }
                         )
@@ -157,10 +161,25 @@ internal fun SubAgentsSection(
     }
 }
 
+/** 计算被项目级同名定义遮蔽的全局子代理名（小写）：同名时项目级覆盖全局。 */
+private fun shadowedGlobalNames(entries: List<SubAgentUiEntry>): Set<String> {
+    val shadowed = entries
+        .filter { it.scope == AgentDefinitionScope.PROJECT }
+        .map { it.name.lowercase() }
+        .toSet()
+    if (shadowed.isEmpty()) return emptySet()
+    return entries
+        .filter { it.scope == AgentDefinitionScope.GLOBAL }
+        .map { it.name.lowercase() }
+        .filter { it in shadowed }
+        .toSet()
+}
+
 /** 单个子代理行：图标 + 名称/描述 + 模型标签 + 右箭头；左滑删除，点击行进入详情。 */
 @Composable
 private fun SubAgentRow(
     entry: SubAgentUiEntry,
+    shadowed: Boolean = false,
     onDelete: () -> Unit,
     onClick: () -> Unit
 ) {
@@ -217,6 +236,13 @@ private fun SubAgentRow(
                     if (entry.disabled) {
                         McpPill(
                             text = stringResource(R.string.common_disabled),
+                            textColor = MaterialTheme.colorScheme.outline,
+                            backgroundColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                        )
+                    }
+                    if (shadowed) {
+                        McpPill(
+                            text = stringResource(R.string.subagent_shadowed_by_project),
                             textColor = MaterialTheme.colorScheme.outline,
                             backgroundColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
                         )

@@ -80,6 +80,20 @@ class SubAgentEventBus @Inject constructor() {
         return removed
     }
 
+    /**
+     * 直接把某个子代理登记为活跃，不广播事件。
+     *
+     * 专供「已完成的子代理被 `send` 唤醒、起新一轮」的路径：该轮不经 [SubAgentEventType.SPAWNED]
+     * （只在 task create 时发），若不在此补登记，活跃集合会自始至终缺这个 id，导致
+     * [isFull] 漏算（可跑超过 MAX_RUNNING 个）、read/list 把运行中的它报成 completed、
+     * [SubAgentWriteLease] 的 pruneInactive 误删其写租约（失去写冲突保护）。
+     *
+     * 幂等：已在集合中则无操作；调用方应在对应运行结束时 [release] 交回槽位。
+     */
+    fun markActive(subSessionId: String) {
+        _activeSubSessionIds.update { if (subSessionId in it) it else it + subSessionId }
+    }
+
     fun emit(event: SubAgentEvent) {
         // 同步维护活跃集合
         when (event.type) {

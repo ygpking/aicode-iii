@@ -1023,6 +1023,7 @@
     <string name="subagents_empty_hint">点右上角「+」新建一个，或把 agent 的 .md 定义放进 ~/.aicode/agents/</string>
     <string name="subagents_no_project">当前项目暂无子代理</string>
     <string name="subagents_no_global">暂无全局子代理</string>
+    <string name="subagent_shadowed_by_project">被项目级遮蔽</string>
     <string name="subagents_delete_confirm_title">删除子代理</string>
     <string name="subagents_delete_confirm_message">将删除「%1$s」的定义文件，此操作不可恢复。确定删除？</string>
     <string name="subagent_model">模型</string>

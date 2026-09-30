@@ -1405,6 +1405,13 @@ class AIAgentViewModel @Inject constructor(
         // 卡住的会话会连发十几次，逐次落卡会让对话流被同一张失败卡片刷屏。
         var compactionFailureCardPersisted = false
 
+        // 子代理本轮起于「重新唤醒」（send 到已完成子代理），不经 SPAWNED，活跃集合会缺登记。
+        // 这里补登记，由 finally 无条件归还（正常完成时 COMPLETED/FAILED 已先归还，
+        // 本次 release 为无害空操作；异常/取消路径则靠它兜底，避免名额泄漏）。
+        val subAgentRunId = sessionUseCase.getSessionById(sessionId)
+            ?.takeIf { it.parentId != null }?.id
+        subAgentRunId?.let { subAgentEventBus.markActive(it) }
+
         try {
             var failed = false
             // 必须在插入本次用户消息之前读取历史：workflow 会自己 add(userRequest)，避免重复。
@@ -1701,6 +1708,8 @@ class AIAgentViewModel @Inject constructor(
             // 把它写进日志，事后再遇到时才能一眼看出「全完成却仍有记录」。
             EventTrace.snapshot(sessionId, "LEFTOVER", leftoverStateOf(sessionId))
             EventTrace.endTurn(turnId, sessionId, "finished state=${_agentStates.value[sessionId]}")
+            // 子代理本轮结束：归还活跃名额（幂等，正常路径已被 COMPLETED/FAILED 归还）。
+            subAgentRunId?.let { subAgentEventBus.release(it) }
             if (isOwnJob) {
                 sessionJobs.remove(sessionId)
             }
