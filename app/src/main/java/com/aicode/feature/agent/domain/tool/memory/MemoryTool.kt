@@ -178,15 +178,16 @@ class MemoryTool @Inject constructor(
     }
 
     /**
-     * 解析 `triggers` 数组。缺省（未传/非数组/全空白）返回 null，语义为「保留既有值」——
+     * 解析 `triggers` 数组。缺省（未传/非数组）返回 null，语义为「保留既有值」——
      * 这样模型更新一条已有记忆时无需把触发词再抄一遍，也不会因漏写而把元数据抹掉。
+     * 显式传了数组（含空数组）则返回列表：空数组语义为「清空既有触发词」，与
+     * [MemorySource] 的数据层契约（非 null 即设为该值）保持一致。
      */
     private fun parseTriggers(args: Map<String, JsonElement>): List<String>? {
         val arr = args["triggers"] as? JsonArray ?: return null
-        val items = arr.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }
+        return arr.mapNotNull { it.jsonPrimitive.contentOrNull?.trim() }
             .filter { it.isNotEmpty() }
             .distinct()
-        return items.takeIf { it.isNotEmpty() }
     }
 
     private fun handleEdit(args: Map<String, JsonElement>, name: String?, scope: MemoryScope, projectRoot: String?): ToolResult {
