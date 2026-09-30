@@ -301,4 +301,123 @@ class MemoryRecallTest {
         )
         assertEquals("build-env", MemoryRecall.select("帮我发个正式版", docs).first().id)
     }
+
+    // ---------- 时间衰减（默认关闭） ----------
+    //
+    // 移植自 OpenSquilla `memory/retrieval.py::MemoryRetriever.search` 的时间衰减（Apache-2.0）。
+    // 默认 DISABLED：不传参时排序与加本功能前逐位相同。
+
+    private val dayMs = 86_400_000L
+
+    @Test
+    fun temporalDecay_flipsOrderSoNewerMemoryOutranksStaleHighlyRelevantOne() {
+        val now = 10_000L * dayMs
+        val docs = listOf(
+            // 旧记忆：正文重复查询词三次，BM25 明显更高。
+            RecallDoc("old", MemoryScope.GLOBAL, "缓存 稳定性 缓存 稳定性 缓存 稳定性", updatedAtMs = now - 400 * dayMs),
+            // 新记忆：只用一次，BM25 更低。
+            RecallDoc("new", MemoryScope.GLOBAL, "缓存 稳定性 补充说明", updatedAtMs = now),
+        )
+        // 关闭衰减（默认）：旧的靠 BM25 胜出。
+        assertEquals("old", MemoryRecall.select("缓存 稳定性", docs, nowMs = now).first().id)
+        // 月级衰减：400 天前 ≈ 2^-13.3，几乎归零，新的胜出。
+        assertEquals(
+            "new",
+            MemoryRecall.select("缓存 稳定性", docs, temporalDecay = TemporalDecay.MONTH, nowMs = now).first().id,
+        )
+    }
+
+    @Test
+    fun temporalDecayDisabled_isIdenticalToDefaultBehaviour() {
+        val now = 10_000L * dayMs
+        val docs = listOf(
+            RecallDoc("a", MemoryScope.GLOBAL, "缓存 稳定性 方案", updatedAtMs = now - 300 * dayMs),
+            RecallDoc("b", MemoryScope.GLOBAL, "缓存 稳定性 方案", updatedAtMs = now),
+        )
+        assertEquals(
+            MemoryRecall.select("缓存 稳定性", docs).map { it.id },
+            MemoryRecall.select("缓存 稳定性", docs, temporalDecay = TemporalDecay.DISABLED).map { it.id },
+        )
+    }
+
+    @Test
+    fun temporalDecay_leavesDocsWithUnknownTimeUntouched() {
+        // updatedAtMs <= 0 表示时间未知（如文件已删），不得被当作「极旧」而衰减掉。
+        val now = 10_000L * dayMs
+        val docs = listOf(
+            RecallDoc("unknown", MemoryScope.GLOBAL, "缓存 稳定性 缓存 稳定性", updatedAtMs = 0),
+            RecallDoc("fresh", MemoryScope.GLOBAL, "缓存 稳定性", updatedAtMs = now),
+        )
+        assertEquals(
+            "unknown",
+            MemoryRecall.select("缓存 稳定性", docs, temporalDecay = TemporalDecay.MONTH, nowMs = now).first().id,
+        )
+    }
+
+    @Test
+    fun temporalDecay_doesNotRewardFutureTimestamps() {
+        // 时钟回拨/文件时间在未来：age 负数按 0 计，不得凭空加成。
+        val now = 1_000L * dayMs
+        val docs = listOf(
+            RecallDoc("hijack", MemoryScope.GLOBAL, "缓存 稳定性", updatedAtMs = now + 500 * dayMs),
+            RecallDoc("normal", MemoryScope.GLOBAL, "缓存 稳定性", updatedAtMs = now),
+        )
+        // 两者衰减因子均为 1，回到同分“时间新者优先”的既有规则。
+        val hits = MemoryRecall.select("缓存 稳定性", docs, temporalDecay = TemporalDecay.DAY, nowMs = now)
+        assertEquals(2, hits.size)
+    }
+
+    // ---------- MMR 多样性（默认关闭） ----------
+
+    @Test
+    fun mmr_breaksUpNearDuplicateHits() {
+        val now = 1_000L * dayMs
+        val dup = "缓存 稳定性 前缀 方案 说明"
+        val docs = listOf(
+            RecallDoc("dup1", MemoryScope.GLOBAL, dup, updatedAtMs = now),
+            RecallDoc("dup2", MemoryScope.GLOBAL, dup, updatedAtMs = now),
+            RecallDoc("dup3", MemoryScope.GLOBAL, dup, updatedAtMs = now),
+            RecallDoc("other", MemoryScope.GLOBAL, "缓存 稳定性 与容器发行版的不同面", updatedAtMs = now),
+        )
+        // 默认（关闭）：三条几乎相同的记忆霸占前两名。
+        val plain = MemoryRecall.select("缓存 稳定性", docs, maxHits = 2, nowMs = now).map { it.id }
+        assertEquals(listOf("dup1", "dup2"), plain)
+        // 开启 MMR：第二条换成内容不同的那条，避免“同一件事说三遍”。
+        val diverse = MemoryRecall.select("缓存 稳定性", docs, maxHits = 2, mmrLambda = 0.5, nowMs = now).map { it.id }
+        assertTrue("MMR 应把重复项换成不同内容：$diverse", diverse.contains("other"))
+        assertEquals("相关性最高者仍应保留", "dup1", diverse.first())
+    }
+
+    @Test
+    fun mmrDisabled_isIdenticalToDefaultBehaviour() {
+        val docs = listOf(
+            RecallDoc("a", MemoryScope.GLOBAL, "缓存 稳定性 方案"),
+            RecallDoc("b", MemoryScope.GLOBAL, "缓存 稳定性 补充"),
+        )
+        assertEquals(
+            MemoryRecall.select("缓存 稳定性", docs).map { it.id },
+            MemoryRecall.select("缓存 稳定性", docs, mmrLambda = -1.0).map { it.id },
+        )
+    }
+
+    @Test
+    fun mmrLambdaOne_equivalentToRelevanceOnlyOrder() {
+        // lambda=1.0 时 `rel - 0*sim`，等价于关闭，用于验证实现没引入额外扰动。
+        val now = 1_000L * dayMs
+        val docs = listOf(
+            RecallDoc("a", MemoryScope.GLOBAL, "缓存 稳定性 方案", updatedAtMs = now),
+            RecallDoc("b", MemoryScope.GLOBAL, "缓存 稳定性", updatedAtMs = now),   
+            RecallDoc("c", MemoryScope.GLOBAL, "缓存", updatedAtMs = now),
+        )
+        assertEquals(
+            MemoryRecall.select("缓存 稳定性", docs, nowMs = now).map { it.id },
+            MemoryRecall.select("缓存 稳定性", docs, mmrLambda = 1.0, nowMs = now).map { it.id },
+        )
+    }
+
+    @Test
+    fun mmr_keepsAllDocsWhenLimitExceedsCandidates() {
+        val docs = (1..3).map { RecallDoc("d$it", MemoryScope.GLOBAL, "缓存 稳定性 方案 $it") }
+        assertEquals(3, MemoryRecall.select("缓存 稳定性", docs, maxHits = 10, mmrLambda = 0.4).size)
+    }
 }

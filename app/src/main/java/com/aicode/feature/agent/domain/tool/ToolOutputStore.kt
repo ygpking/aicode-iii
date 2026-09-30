@@ -53,11 +53,15 @@ class ToolOutputStore @Inject constructor(
     val outputDir: File get() = File(containerInstaller.aicodeDir, OUTPUT_DIR)
 
     fun process(toolName: String, callId: String, result: ToolResult): ToolResult {
-        return when (result) {
+        val bounded = when (result) {
             is ToolResult.Success -> ToolResult.Success(processElement(toolName, callId, result.data))
             is ToolResult.Partial -> ToolResult.Partial(processElement(toolName, callId, result.data), result.message)
             is ToolResult.Error -> result
         }
+        // 外部内容（网页/MCP 等）加不可信信封。放在截断**之后**：否则预览可能被截断切断闭合标签，
+        // 留下未闭合的信封；落盘原文保持不加信封（磁盘上留存的是可逐字核对的原始证据）。
+        // 本地文件读取（readFile 等）不在 [UntrustedEnvelope.sourceFor] 的名单内，行为完全不变。
+        return UntrustedEnvelope.apply(toolName, bounded)
     }
 
     fun boundText(toolName: String, callId: String, rawText: String): StoredToolOutput {
