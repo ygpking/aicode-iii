@@ -23,13 +23,13 @@ internal object CommandSleepGuard {
     const val MAX_SLEEP_SECONDS = 30.0
 
     /** 匹配作为独立命令出现的 sleep：行首或 `;`/`&&`/`||` 之后，支持小数与 s/m/h/d 单位。 */
-    private val SLEEP_RE = Regex("""(^|[;&|]\s*)\bsleep\s+(\d+(?:\.\d+)?)([smhd]?)""")
+    private val SLEEP_RE = Regex("""(^|[;&|]\s*)\bsleep\s+(\d+(?:\.\d+)?)([smhd]?)""", RegexOption.MULTILINE)
 
     /**
      * @return null = 放行；非 null = 拦截原因（含替代引导），调用方不得执行命令。
      */
     fun blockReason(command: String): String? {
-        val m = SLEEP_RE.find(command) ?: return null
+        val m = SLEEP_RE.find(stripQuoted(command)) ?: return null
         val value = m.groupValues[2].toDoubleOrNull() ?: return null
         val unit = m.groupValues[3]
         val seconds = when (unit) {
@@ -43,7 +43,34 @@ internal object CommandSleepGuard {
             "固定延时等待外部状态是被禁止的坏模式（白等还易撞工具超时被杀）。" +
             "替代方案：1) 长任务（构建/测试/CI/服务）用 terminal(action=\"start\", notify=true) 后台跑，结束主动通知；" +
             "2) 等子代理等其完成通知，不轮询文件；" +
-            "3) 必须轮询时短间隔（sleep ≤ 10s、单条命令总时长 < 60s）。" +
+            "3) 必须轮询时短间隔（sleep ≤ ${MAX_SLEEP_SECONDS.toInt()}s、单条命令总时长 < 60s）。" +
             "原命令未执行。"
+    }
+
+    /**
+     * 把单/双引号包裹的内容替换为等长空格，匹配位置与原文对齐，回显文本里的
+     * `; sleep 60` 不再被误判为独立命令（双引号内 `\"` 转义不关闭引号）。
+     */
+    private fun stripQuoted(command: String): String {
+        val sb = StringBuilder(command.length)
+        var quote: Char? = null
+        var i = 0
+        while (i < command.length) {
+            val c = command[i]
+            when {
+                quote != null -> {
+                    if (c == '\\' && quote == '"' && i + 1 < command.length) {
+                        sb.append(' '); i += 2
+                    } else {
+                        sb.append(' ')
+                        if (c == quote) quote = null
+                        i++
+                    }
+                }
+                c == '\'' || c == '"' -> { quote = c; sb.append(' '); i++ }
+                else -> { sb.append(c); i++ }
+            }
+        }
+        return sb.toString()
     }
 }

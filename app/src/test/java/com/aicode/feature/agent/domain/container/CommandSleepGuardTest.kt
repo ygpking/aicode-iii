@@ -66,6 +66,36 @@ class CommandSleepGuardTest {
     }
 
     @Test
+    fun `引号内带分隔符的 sleep 不误伤`() {
+        assertNull(CommandSleepGuard.blockReason("""echo "a; sleep 60""""))
+    }
+
+    @Test
+    fun `单引号内带分隔符的 sleep 不误伤`() {
+        assertNull(CommandSleepGuard.blockReason("echo 'a; sleep 60'"))
+    }
+
+    @Test
+    fun `多行命令行首 sleep 拦截`() {
+        assertNotNull(CommandSleepGuard.blockReason("cd /tmp\nsleep 60"))
+    }
+
+    @Test
+    fun `显式 s 单位拦截`() {
+        assertNotNull(CommandSleepGuard.blockReason("sleep 45s"))
+    }
+
+    @Test
+    fun `d 单位换算拦截`() {
+        assertNotNull(CommandSleepGuard.blockReason("sleep 2d"))
+    }
+
+    @Test
+    fun `双竖线分隔 sleep 拦截`() {
+        assertNotNull(CommandSleepGuard.blockReason("foo || sleep 60"))
+    }
+
+    @Test
     fun `普通命令放行`() {
         assertNull(CommandSleepGuard.blockReason("ls -la && git status"))
     }
