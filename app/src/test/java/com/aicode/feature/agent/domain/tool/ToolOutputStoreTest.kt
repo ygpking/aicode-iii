@@ -94,7 +94,12 @@ class ToolOutputStoreTest {
         val result = store.process("readFile", "call-6", ToolResult.Success(JsonPrimitive(repetitiveOutput)), budget)
         val data = (result as ToolResult.Success).data
         assertEquals("预算充裕时输出应与无预算时一致", repetitiveOutput, (data as JsonPrimitive).content)
-        assertEquals(repetitiveOutput.length.toLong(), budget.committedChars)
+        // 记账量是「序列化后的长度」（估算用），不是原文字符数：JsonPrimitive 序列化会加引号
+        // 并把换行转义为 \n，故只可能不小于原文长度。不能用等值断言（首版就错在这里）。
+        assertTrue(
+            "应记账本次喂入量，实际 ${budget.committedChars}，原文 ${repetitiveOutput.length}",
+            budget.committedChars >= repetitiveOutput.length
+        )
     }
 
     /**
