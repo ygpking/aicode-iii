@@ -77,8 +77,18 @@ class StreamableHttpTransport(
 
                 val contentType = resp.header("Content-Type").orEmpty()
                 val rawJson = if (contentType.contains("text/event-stream", ignoreCase = true)) {
-                    extractSseJson(rawBody)
-                        ?: throw McpException(message = "SSE 响应中未找到 $method 的数据")
+                    // 一个 SSE 流可能含多个事件（服务端先发 progress/ping，真正的响应在后面）。
+                    // 逐个事件取 data 负载，挑出 id 配对的那条——不能拿第一个事件的负载当结果。
+                    val payloads = SseEventExtractor.extractDataPayloads(rawBody)
+                    if (payloads.isEmpty()) {
+                        throw McpException(message = "SSE 响应中未找到 $method 的数据")
+                    }
+                    // 挑不出配对 id 就明确报错（而不是把首个负载当结果往下传，让报错变成误导性的
+                    // 「JSON 解析失败」）。常见于服务端把响应发成了 notification、或 id 被写成字符串。
+                    SseEventExtractor.pickForId(payloads, id, json)
+                        ?: throw McpException(
+                            message = "$method 的 SSE 响应中无 id=$id 的数据（共 ${payloads.size} 个事件）"
+                        )
                 } else {
                     rawBody
                 }
@@ -92,9 +102,12 @@ class StreamableHttpTransport(
         val bodyJson = json.encodeToString(JsonRpcNotification.serializer(), payload)
         FileLogger.d(TAG, "→ notify [$method]")
         client.newCall(buildRequest(bodyJson)).execute().use { resp ->
-            // 通知按 spec 服务端通常返回 202 且无 body；非 2xx 仅记日志，不阻断流程。
+            // 通知按 spec 通常返回 202 且无 body，失败即报错：与 request() 的契约保持一致。
+            // 此前只记日志，导致 HTTP 401/500 被当成功——等后续请求再失败，错误现场已丢失。
+            // 当前唯一调用点是握手的 notifications/initialized，失败必须让握手失败。
+            resp.header("Mcp-Session-Id")?.let { if (it.isNotBlank()) sessionId = it }
             if (!resp.isSuccessful) {
-                FileLogger.w(TAG, "通知 $method 返回 HTTP ${resp.code}")
+                throw McpException(message = "HTTP ${resp.code} 通知 $method 失败: ${resp.message}")
             }
         }
     }
@@ -119,24 +132,6 @@ class StreamableHttpTransport(
             .build()
     }
 
-    /** 从 SSE 文本里取第一条 `data:` 负载（可能跨多行），拼成完整 JSON 文本。
-     * 多行 data 属于同一事件，按 SSE 规范以换行连接（JSON 允许空白，拼接后仍可解析）。 */
-    private fun extractSseJson(body: String): String? {
-        val data = StringBuilder()
-        var index = 0
-        while (index <= body.length) {
-            val next = body.indexOf('\n', index)
-            val line = if (next < 0) body.substring(index).trimEnd('\r') else body.substring(index, next).trimEnd('\r')
-            when {
-                line.startsWith("data:") -> data.append(line.removePrefix("data:").trim()).append('\n')
-                line.isBlank() && data.isNotEmpty() -> return data.toString().trimEnd('\n')
-            }
-            if (next < 0) break
-            index = next + 1
-        }
-        return data.takeIf { it.isNotEmpty() }?.toString()?.trimEnd('\n')
-    }
-
     private fun parseAndValidate(rawJson: String, expectedId: Long, method: String): JsonRpcResponse {
         val response = runCatching {
             json.decodeFromString(JsonRpcResponse.serializer(), rawJson)
@@ -144,12 +139,82 @@ class StreamableHttpTransport(
             throw McpException(message = "$method 响应 JSON 解析失败: ${it.message}", cause = it)
         }
 
-        response.error?.let {
-            throw McpException(rpcCode = it.code, message = "$method 返回错误 [${it.code}] ${it.message}")
-        }
-        if (response.id != null && response.id != expectedId) {
-            FileLogger.w(TAG, "响应 id 不匹配: 期望 $expectedId, 实际 ${response.id}")
-        }
+        validateJsonRpcResponse(response, expectedId, method)
         return response
     }
+}
+
+/**
+ * 校验一条响应确实能与请求配对。
+ *
+ * 之前 id 不匹配只 `FileLogger.w`，于是把串台/乱序的响应当结果返回——调用方会拿到别人的数据
+ * （例如 B 调的 `tools/call` 收到的却是 A 的 `tools/list`），错误完全静默。这里统一改为抛错。
+ */
+internal fun validateJsonRpcResponse(response: JsonRpcResponse, expectedId: Long, method: String) {
+    response.error?.let {
+        throw McpException(rpcCode = it.code, message = "$method 返回错误 [${it.code}] ${it.message}")
+    }
+    if (response.id == null) {
+        // 请求必须被带上 id 原样回传（JSON-RPC 2.0）；没有 id 就无从确认这条响应是我们的。
+        throw McpException(message = "$method 响应缺少 id，无法与请求配对")
+    }
+    if (response.id != expectedId) {
+        throw McpException(message = "$method 响应 id 不匹配: 期望 $expectedId, 实际 ${response.id}")
+    }
+}
+
+/**
+ * MCP Streamable HTTP 的 SSE 响应解析。
+ *
+ * 一次 POST 的响应体可能是 SSE，且**可能含多个事件**（服务端先发 progress/notification，真正
+ * 的响应在后面的 message 事件里）。旧实现「读到第一个空行就返回」，只在响应恰好是首个带 data
+ * 的事件时才正确，其余情况静默拿到错误负载。这里按 SSE 规范把所有事件的 data 负载都切出来，
+ * 再由上层按 id 配对挑选。
+ *
+ * 纯字符串逻辑、零 Android 依赖，便于单测（与 McpFrameReader 同一风格）。
+ */
+internal object SseEventExtractor {
+
+    /**
+     * 切出各事件的 data 负载，保持出现顺序。
+     *
+     * 规范要点：`data:` 行去掉可选的一个前导空格后取值；同一事件的多个 `data:` 行用 `\n` 连接；
+     * 空行是事件边界；`event:` / `id:` / `retry:` 与 `:` 注释对负载无贡献，直接忽略。
+     */
+    fun extractDataPayloads(body: String): List<String> {
+        val payloads = mutableListOf<String>()
+        val current = StringBuilder()
+        var hasData = false
+
+        for (rawLine in body.split('\n')) {
+            val line = rawLine.trimEnd('\r')
+            when {
+                line.isEmpty() -> {
+                    // 事件边界：交出本事件累积的 data（没有 data 的事件直接跳过）。
+                    if (hasData) payloads.add(current.toString().trimEnd('\n'))
+                    current.setLength(0)
+                    hasData = false
+                }
+                line.startsWith("data:") -> {
+                    val value = line.removePrefix("data:")
+                    current.append(if (value.startsWith(" ")) value.substring(1) else value).append('\n')
+                    hasData = true
+                }
+                else -> Unit
+            }
+        }
+        // 流末尾没有空行时，最后一个事件同样要交出（否则丢最后一条 = 丢响应）。
+        if (hasData) payloads.add(current.toString().trimEnd('\n'))
+        return payloads
+    }
+
+    /**
+     * 在 [payloads] 中挑出 id 等于 [expectedId] 的那条响应；没有匹配则返回 null。
+     * 单条负载解析失败只跳过它，不影响其余候选。
+     */
+    fun pickForId(payloads: List<String>, expectedId: Long, json: Json): String? =
+        payloads.firstOrNull { payload ->
+            runCatching { json.decodeFromString(JsonRpcResponse.serializer(), payload).id }
+                .getOrNull() == expectedId
+        }
 }
