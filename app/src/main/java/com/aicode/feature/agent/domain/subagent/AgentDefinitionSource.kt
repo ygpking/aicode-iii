@@ -25,6 +25,4 @@ internal object AgentDefinitionDirectoryScanner {
             }
             .sortedBy { it.name.lowercase() }
     }
-
-    private const val TAG = "AgentDefinitionDirectoryScanner"
 }
