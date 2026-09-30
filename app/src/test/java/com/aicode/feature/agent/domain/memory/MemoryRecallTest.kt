@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.memory
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -248,5 +249,56 @@ class MemoryRecallTest {
         // 停用词与 GENERIC_TERMS 分开：含功能词的有效查询不得被判定为泛化而不召回。
         val docs = listOf(RecallDoc("build", MemoryScope.GLOBAL, "Gradle 构建缓存", triggers = listOf("构建")))
         assertTrue(MemoryRecall.select("怎么构建", docs).isNotEmpty())
+    }
+
+    // ---------- 门控不得被「单个 CJK 字偶然重合」触发（回归） ----------
+    //
+    // 这三例都构造了「无关记忆的正文刚好含查询里的某个单字」——正是线上 16 条真实记忆
+    // 实测中招的情形（「发」「构」「不」「器」等）。旧实现按 token .any 判命中，
+    // 单字重合即放行，实测 16 条记忆里 10 条查询被无关联想污染，甚至把无关项排到第 1 位。
+
+    @Test
+    fun gateIgnoresSingleCjkCharCoincidence() {
+        // triggers「并发」与「帮我发个正式版」共享单字「发」。
+        val docs = listOf(
+            RecallDoc("build-env", MemoryScope.GLOBAL, "本机 Android 构建环境与 SDK", triggers = listOf("发版", "正式版")),
+            RecallDoc("patterns", MemoryScope.GLOBAL, "并发写 map 与重复代码陷阱", triggers = listOf("并发")),
+        )
+        val hits = MemoryRecall.select("帮我发个正式版", docs).map { it.id }
+        assertEquals("build-env", hits.first())
+        assertFalse("单字「发」重合不得把 patterns 拉进门控候选", hits.contains("patterns"))
+    }
+
+    @Test
+    fun gateIgnoresSingleCharOverlapWithBigramTrigger() {
+        // triggers「架构」与查询「构建」共享单字「构」，不是真命中。
+        val docs = listOf(
+            RecallDoc("build", MemoryScope.GLOBAL, "构建与 SDK 路径", triggers = listOf("构建")),
+            RecallDoc("arch", MemoryScope.GLOBAL, "架构说明与分层", triggers = listOf("架构")),
+        )
+        val hits = MemoryRecall.select("这个构建问题怎么解决", docs).map { it.id }
+        assertEquals("build", hits.first())
+        assertFalse("单字「构」重合不得把 arch 拉进门控候选", hits.contains("arch"))
+    }
+
+    @Test
+    fun gateIgnoresSharedNegationChar() {
+        // triggers「连不上」与查询「起不来」共享单字「不」。
+        val docs = listOf(
+            RecallDoc("sandbox", MemoryScope.GLOBAL, "chroot 沙箱隔离与逃逸", triggers = listOf("沙箱")),
+            RecallDoc("net", MemoryScope.GLOBAL, "怎么连不上 github 网络", triggers = listOf("连不上")),
+        )
+        val hits = MemoryRecall.select("沙箱起不来", docs).map { it.id }
+        assertEquals(listOf("sandbox"), hits)
+    }
+
+    @Test
+    fun gateStillFiresOnRealSubstringOverlap() {
+        // 反向保证：修复不能把门控改废——真子串命中（「发版」→「发个正式版」共享 发+版）仍须生效。
+        val docs = listOf(
+            RecallDoc("build-env", MemoryScope.GLOBAL, "构建环境", triggers = listOf("发版")),
+            RecallDoc("noise", MemoryScope.GLOBAL, "无关内容", updatedAtMs = 1),
+        )
+        assertEquals("build-env", MemoryRecall.select("帮我发个正式版", docs).first().id)
     }
 }

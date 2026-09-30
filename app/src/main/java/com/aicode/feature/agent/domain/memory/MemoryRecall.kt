@@ -191,13 +191,23 @@ internal object MemoryRecall {
     /**
      * 查询 token 与记忆 triggers 的命中项数。triggers 自身也走同一分词器，
      * 故中英混排、CJK bigram 都能对齐（如 triggers 里的「发版」可被「帮我发个正式版」命中）。
+     *
+     * **单个 CJK 字符的偶然重合不算命中**，这是必须的：
+     * 「并发」与「发个正式版」共享「发」、「架构」与「构建」共享「构」、
+     * 「连不上」与「能不能用」共享「不」——若按 .any 放行，门控会把一批无关记忆
+     * 一并纳入候选（实测 16 条真实记忆里 10 条查询中招），甚至把无关项排到第 1 位。
+     *
+     * 真命中要么有 **≥2 个 token 重合**（「发版」×「发个正式版」共享 发+版），
+     * 要么重合的是 **多字符 token**（「release」这类单 token 拉丁词；「构建」这类 CJK bigram，
+     * 后者能证明是真实子串而非巧合；而单字「构」只能证明共享了一个汉字）。
      */
     private fun triggerHits(queryTokens: List<String>, triggers: List<String>): Int {
         if (queryTokens.isEmpty() || triggers.isEmpty()) return 0
         val querySet = queryTokens.toHashSet()
         var hits = 0
         for (trg in triggers) {
-            if (tokenizeForRecall(trg).any { it in querySet }) hits++
+            val shared = tokenizeForRecall(trg).filter { it in querySet }
+            if (shared.size >= 2 || shared.any { it.length >= 2 }) hits++
         }
         return hits
     }
