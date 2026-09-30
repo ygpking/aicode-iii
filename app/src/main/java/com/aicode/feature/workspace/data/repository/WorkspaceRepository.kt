@@ -1,5 +1,6 @@
 package com.aicode.feature.workspace.data.repository
 
+import com.aicode.core.util.runCatchingCancellable
 import android.content.Context
 import android.net.Uri
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -267,7 +268,7 @@ class WorkspaceRepository @Inject constructor(
             return emptyList()
         }
         val wsRoot = pathHomeResolver.expandHome(cfg.remoteWorkspacePath.trimEnd('/'))
-        return runCatching {
+        return runCatchingCancellable {
             // ls -d */ 列出子目录，取基名
             val output = execRemote("ls -d ${wsRoot}/*/ 2>/dev/null | xargs -n1 basename 2>/dev/null")
             if (output.isBlank()) emptyList()
@@ -348,7 +349,7 @@ class WorkspaceRepository @Inject constructor(
             val cfg = remoteSshConnection.config ?: return@withContext null
             val wsRoot = pathHomeResolver.expandHome(cfg.remoteWorkspacePath.trimEnd('/'))
             val remotePath = "$wsRoot/$name"
-            runCatching {
+            runCatchingCancellable {
                 if (execRemoteExit("test -d ${shellQuote(remotePath)}") == 0) {
                     FileLogger.w(TAG, "新建工作区失败：已存在 '$name'")
                     return@withContext null

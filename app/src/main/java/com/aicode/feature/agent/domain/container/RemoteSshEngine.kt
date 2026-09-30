@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.container
 
+import com.aicode.core.util.runCatchingCancellable
 import com.aicode.core.util.BoundedLineReader
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LINE_TRUNCATED_NOTE
@@ -148,7 +149,7 @@ class RemoteSshEngine @Inject constructor(
         timeoutMs: Long
     ): CommandResult? {
         if (!isContainerInstalled()) return null
-        return runCatching { execCaptured(command, projectPath, timeoutMs) }
+        return runCatchingCancellable { execCaptured(command, projectPath, timeoutMs) }
             .getOrElse {
                 FileLogger.w(TAG, "远程命令执行失败(连接可能已断): ${sanitizeCommandForLog(command)}", it)
                 null

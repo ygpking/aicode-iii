@@ -1,5 +1,6 @@
 package com.aicode.feature.settings.domain.service
 
+import com.aicode.core.util.runCatchingCancellable
 import android.content.Context
 import com.aicode.R
 import com.aicode.core.util.AILogger
@@ -101,7 +102,7 @@ class StorageUsageScanner @Inject constructor(
     private suspend fun chatEntry(): StorageEntry {
         val dbDir = context.getDatabasePath(AgentDatabase.DATABASE_NAME).parentFile
         val bytes = dbDir?.let { dirSize(it) } ?: 0L
-        val details = runCatching { agentMessageDao.sessionStorageUsage(TOP_SESSIONS) }
+        val details = runCatchingCancellable { agentMessageDao.sessionStorageUsage(TOP_SESSIONS) }
             .getOrDefault(emptyList())
             .filter { it.bytes > 0 }
             .map { usage ->
@@ -122,7 +123,7 @@ class StorageUsageScanner @Inject constructor(
      * 远程 SSH 的 profile 没有本地 rootfs，天然不会出现在这里。
      */
     private suspend fun containerEntry(cancelled: () -> Boolean): StorageEntry {
-        val nameById = runCatching { containerSettingsRepository.customProfilesFlow.first() }
+        val nameById = runCatchingCancellable { containerSettingsRepository.customProfilesFlow.first() }
             .getOrDefault(emptyList())
             .associate { it.id to it.name }
         val dirs = context.filesDir.listFiles { f: File ->

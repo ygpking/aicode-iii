@@ -153,9 +153,9 @@ class AgentDefinitionRepository @Inject constructor(
             project: List<AgentDefinition>
         ): List<AgentDefinitionEntry> {
             val byName = LinkedHashMap<String, AgentDefinitionEntry>()
-            global.forEach { byName[it.name.lowercase()] = AgentDefinitionEntry(it, AgentDefinitionScope.GLOBAL) }
-            project.forEach { byName[it.name.lowercase()] = AgentDefinitionEntry(it, AgentDefinitionScope.PROJECT) }
-            return byName.values.sortedBy { it.definition.name.lowercase() }
+            global.forEach { byName[NameKey.of(it.name)] = AgentDefinitionEntry(it, AgentDefinitionScope.GLOBAL) }
+            project.forEach { byName[NameKey.of(it.name)] = AgentDefinitionEntry(it, AgentDefinitionScope.PROJECT) }
+            return byName.values.sortedBy { NameKey.of(it.definition.name) }
         }
     }
 }
