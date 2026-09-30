@@ -1,5 +1,7 @@
 package com.aicode.feature.agent.domain.container
 
+import com.aicode.feature.agent.domain.OutputLimits
+
 /**
  * 不限幅命令（git diff / 文件内容等）的输出硬上限（字符）：超过即截断并置
  * [CommandResult.outputTruncated]，避免无界输出撑爆内存。
@@ -76,8 +78,10 @@ class BoundedOutput(
     }
 
     companion object {
-        const val DEFAULT_HEAD = 20_000
-        const val DEFAULT_TAIL = 20_000
+        // 与 ToolOutputStore 的内联上限同源于 OutputLimits：命令窗口改大/改小会连带影响落盘判据，
+        // 因此两者必须是同一个常量表达式，不得在此写独立的字面量（见 d59a876 的静默失效事故）。
+        const val DEFAULT_HEAD = OutputLimits.COMMAND_HEAD_CHARS
+        const val DEFAULT_TAIL = OutputLimits.COMMAND_TAIL_CHARS
 
         /**
          * 只保留开头、到 [maxChars] 字符为止的硬上限模式（tail 容量为 0）。

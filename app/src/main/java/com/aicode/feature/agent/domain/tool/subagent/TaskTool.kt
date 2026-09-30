@@ -332,24 +332,26 @@ class TaskTool @Inject constructor(
 
     /** 停止指定子代理的执行。 */
     private suspend fun stopSubagent(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
+        val parentSessionId = context.sessionId
+            ?: return ToolResult.Error("缺少会话上下文", "NO_SESSION")
         val subSessionId = (args["id"] as? JsonPrimitive)?.contentOrNull?.trim()
         if (subSessionId.isNullOrBlank()) {
             return ToolResult.Error("参数无效：id 不能为空", "INVALID_ARGS")
         }
         val sub = sessionUseCase.getSessionById(subSessionId)
             ?: return ToolResult.Error("子会话不存在: $subSessionId", "SESSION_NOT_FOUND")
-        if (sub.parentId != context.sessionId) {
+        if (sub.parentId != parentSessionId) {
             return ToolResult.Error("只能关闭当前会话派生的子代理", "NOT_YOUR_SUBAGENT")
         }
 
         eventBus.emit(
             SubAgentEvent(
                 subSessionId = subSessionId,
-                parentSessionId = context.sessionId!!,
+                parentSessionId = parentSessionId,
                 type = SubAgentEventType.STOPPED
             )
         )
-        FileLogger.i(TAG, "已请求停止子代理: session=$subSessionId parent=${context.sessionId}")
+        FileLogger.i(TAG, "已请求停止子代理: session=$subSessionId parent=$parentSessionId")
         return ToolResult.Success(
             buildJsonObject {
                 put("id", subSessionId)
@@ -361,27 +363,29 @@ class TaskTool @Inject constructor(
 
     /** 删除指定子代理会话（含其消息）。若仍在运行先请求停止。 */
     private suspend fun deleteSubagent(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
+        val parentSessionId = context.sessionId
+            ?: return ToolResult.Error("缺少会话上下文", "NO_SESSION")
         val subSessionId = (args["id"] as? JsonPrimitive)?.contentOrNull?.trim()
         if (subSessionId.isNullOrBlank()) {
             return ToolResult.Error("参数无效：id 不能为空", "INVALID_ARGS")
         }
         val sub = sessionUseCase.getSessionById(subSessionId)
             ?: return ToolResult.Error("子会话不存在: $subSessionId", "SESSION_NOT_FOUND")
-        if (sub.parentId != context.sessionId) {
+        if (sub.parentId != parentSessionId) {
             return ToolResult.Error("只能删除当前会话派生的子代理", "NOT_YOUR_SUBAGENT")
         }
         if (eventBus.activeSubSessionIds.value.contains(subSessionId)) {
             eventBus.emit(
                 SubAgentEvent(
                     subSessionId = subSessionId,
-                    parentSessionId = context.sessionId!!,
+                    parentSessionId = parentSessionId,
                     type = SubAgentEventType.STOPPED
                 )
             )
         }
         sessionUseCase.deleteSession(subSessionId)
         writeLease.release(subSessionId)
-        FileLogger.i(TAG, "子代理已删除: session=$subSessionId parent=${context.sessionId}")
+        FileLogger.i(TAG, "子代理已删除: session=$subSessionId parent=$parentSessionId")
         return ToolResult.Success(
             buildJsonObject {
                 put("id", subSessionId)

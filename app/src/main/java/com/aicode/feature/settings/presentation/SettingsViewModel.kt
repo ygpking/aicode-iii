@@ -1044,26 +1044,14 @@ class SettingsViewModel @Inject constructor(
 
     fun upsertMcpServer(originalName: String?, initialScope: McpScope?, config: McpServerConfig, scope: McpScope) {
         viewModelScope.launch {
-            // 作用域迁移：仅当保存作用域与原来不同时，从原作用域移除旧条目，
-            // 避免残留条目在合并时（项目优先）继续覆盖新作用域的配置。
-            if (originalName != null && initialScope != null && initialScope != scope) {
-                val oldBase = if (initialScope == McpScope.GLOBAL) mcpConfigRepository.getGlobalServers() else mcpConfigRepository.getProjectServers()
-                val oldUpdated = oldBase.filterNot { it.name == originalName }
-                if (initialScope == McpScope.GLOBAL) mcpConfigRepository.setGlobalServers(oldUpdated) else mcpConfigRepository.setProjectServers(oldUpdated)
-            }
-            val base = if (scope == McpScope.GLOBAL) mcpConfigRepository.getGlobalServers() else mcpConfigRepository.getProjectServers()
-            val ordered = LinkedHashMap<String, McpServerConfig>()
-            base.forEach { ordered[it.name] = it }
-            if (originalName != null && originalName != config.name) {
-                ordered.remove(originalName)
-            }
-            ordered[config.name] = config
-            val updated = ordered.values.toList()
-            if (scope == McpScope.GLOBAL) mcpConfigRepository.setGlobalServers(updated) else mcpConfigRepository.setProjectServers(updated)
+            // 名称归一（trim + lowercase）与作用域迁移均收敛到 McpConfigRepository.upsertServer 单一入口，
+            // 此处不再手写 filterNot/remove——原先精确匹配导致「仅大小写变化」时旧条目残留。
+            mcpConfigRepository.upsertServer(config, scope, originalName, initialScope)
             _mcpReloading.value = true
             try {
-                // 仅重连被改动的 server，其他 server 不受影响；重命名时先断开旧名。
-                if (originalName != null && originalName != config.name) {
+                // 仅重连被改动的 server；重命名（含仅大小写变化）时先断开旧名。
+                // reloadServer 内部按 ignoreCase 会重新 teardown，故仅名字真变时才需先断旧名。
+                if (originalName != null && !originalName.equals(config.name, ignoreCase = true)) {
                     mcpManager.removeServer(originalName)
                 }
                 mcpManager.reloadServer(config.name)
@@ -1075,9 +1063,7 @@ class SettingsViewModel @Inject constructor(
 
     fun deleteMcpServer(name: String, scope: McpScope) {
         viewModelScope.launch {
-            val base = if (scope == McpScope.GLOBAL) mcpConfigRepository.getGlobalServers() else mcpConfigRepository.getProjectServers()
-            val updated = base.filterNot { it.name == name }
-            if (scope == McpScope.GLOBAL) mcpConfigRepository.setGlobalServers(updated) else mcpConfigRepository.setProjectServers(updated)
+            mcpConfigRepository.removeServer(name, scope)
             _mcpReloading.value = true
             try {
                 mcpManager.removeServer(name)
@@ -1089,9 +1075,7 @@ class SettingsViewModel @Inject constructor(
 
     fun setMcpServerEnabled(name: String, enabled: Boolean, scope: McpScope) {
         viewModelScope.launch {
-            val base = if (scope == McpScope.GLOBAL) mcpConfigRepository.getGlobalServers() else mcpConfigRepository.getProjectServers()
-            val updated = base.map { if (it.name.equals(name, ignoreCase = true)) it.copy(enabled = enabled) else it }
-            if (scope == McpScope.GLOBAL) mcpConfigRepository.setGlobalServers(updated) else mcpConfigRepository.setProjectServers(updated)
+            mcpConfigRepository.setServerEnabled(name, enabled, scope)
             _mcpReloading.value = true
             try {
                 mcpManager.reloadServer(name)

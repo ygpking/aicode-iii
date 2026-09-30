@@ -6,6 +6,7 @@ import com.aicode.feature.agent.domain.container.RemoteSshConnection
 import com.aicode.feature.agent.domain.container.friendlySshError
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.workspace.domain.WorkspacePathMapper.Companion.CONTAINER_ROOT
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
@@ -84,6 +85,10 @@ class RemoteSftpFileAccess @Inject constructor(
             sftpMutex.withLock {
                 val sftp = try {
                     connection.sftp()
+                } catch (e: CancellationException) {
+                    // 协程取消不是「连接失败」，原样透传；伪装成 IOException 会让上层
+                    // 把它当普通失败继续跑，协程取消状态也会丢失。
+                    throw e
                 } catch (e: Exception) {
                     throw IOException(friendlySshError(e), e)
                 }
@@ -105,7 +110,15 @@ class RemoteSftpFileAccess @Inject constructor(
         block()
     } catch (e: Exception) {
         if (e !is SFTPException && e !is NoSuchFileException && e !is FileAlreadyExistsException) {
-            runCatching { connection.invalidateSftp() }
+            // invalidateSftp 是 suspend；用 runCatching 会连 CancellationException 一起吞掉，
+            // 故手工放行取消，其余异常忽略（此处本意就是「尽力丢弃通道」）。
+            try {
+                connection.invalidateSftp()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // 重建通道失败无关紧要：下次调用会再试。
+            }
         }
         throw e
     }
