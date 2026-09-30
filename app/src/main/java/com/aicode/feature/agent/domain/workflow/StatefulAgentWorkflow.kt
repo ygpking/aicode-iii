@@ -68,6 +68,7 @@ import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import com.aicode.feature.agent.domain.memory.MemoryRepository
 import com.aicode.feature.agent.domain.memory.MemoryRecall
+import com.aicode.feature.agent.domain.memory.TemporalDecay
 import com.aicode.feature.agent.domain.memory.RecallDoc
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.coroutines.CancellationException
@@ -136,6 +137,18 @@ class StatefulAgentWorkflow @Inject constructor(
          * 靠 [TurnGovernor] 兜底。
          */
         const val TURN_ROUNDS_PER_SEGMENT = 10
+
+        /**
+         * 召回时间衰减半衰期：新记忆在同等相关度下胜出（如「上周的结论」 vs 「刚更新的同题结论」）。
+         * 月级较温和，避免把仍然有效的长期记忆挤掉。
+         */
+        val RECALL_TEMPORAL_DECAY = TemporalDecay.MONTH
+
+        /**
+         * MMR 相关/多样权衡系数：0.8 表示「以相关性为主，仅在得分接近时用多样性去重」。
+         * 用于避免一次召回里挤满几条内容几乎相同的记忆。
+         */
+        const val RECALL_MMR_LAMBDA = 0.8
 
         /** 召回索引块尾部提示：命中只给摘要，正文需按需 read。与 renderIndexBlock 配套。 */
         const val RECALL_READ_HINT =
@@ -1457,7 +1470,12 @@ class StatefulAgentWorkflow @Inject constructor(
                 triggers = m.triggers,
             )
         }
-        val hits = MemoryRecall.select(query, docs)
+        val hits = MemoryRecall.select(
+            query,
+            docs,
+            temporalDecay = RECALL_TEMPORAL_DECAY,
+            mmrLambda = RECALL_MMR_LAMBDA,
+        )
         if (hits.isEmpty()) return null
         // 每轮一次的低频日志：记录本次召回注入条数，供排查「记忆该生效却没生效 / 注入过多撑大上下文」。
         FileLogger.i(TAG, "本轮注入 ${hits.size} 条记忆召回块")

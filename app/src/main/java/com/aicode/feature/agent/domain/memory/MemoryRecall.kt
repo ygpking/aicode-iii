@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.memory
 
 import com.aicode.core.util.FileLogger
 import kotlin.math.ln
+import kotlin.math.pow
 
 /**
  * 召回用的轻量分词器（零依赖）。
@@ -68,6 +69,19 @@ private fun isCjk(cp: Int): Boolean =
         cp in 0xAC00..0xD7AF
 
 /**
+ * 召回时间衰减模式：按记忆最近更新时间做半衰期衰减，使新记忆在同等相关度下胜出。
+ *
+ * [DISABLED] 不衰减（保持既有行为）。半衰期越长越温和：一周可让「上个月的旧结论」不至于
+ * 压过「昨天刚更新的同题结论」，月级则只在跨月尺度上起作用。
+ */
+internal enum class TemporalDecay(val halfLifeMs: Long) {
+    DISABLED(0L),
+    DAY(86_400_000L),
+    WEEK(7L * 86_400_000L),
+    MONTH(30L * 86_400_000L),
+}
+
+/**
  * 一条可被召回的记忆。
  *
  * @param id 稳定标识（记忆名），用于去重与排序兜底。
@@ -110,12 +124,30 @@ internal object MemoryRecall {
     /** triggers 加权封顶命中数，避免堆关键词刷分盖过正文相关性。 */
     private const val MAX_TRIGGER_HITS = 2.0
 
+    /**
+     * MMR（最大边际相关性）关闭值。传负数即关闭多样性重排，保持纯相关性排序。
+     * 关闭时 [select] 的结果与加本功能前**逐位相同**。
+     */
+    private const val MMR_DISABLED = -1.0
+
     fun select(
         query: String,
         docs: List<RecallDoc>,
         maxHits: Int = 5,
         k1: Double = 1.2,
         b: Double = 0.75,
+        /**
+         * 时间衰减模式，默认 [TemporalDecay.DISABLED]（不改变既有排序）。
+         * `updatedAtMs <= 0` 的文档视为时间未知，不参与衰减。
+         */
+        temporalDecay: TemporalDecay = TemporalDecay.DISABLED,
+        /**
+         * MMR 相关/多样权衡系数，取值 (0, 1]。1.0 等价于关闭（纯相关性）；越小越偏向多样性。
+         * 默认 [MMR_DISABLED]（关闭），避免改变默认召回结果。
+         */
+        mmrLambda: Double = MMR_DISABLED,
+        /** 衰减基准时刻，默认当前时间。显式传入便于测试确定性。 */
+        nowMs: Long = System.currentTimeMillis(),
     ): List<RecallDoc> {
         if (docs.isEmpty()) return emptyList()
         if (isGeneric(query)) return emptyList()
@@ -168,11 +200,12 @@ internal object MemoryRecall {
         // 门控已命中时，即使 BM25 全为 0（字面无重叠）也应交付这些候选；
         // 否则保留原有的「全无匹配则不召回」行为。
         val gateActive = candidates !== scored
-        val ranked = if (!anyMatch && !gateActive) emptyList() else candidates
+        val rankedPairs = if (!anyMatch && !gateActive) emptyList() else candidates
             .mapIndexed { i, doc ->
                 val bm25 = rawBm25(idf, candidateTokens[i], avgLen, k1, b)
                 val boost = W_TRIGGER * minOf(MAX_TRIGGER_HITS, triggerHits(queryRaw, doc.triggers).toDouble())
-                doc to (bm25 + boost)
+                val score = applyTemporalDecay(bm25 + boost, doc.updatedAtMs, temporalDecay, nowMs)
+                doc to score
             }
             .filter { it.second > 0.0 }
             .sortedWith(
@@ -180,9 +213,10 @@ internal object MemoryRecall {
                     .thenByDescending { it.first.updatedAtMs }
                     .thenBy { it.first.id },
             )
-            .map { it.first }
 
-        return (pinned + ranked).take(maxHits)
+        // 多样性重排（MMR）。关闭时 diversify 原样返回相关性序，行为与加本功能前逐位相同。
+        val selected = diversify(rankedPairs, maxHits, mmrLambda)
+        return (pinned + selected).take(maxHits)
     }
 
     /**
@@ -288,6 +322,68 @@ internal object MemoryRecall {
             score += idfValue * (f * (k1 + 1)) / denom
         }
         return score
+    }
+
+    /**
+     * 按半衰期对相关度做指数衰减：`score × 2^(-age/halfLife)`。
+     * [TemporalDecay.DISABLED] 或时间未知（`updatedAtMs <= 0`）时原样返回。
+     * 未来时间（`age < 0`）按 0 处理，避免被“超前”的记忆凭空获得加成。
+     */
+    private fun applyTemporalDecay(
+        score: Double,
+        updatedAtMs: Long,
+        mode: TemporalDecay,
+        nowMs: Long,
+    ): Double {
+        if (mode == TemporalDecay.DISABLED || updatedAtMs <= 0L) return score
+        val age = (nowMs - updatedAtMs).coerceAtLeast(0L)
+        val factor = 2.0.pow(-age.toDouble() / mode.halfLifeMs.toDouble())
+        return score * factor
+    }
+
+    /**
+     * MMR 贪心重排：每一步选 `lambda*相关度 - (1-lambda)*与已选集合的最大相似度` 最大者。
+     *
+     * [mmrLambda] < 0（[MMR_DISABLED]）时直接取前 [limit] 条，返回顺序与原相关性排序一致。
+     * 相关度用的是**未归一化的 BM25+boost**，而相似度是 [0,1] 的 Jaccard，二者量纲不同；
+     * 故本实现只保证「同分下更倾向多样」，不保证线性加权——这对去重（本功能目的）已足够。
+     */
+    private fun diversify(
+        ranked: List<Pair<RecallDoc, Double>>,
+        limit: Int,
+        lambda: Double,
+    ): List<RecallDoc> {
+        if (limit <= 0) return emptyList()
+        if (lambda < 0.0 || ranked.size <= 1) return ranked.take(limit).map { it.first }
+
+        val remaining = ranked.toMutableList()
+        val chosen = ArrayList<RecallDoc>(minOf(limit, ranked.size))
+        while (chosen.size < limit && remaining.isNotEmpty()) {
+            var bestIndex = 0
+            var bestValue = Double.NEGATIVE_INFINITY
+            for (i in remaining.indices) {
+                val (doc, relevance) = remaining[i]
+                val maxSim = if (chosen.isEmpty()) 0.0 else chosen.maxOf { jaccardSimilarity(doc, it) }
+                val value = lambda * relevance - (1.0 - lambda) * maxSim
+                if (value > bestValue) {
+                    bestValue = value
+                    bestIndex = i
+                }
+            }
+            chosen.add(remaining.removeAt(bestIndex).first)
+        }
+        return chosen
+    }
+
+    /** 两条记忆正文的 Jaccard 相似度（同 [tokenizeForRecall] 分词口径，CJK 靠 bigram 对齐）。 */
+    private fun jaccardSimilarity(a: RecallDoc, b: RecallDoc): Double {
+        val ta = tokenizeForRecall(a.text.take(MAX_INDEX_CHARS)).toHashSet()
+        val tb = tokenizeForRecall(b.text.take(MAX_INDEX_CHARS)).toHashSet()
+        if (ta.isEmpty() || tb.isEmpty()) return 0.0
+        var inter = 0
+        for (t in ta) if (t in tb) inter++
+        val union = ta.size + tb.size - inter
+        return if (union == 0) 0.0 else inter.toDouble() / union.toDouble()
     }
 
     /** 纯泛化查询（问候/确认/继续）不值得召回任何记忆。 */
