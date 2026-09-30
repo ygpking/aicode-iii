@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.presentation
 
+import com.aicode.core.util.runCatchingCancellable
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
@@ -984,7 +985,7 @@ class AIAgentViewModel @Inject constructor(
 
         // 冷启动崩溃恢复：扫描非终态 durable 任务，可恢复者标记出来（不自动重跑）。
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { durableTaskRepository.scanForRecovery() }
+            runCatchingCancellable { durableTaskRepository.scanForRecovery() }
                 .onSuccess { verdicts ->
                     val recoverable = verdicts.filterIsInstance<RecoveryVerdict.Recoverable>()
                     if (recoverable.isNotEmpty()) {
@@ -1558,7 +1559,7 @@ class AIAgentViewModel @Inject constructor(
                             _llmCallEvents.tryEmit(LlmCallEvent(sessionId, event.inputTokens, event.outputTokens, event.cachedInputTokens))
                             // 同步写库：工具循环下一轮 CallLlm 前会重读 lastInputTokens 判断压缩，
                             // 异步写库可能读到压缩前的旧大值导致重复触发压缩。
-                            runCatching {
+                            runCatchingCancellable {
                                 chatSessionDao.addTokenUsage(sessionId, event.inputTokens, event.outputTokens)
                                 if (event.inputTokens > 0) {
                                     chatSessionDao.updateLastInputTokens(sessionId, event.inputTokens)
@@ -2279,11 +2280,11 @@ class AIAgentViewModel @Inject constructor(
      * 只读一行 DAO 判定 + 偶尔一次删除，开销可忽略；失败不影响请求主流程。
      */
     private suspend fun clearStaleCompletedTodos(sessionId: String) {
-        runCatching {
+        runCatchingCancellable {
             val todos = todoItemDao.getBySessionOnce(sessionId)
-            if (todos.isEmpty()) return@runCatching
+            if (todos.isEmpty()) return@runCatchingCancellable
             val done = todos.count { it.status == TodoStatus.COMPLETED.name }
-            if (done != todos.size) return@runCatching
+            if (done != todos.size) return@runCatchingCancellable
             todoItemDao.deleteBySession(sessionId)
             EventTrace.snapshot(sessionId, "TODO", "清理上一轮遗留的 $done 项全完成待办")
         }.onFailure { FileLogger.w(TAG, "清理遗留待办失败: ${it.message}") }
@@ -2296,7 +2297,7 @@ class AIAgentViewModel @Inject constructor(
      * 读库失败不抛异常（诊断不应影响主流程），失败时在日志里写明。
      */
     private suspend fun leftoverStateOf(sessionId: String): String {
-        return runCatching {
+        return runCatchingCancellable {
             val todos = todoItemDao.getBySessionOnce(sessionId)
             val total = todos.size
             val done = todos.count { it.status == TodoStatus.COMPLETED.name }

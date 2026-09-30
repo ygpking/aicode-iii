@@ -100,7 +100,7 @@ class GitRepository @Inject constructor(
 
     /** 当前工作区是否处于一个 git 工作树内。SSH 未连接等异常时返回 false 而非抛出，避免 UI 崩溃。 */
     suspend fun isRepo(): Boolean {
-        return runCatching { git("rev-parse", "--is-inside-work-tree").trim() == "true" }
+        return runCatchingCancellable { git("rev-parse", "--is-inside-work-tree").trim() == "true" }
             .getOrElse { false }
     }
 
@@ -114,10 +114,10 @@ class GitRepository @Inject constructor(
      * 若环境 Git 版本较低不支持 `-b` 参数，降级为先 `git init` 再将未初始化的 HEAD 指向 `refs/heads/main`。
      */
     suspend fun initRepo(): String {
-        return runCatching { gitChecked("init", "-b", "main") }
+        return runCatchingCancellable { gitChecked("init", "-b", "main") }
             .getOrElse {
                 val out = gitChecked("init")
-                runCatching { git("symbolic-ref", "HEAD", "refs/heads/main") }
+                runCatchingCancellable { git("symbolic-ref", "HEAD", "refs/heads/main") }
                 out
             }
     }
@@ -206,7 +206,7 @@ class GitRepository @Inject constructor(
      * 供首屏轻量快照的 graph 标注当前分支位置。远程分支与标签标注延迟到 BRANCHES tab 全量加载。
      */
     suspend fun localRefsOnly(): Map<String, List<GitGraphRef>> = withContext(Dispatchers.Default) {
-        val raw = runCatching {
+        val raw = runCatchingCancellable {
             git("for-each-ref", "--format=%(refname:short)\u001f%(objectname)\u001f%(HEAD)\u001f%(refname)", "refs/heads")
         }.getOrDefault("")
         if (raw.isBlank() || raw.startsWith("fatal:")) return@withContext emptyMap()
@@ -271,7 +271,7 @@ class GitRepository @Inject constructor(
         limit: Int = GRAPH_PAGE_SIZE
     ): GitGraph = withContext(Dispatchers.Default) {
         val skip = existingCommits.size
-        val logRaw = runCatching { git("log", "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%P%x1f%b", "--skip", skip.toString(), "-n", limit.toString()) }
+        val logRaw = runCatchingCancellable { git("log", "--pretty=format:%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%P%x1f%b", "--skip", skip.toString(), "-n", limit.toString()) }
             .getOrDefault("")
         if (logRaw.isBlank() || logRaw.startsWith("fatal:")) {
             return@withContext if (existingCommits.isEmpty()) GitGraph.EMPTY
@@ -303,7 +303,7 @@ class GitRepository @Inject constructor(
     )
 
     suspend fun loadAllRefs(): AllRefs = withContext(Dispatchers.Default) {
-        val raw = runCatching {
+        val raw = runCatchingCancellable {
             git(
                 "for-each-ref",
                 "--format=%(refname:short)\u001f%(objectname)\u001f%(HEAD)\u001f%(refname)\u001f%(upstream:short)\u001f%(upstream:track)",
@@ -427,13 +427,13 @@ class GitRepository @Inject constructor(
 
     /** 仓库是否已有提交（HEAD 可解析）。空仓库里 `reset HEAD` / `ls-tree HEAD` 都会失败。 */
     private suspend fun hasHead(): Boolean =
-        runCatching { git("rev-parse", "--verify", "HEAD").trim() }
+        runCatchingCancellable { git("rev-parse", "--verify", "HEAD").trim() }
             .getOrDefault("")
             .let { it.isNotBlank() && !it.startsWith("fatal") }
 
     /** 指定路径在 HEAD 提交中是否存在。 */
     private suspend fun existsInHead(path: String): Boolean =
-        runCatching { git("ls-tree", "HEAD", "--", path).trim() }
+        runCatchingCancellable { git("ls-tree", "HEAD", "--", path).trim() }
             .getOrDefault("")
             .let { it.isNotBlank() && !it.startsWith("fatal") }
 
@@ -452,7 +452,7 @@ class GitRepository @Inject constructor(
      * 分支取 `git rev-parse --abbrev-ref HEAD`。凭据仍由容器 credential.helper 链兜底注入。
      */
     suspend fun push(): String {
-        val hasUpstream = runCatching { git("rev-parse", "--abbrev-ref", "@{upstream}").trim() }
+        val hasUpstream = runCatchingCancellable { git("rev-parse", "--abbrev-ref", "@{upstream}").trim() }
             .getOrDefault("")
             .takeIf { it.isNotBlank() && it != "HEAD" && !it.startsWith("fatal") } != null
         if (hasUpstream) return gitChecked("push")
@@ -469,7 +469,7 @@ class GitRepository @Inject constructor(
      * 供 UI 弹窗询问用户是否重命名为现代通用的 main 分支。
      */
     suspend fun isFirstPushOfMaster(): Boolean {
-        val hasUpstream = runCatching { git("rev-parse", "--abbrev-ref", "@{upstream}").trim() }
+        val hasUpstream = runCatchingCancellable { git("rev-parse", "--abbrev-ref", "@{upstream}").trim() }
             .getOrDefault("")
             .takeIf { it.isNotBlank() && it != "HEAD" && !it.startsWith("fatal") } != null
         if (hasUpstream) return false
@@ -568,7 +568,7 @@ class GitRepository @Inject constructor(
 
     /** 是否正在处于未完成的合并状态（MERGE_HEAD 存在）。 */
     private suspend fun hasMergeHead(): Boolean =
-        runCatching { git("rev-parse", "-q", "--verify", "MERGE_HEAD").trim() }
+        runCatchingCancellable { git("rev-parse", "-q", "--verify", "MERGE_HEAD").trim() }
             .getOrDefault("")
             .let { it.isNotBlank() && !it.startsWith("fatal") }
 
@@ -605,7 +605,7 @@ class GitRepository @Inject constructor(
      * 列出所有储藏记录。
      */
     suspend fun stashList(): List<GitStash> = withContext(Dispatchers.Default) {
-        val raw = runCatching { git("stash", "list", "--pretty=format:%gd%x1f%s%x1f%ar") }
+        val raw = runCatchingCancellable { git("stash", "list", "--pretty=format:%gd%x1f%s%x1f%ar") }
             .getOrDefault("")
         if (raw.isBlank() || raw.startsWith("fatal:")) return@withContext emptyList()
         raw.split('\n').mapNotNull { line ->
@@ -667,15 +667,15 @@ class GitRepository @Inject constructor(
 
     /** 当前工作区是否有项目级（`--local`）配置值。非 git 仓库或无值时返回 false。 */
     private suspend fun hasLocalConfig(key: String): Boolean =
-        runCatching { git("config", "--local", "--get", key).trim() }.getOrDefault("").isNotBlank()
+        runCatchingCancellable { git("config", "--local", "--get", key).trim() }.getOrDefault("").isNotBlank()
 
     /** 读取 git 当前实际生效的 user.name（按 git 解析顺序：local→global→system），UI 回显与提交按钮判空用。失败返回空串。 */
     suspend fun getUserName(): String =
-        runCatching { git("config", "--get", "user.name").trim() }.getOrDefault("").removeSuffix("\r")
+        runCatchingCancellable { git("config", "--get", "user.name").trim() }.getOrDefault("").removeSuffix("\r")
 
     /** 读取 git 当前实际生效的 user.email（local→global→system），UI 回显与编辑框初值。失败返回空串。 */
     suspend fun getUserEmail(): String =
-        runCatching { git("config", "--get", "user.email").trim() }.getOrDefault("").removeSuffix("\r")
+        runCatchingCancellable { git("config", "--get", "user.email").trim() }.getOrDefault("").removeSuffix("\r")
 
     /**
      * 写入仓库地址 remote.origin.url，**仅写项目级**：remote.origin.url 是单个仓库的远端地址，
@@ -717,7 +717,7 @@ class GitRepository @Inject constructor(
 
     /** 指定 ref 下文件（`<ref>:<path>` / `:<path>`）的字节数；取不到（不存在/非法 ref）时返回 0。 */
     private suspend fun refBlobSize(spec: String): Long =
-        runCatching { git("cat-file", "-s", spec).trim().toLong() }.getOrDefault(0L)
+        runCatchingCancellable { git("cat-file", "-s", spec).trim().toLong() }.getOrDefault(0L)
 
     /**
      * 读取工作区当前文件内容。用于工作区改动 diff：与 `HEAD:<path>` 对比看出未暂存的改动。

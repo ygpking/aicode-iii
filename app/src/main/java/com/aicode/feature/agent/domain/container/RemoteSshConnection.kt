@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.container
 
+import com.aicode.core.util.runCatchingCancellable
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.workspace.domain.remote.RemoteAuth
 import com.aicode.feature.credentials.domain.model.GitCredential
@@ -229,7 +230,7 @@ class RemoteSshConnection @Inject constructor(
         val cfg = config ?: return false
         if (isConnected()) return true
         _connectionState.value = ConnectionState.CONNECTING
-        return runCatching { connect(cfg) }
+        return runCatchingCancellable { connect(cfg) }
             .onSuccess {
                 FileLogger.i(TAG, "SSH 重连成功（前台触发）")
                 runCatching { onReconnected?.invoke() }

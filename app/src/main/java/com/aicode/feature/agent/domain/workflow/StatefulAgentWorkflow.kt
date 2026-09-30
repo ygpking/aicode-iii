@@ -831,7 +831,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         } finally {
                             val durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt()
                             val usage = finalResponse
-                            runCatching {
+                            runCatchingCancellable {
                                 llmCallRecordDao.insert(
                                     LlmCallRecordEntity(
                                         sessionId = currentContext.sessionId,
