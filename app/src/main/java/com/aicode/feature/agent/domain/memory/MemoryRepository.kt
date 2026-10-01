@@ -97,6 +97,13 @@ class MemoryRepository @Inject constructor(
         MemoryRetention.assess(listMemories(projectRoot), nowMs, staleDays)
 
     /**
+     * 只读评估存量记忆的整理建议（近重复 / 正文过大 / 缺 triggers）。**不修改任何文件**，
+     * 与 [assessStaleness] 同一策略：诊断由模型/用户看过之后再决定要不要动手。
+     */
+    internal fun curate(projectRoot: String?): List<MemoryCuration.Finding> =
+        MemoryCuration.evaluate(listMemories(projectRoot))
+
+    /**
      * 显式清理陈旧记忆（**破坏性操作**，仅在调用方明确给出 [staleDays] 时执行）。
      *
      * 这是「只读扫描 + 显式清理」策略的落地：不做后台自动删除，因为 AiCode 的记忆全是具名

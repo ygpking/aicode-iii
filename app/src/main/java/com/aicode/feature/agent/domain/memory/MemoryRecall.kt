@@ -116,7 +116,7 @@ internal object MemoryRecall {
     private const val TAG = "MemoryRecall"
 
     /** 单条记忆参与索引的正文上限，避免超长记忆拖慢每轮打分。 */
-    private const val MAX_INDEX_CHARS = 4000
+    internal const val MAX_INDEX_CHARS = 4000
 
     /** triggers 命中的加权系数（每个命中词加分，封顶见 [MAX_TRIGGER_HITS]）。 */
     private const val W_TRIGGER = 0.30
@@ -376,9 +376,15 @@ internal object MemoryRecall {
     }
 
     /** 两条记忆正文的 Jaccard 相似度（同 [tokenizeForRecall] 分词口径，CJK 靠 bigram 对齐）。 */
-    private fun jaccardSimilarity(a: RecallDoc, b: RecallDoc): Double {
-        val ta = tokenizeForRecall(a.text.take(MAX_INDEX_CHARS)).toHashSet()
-        val tb = tokenizeForRecall(b.text.take(MAX_INDEX_CHARS)).toHashSet()
+    private fun jaccardSimilarity(a: RecallDoc, b: RecallDoc): Double = jaccardOf(a.text, b.text)
+
+    /**
+     * 两段文本的 Jaccard 相似度。供召回去重（MMR）与存量整理（[MemoryCuration] 的近重复检测）**共用**：
+     * 相似度判据一旦分家，两边会对「什么算同一条」给出不一致结论（根因 R1「复制式传播」）。
+     */
+    internal fun jaccardOf(a: String, b: String): Double {
+        val ta = tokenizeForRecall(a.take(MAX_INDEX_CHARS)).toHashSet()
+        val tb = tokenizeForRecall(b.take(MAX_INDEX_CHARS)).toHashSet()
         if (ta.isEmpty() || tb.isEmpty()) return 0.0
         var inter = 0
         for (t in ta) if (t in tb) inter++

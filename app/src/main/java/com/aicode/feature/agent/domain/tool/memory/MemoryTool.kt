@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.tool.memory
 
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.memory.MemoryEdit
+import com.aicode.feature.agent.domain.memory.MemoryCuration
 import com.aicode.feature.agent.domain.memory.MemoryEditResult
 import com.aicode.feature.agent.domain.memory.MemoryRepository
 import com.aicode.feature.agent.domain.memory.MemoryRetention
@@ -35,7 +36,7 @@ class MemoryTool @Inject constructor(
 
     override fun effectiveCapabilities(args: Map<String, JsonElement>): Set<ToolCapability> {
         return when (args["action"]?.jsonPrimitive?.contentOrNull) {
-            "read", "list" -> setOf(ToolCapability.READ_AGENT_CONFIG)
+            "read", "list", "curate" -> setOf(ToolCapability.READ_AGENT_CONFIG)
             else -> capabilities
         }
     }
@@ -66,8 +67,8 @@ class MemoryTool @Inject constructor(
         "action" to ToolParameter(
             name = "action",
             type = ParameterType.STRING,
-            description = "操作类型：read=读取记忆正文；save=保存记忆（创建或全量覆盖）；edit=对已有记忆正文做局部编辑；delete=删除记忆；list=列出所有记忆摘要；prune=清理超过指定天数未更新的陈旧记忆（破坏性，默认先预览）",
-            enum = listOf("read", "save", "edit", "delete", "list", "prune"),
+            description = "操作类型：read=读取记忆正文；save=保存记忆（创建或全量覆盖）；edit=对已有记忆正文做局部编辑；delete=删除记忆；list=列出所有记忆摘要；curate=只读评估存量记忆的整理建议（近重复/正文过大/缺 triggers）；prune=清理超过指定天数未更新的陈旧记忆（破坏性，默认先预览）",
+            enum = listOf("read", "save", "edit", "delete", "list", "curate", "prune"),
             required = true
         ),
         "name" to ToolParameter(
@@ -143,6 +144,7 @@ class MemoryTool @Inject constructor(
         return try {
             when (action) {
                 "list" -> handleList(context.projectRoot)
+                "curate" -> handleCurate(context.projectRoot)
                 "read" -> handleRead(memoryName, context.projectRoot)
                 "save" -> handleSave(args, memoryName, scope, context.projectRoot)
                 "edit" -> handleEdit(args, memoryName, scope, context.projectRoot)
@@ -173,6 +175,39 @@ class MemoryTool @Inject constructor(
             ""
         }
         return ToolResult.Success(JsonPrimitive("当前记忆列表：\n$list$staleNote"))
+    }
+
+    /**
+     * 只读整理诊断。**不改任何文件**，只把「值得关注」的记忆列出来供模型/用户决定下一步。
+     */
+    private fun handleCurate(projectRoot: String?): ToolResult {
+        val findings = memoryRepository.curate(projectRoot)
+        if (findings.isEmpty()) {
+            return ToolResult.Success(JsonPrimitive("未发现需要整理的记忆（无近重复、无超出索引上限的长正文、无缺 triggers 的条目）。"))
+        }
+        return ToolResult.Success(JsonPrimitive(buildCurationReport(findings)))
+    }
+
+    /** 把整理建议渲染成模型可读的报告（按类别分组，附具体依据）。 */
+    private fun buildCurationReport(findings: List<MemoryCuration.Finding>): String {
+        val sb = StringBuilder("记忆整理建议（只读诊断，未做任何修改）：")
+        MemoryCuration.Kind.entries.forEach { kind ->
+            val group = findings.filter { it.kind == kind }
+            if (group.isEmpty()) return@forEach
+            sb.append("\n\n【${kindTitle(kind)}】共 ${group.size} 项")
+            group.forEach { f ->
+                val head = if (f.memories.size > 1) f.memories.joinToString(" × ") else f.memories.first()
+                sb.append("\n- $head（${f.detail}）")
+            }
+        }
+        sb.append("\n\n如需处理，请用 read 查看正文后用 save 重写（合并请保留一份并把另一份 delete）；确认无用的可 prune。")
+        return sb.toString()
+    }
+
+    private fun kindTitle(kind: MemoryCuration.Kind): String = when (kind) {
+        MemoryCuration.Kind.NEAR_DUPLICATE -> "可能的近重复"
+        MemoryCuration.Kind.OVERSIZED_BODY -> "正文过长（尾部无法被召回）"
+        MemoryCuration.Kind.MISSING_TRIGGERS -> "缺少 triggers"
     }
 
     /**
