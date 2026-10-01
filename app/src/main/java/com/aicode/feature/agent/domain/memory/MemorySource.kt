@@ -34,6 +34,15 @@ interface MemorySource {
     fun loadContent(name: String): String?
 
     /**
+     * 返回本数据源内 [name] 对应的记忆文件（可能尚不存在）。
+     *
+     * 用途：调用方需要**在指定作用域内**读写某条记忆的原始文件时（如 apply 覆盖前备份原文），
+     * 不能用 [listMemories] —— 仓库层的 `listMemories` 会合并全局与项目级且项目级优先，
+     * 跨作用域同名时定位到的是另一个文件，备份会错位（实测确认）。
+     */
+    fun memoryFile(name: String): File
+
+    /**
      * 保存一条记忆（创建或覆盖）。
      *
      * @param triggers 触发词；null 表示「保留既有值」（工具未传时行为与旧实现一致），

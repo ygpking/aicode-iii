@@ -4,6 +4,7 @@ import com.aicode.core.text.NameKey
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import com.aicode.feature.workspace.domain.ProjectAicodeRoot
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -46,6 +47,19 @@ class MemoryRepository @Inject constructor(
         // 回退到全局读取
         return globalMemorySource.loadContent(name)
     }
+
+    /**
+     * 返回**指定作用域**内 [name] 对应的记忆文件（可能尚不存在；PROJECT 无工作区时返回 null）。
+     *
+     * 与 [listMemories] 的区别：后者跨作用域合并且项目级优先，因此在「另一作用域存在同名记忆」
+     * 时会定位到**另一个文件**。需要按作用域定位原始文件时必须用本方法（实测：apply 的覆盖前
+     * 备份曾用 [listMemories] 定位，scope=global 时备份到了项目级同名文件，被覆盖的全局原文丢了）。
+     */
+    fun memoryFile(name: String, scope: MemoryScope, projectRoot: String?): File? =
+        when (scope) {
+            MemoryScope.GLOBAL -> globalMemorySource.memoryFile(name)
+            MemoryScope.PROJECT -> projectRoot?.takeIf { it.isNotBlank() }?.let { projectSource(it).memoryFile(name) }
+        }
 
     fun saveMemory(
         name: String,

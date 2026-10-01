@@ -138,4 +138,37 @@ class MemoryCurationApplyScopeTest {
         assertNotNull(result.error)
         assertTrue(result.written.isEmpty())
     }
+
+    /**
+     * 跨作用域同名时的备份定位（设备实测发现的缺陷）。
+     *
+     * 缺陷原貌：备份用 `listMemories(projectRoot)` 定位文件，而该方法跨作用域合并且项目级优先——
+     * `apply(scope=global)` 且存在同名项目级记忆时，它备份的是**项目级**文件，
+     * 而被覆盖的**全局**原文没有备份（实测：写入落全局正确，backup 里却是项目级内容）。
+     * 备份恰恰只在「覆盖已有记忆」时才有意义，此处错位等于备份在最需要时失效。
+     */
+    @Test
+    fun globalApply_backsUpGlobalOriginal_whenProjectHasSameName() = runBlocking {
+        val name = "collide-name"
+
+        // 两处作用域各放一份**同名**记忆，内容可区分。
+        writeReceipt("c1", name)
+        service.apply("c1", MemoryScope.GLOBAL, projectRoot.absolutePath, null)
+        globalFile(name).writeText("GLOBAL-ORIGINAL\n")
+        projectFile(name).apply { parentFile?.mkdirs() }.writeText("PROJECT-ORIGINAL\n")
+
+        // 再用一份新回执覆盖全局同名记忆。
+        writeReceipt("c2", name)
+        val result = service.apply("c2", MemoryScope.GLOBAL, projectRoot.absolutePath, null)
+
+        assertTrue("apply 应成功：${result.error}", result.error == null)
+        val backup = File(File(File(globalRoot, "memory"), ".curation/backup-c2"), "$name.md")
+        assertTrue("必须备份被覆盖的文件", backup.isFile)
+        assertEquals(
+            "备份必须是**被覆盖的全局原文**，而不是另一作用域的同名文件",
+            "GLOBAL-ORIGINAL\n",
+            backup.readText(),
+        )
+        assertEquals("项目级同名文件不得被改动", "PROJECT-ORIGINAL\n", projectFile(name).readText())
+    }
 }

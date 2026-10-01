@@ -129,9 +129,11 @@ class MemoryCurationService @Inject constructor(
         for (item in receipt.items) {
             val name = if (item.isMerge && !item.targetName.isNullOrBlank()) item.targetName else item.name
             // 覆盖前备份：合并会改掉目标记忆的正文，出问题时能逐字节还原。
-            memoryRepository.listMemories(projectRoot)
-                .firstOrNull { it.name.equals(name, ignoreCase = true) }
-                ?.file?.takeIf { it.isFile }?.let { src ->
+            // 必须在**目标作用域内**定位文件：仓库层 listMemories 跨作用域合并且项目级优先，
+            // 用它会在「另一作用域存在同名」时备份到**另一个文件**，而被覆盖的那份原文丢失
+            // （实测确认：apply(scope=global) + 同名项目级存在时，备份存的是项目级内容）。
+            memoryRepository.memoryFile(name, scope, projectRoot)
+                ?.takeIf { it.isFile }?.let { src ->
                     runCatching { src.copyTo(File(backupDir, "${name}.md"), overwrite = true) }
                 }
             val ok = memoryRepository.saveMemory(

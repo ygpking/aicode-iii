@@ -77,4 +77,6 @@ class ProjectMemorySource(
         val file = MemorySource.resolveMemoryFile(memoryRoot, name)
         return if (file.exists()) file.delete() else false
     }
+
+    override fun memoryFile(name: String): File = MemorySource.resolveMemoryFile(memoryRoot, name)
 }
