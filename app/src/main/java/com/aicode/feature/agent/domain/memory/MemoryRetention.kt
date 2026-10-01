@@ -1,5 +1,7 @@
 package com.aicode.feature.agent.domain.memory
 
+import com.aicode.core.text.NameKey
+
 /**
  * 记忆陈旧度评估与显式清理的纯逻辑（零 IO）。
  *
@@ -43,7 +45,7 @@ object MemoryRetention {
         val pinnedExemptCount: Int,
     ) {
         fun isStale(name: String): Boolean =
-            ages.firstOrNull { it.name.equals(name, ignoreCase = true) }?.stale == true
+            ages.firstOrNull { NameKey.of(it.name) == NameKey.of(name) }?.stale == true
     }
 
     /**

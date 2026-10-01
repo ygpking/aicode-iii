@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.memory
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import java.io.File
 
@@ -51,7 +52,7 @@ interface MemorySource {
      * 任一编辑校验失败则整批不写盘（原子），成功后用原 name/description 重新格式化写回。
      */
     fun editMemory(name: String, edits: List<MemoryEdit>): MemoryEditResult {
-        val memory = listMemories().firstOrNull { it.name.equals(name, ignoreCase = true) }
+        val memory = listMemories().firstOrNull { NameKey.of(it.name) == NameKey.of(name) }
             ?: return MemoryEditResult.NotFound(name)
         val file = memory.file ?: return MemoryEditResult.NotFound(name)
         if (edits.isEmpty()) {

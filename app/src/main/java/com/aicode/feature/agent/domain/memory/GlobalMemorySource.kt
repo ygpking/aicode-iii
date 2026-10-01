@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.memory
 
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import java.io.File
@@ -24,12 +25,12 @@ class GlobalMemorySource @Inject constructor(
             runCatching { MemoryParser.parse(file, MemoryScope.GLOBAL) }
                 .onFailure { FileLogger.w("GlobalMemorySource", "解析全局记忆失败，已跳过: ${file.name}", it) }
                 .getOrNull()
-        }.sortedBy { it.name.lowercase() }
+        }.sortedBy { NameKey.of(it.name) }
     }
 
     override fun loadContent(name: String): String? {
         return listMemories()
-            .firstOrNull { it.name.equals(name, ignoreCase = true) }
+            .firstOrNull { NameKey.of(it.name) == NameKey.of(name) }
             ?.content
     }
 
@@ -38,7 +39,7 @@ class GlobalMemorySource @Inject constructor(
             if (!memoryRoot.exists()) memoryRoot.mkdirs()
             val file = MemorySource.resolveMemoryFile(memoryRoot, name)
             // 保留既有 pinned 与 triggers（全量覆盖不应丢失元数据）；调用方显式传入 triggers 时以传入值为准。
-            val existing = listMemories().firstOrNull { it.name.equals(name, ignoreCase = true) }
+            val existing = listMemories().firstOrNull { NameKey.of(it.name) == NameKey.of(name) }
             val pinned = existing?.pinned ?: false
             val effectiveTriggers = triggers ?: existing?.triggers ?: emptyList()
             file.writeText(

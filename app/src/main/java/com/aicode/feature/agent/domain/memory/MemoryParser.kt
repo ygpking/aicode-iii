@@ -19,7 +19,7 @@ object MemoryParser {
 
         val (frontmatter, body) = splitAndParseFrontmatter(text)
 
-        val name = frontmatter["name"]?.toString()?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
+        val name = frontmatter["name"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
         val description = (frontmatter["description"]?.toString() ?: "").take(MAX_DESC_CHARS)
         val pinned = frontmatter["pinned"]?.let { it == true || it.toString().equals("true", ignoreCase = true) } ?: false
         // triggers：YAML 列表或单个标量都接受；缺失/非法时为空（旧文件零影响）。

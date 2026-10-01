@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.memory
 
+import com.aicode.core.text.NameKey
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import com.aicode.feature.workspace.domain.ProjectAicodeRoot
@@ -31,7 +32,7 @@ class MemoryRepository @Inject constructor(
         
         // 去重：按 name 小写分组，保留最后加入的（即项目级优先覆盖全局级）
         return allMemories
-            .groupBy { it.name.lowercase() }
+            .groupBy { NameKey.of(it.name) }
             .map { it.value.last() }
     }
 
@@ -128,7 +129,7 @@ class MemoryRepository @Inject constructor(
         var failed = 0
         val deleted = mutableListOf<String>()
         staleNames.forEach { name ->
-            val target = memories.firstOrNull { it.name.equals(name, ignoreCase = true) } ?: return@forEach
+            val target = memories.firstOrNull { NameKey.of(it.name) == NameKey.of(name) } ?: return@forEach
             val ok = deleteMemory(target.name, target.scope, projectRoot)
             if (ok) deleted += target.name else failed++
         }
