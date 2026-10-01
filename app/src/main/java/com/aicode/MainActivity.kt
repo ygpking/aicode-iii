@@ -106,6 +106,7 @@ import com.aicode.feature.settings.data.repository.ThemeSettingsRepository
 import com.aicode.feature.settings.presentation.SettingsViewModel
 import com.aicode.feature.settings.presentation.FetchState
 import com.aicode.feature.settings.presentation.UpdateCheckUiState
+import com.aicode.feature.settings.domain.model.ONBOARDING_FALLBACK_MODEL
 import com.aicode.feature.settings.presentation.component.githubReleaseUrl
 import com.aicode.feature.settings.presentation.component.SettingsScreen
 import com.aicode.feature.settings.presentation.component.UpdateCheckDialog
@@ -124,6 +125,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import com.aicode.R
+import com.aicode.core.util.runCatchingCancellable
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
@@ -312,7 +314,7 @@ class MainActivity : ComponentActivity() {
         // 远程模式回到前台时，若 SSH 断了立即触发重连，不等 supervisor 轮询
         if (executionModeHolder.currentMode() == com.aicode.feature.settings.data.repository.ExecutionMode.REMOTE_SSH) {
             lifecycleScope.launch {
-                runCatching { remoteSshConnection.tryReconnectIfDisconnected() }
+                runCatchingCancellable { remoteSshConnection.tryReconnectIfDisconnected() }
             }
         }
     }
@@ -926,7 +928,7 @@ fun AppNavigation(
                 OnboardingStep.SIMULATE_FETCH_DIALOG -> {
                     val current = settingsViewModel.providers.value.firstOrNull()
                     if (current != null && current.models.isEmpty()) {
-                        settingsViewModel.saveProvider(current.copy(models = listOf("deepseek-v4-flash")))
+                        settingsViewModel.saveProvider(current.copy(models = listOf(ONBOARDING_FALLBACK_MODEL)))
                     }
                     navController.popBackStack()
                     onboardingCoordinator.nextStep()

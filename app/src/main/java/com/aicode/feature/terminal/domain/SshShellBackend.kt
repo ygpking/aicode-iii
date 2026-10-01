@@ -6,6 +6,7 @@ import net.schmizz.sshj.connection.channel.direct.Session
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "SshShellBackend"
 
@@ -27,14 +28,17 @@ class SshShellBackend(
 
     // changeWindowDimensions 走网络 I/O，resize 会被 TerminalView 在主线程触发，需切到后台线程
     private val resizeExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SshShellResize") }
-    @Volatile private var closed = false
+
+    // 用 AtomicBoolean 而非普通 var：finishIfRunning() 与 cleanupResources() 都可能调 close()，
+    // 普通赋值的 check-then-act 挡不住并发，会重复 spawn 线程二次 shell.close()。
+    private val closed = AtomicBoolean(false)
 
     override fun getInputStream(): InputStream = shell.inputStream
 
     override fun getOutputStream(): OutputStream = shell.outputStream
 
     override fun resize(columns: Int, rows: Int) {
-        if (closed || resizeExecutor.isShutdown) return
+        if (closed.get() || resizeExecutor.isShutdown) return
         resizeExecutor.execute {
             runCatching { shell.changeWindowDimensions(columns, rows, 0, 0) }
                 .onFailure { FileLogger.w(TAG, "PTY resize 失败 ${columns}x${rows}", it) }
@@ -52,7 +56,7 @@ class SshShellBackend(
     }
 
     override fun close() {
-        closed = true
+        if (!closed.compareAndSet(false, true)) return
         resizeExecutor.shutdownNow()
         // shell.close() 走网络 I/O，不能在主线程同步执行
         Thread({

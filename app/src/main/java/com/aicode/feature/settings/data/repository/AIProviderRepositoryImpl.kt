@@ -69,11 +69,12 @@ class AIProviderRepositoryImpl @Inject constructor(
         agentDatabase.withTransaction {
             val current = aiProviderDao.getProviderById(sanitizedProvider.id)
             // 防数据销毁：既有密文解不开（Keystore 不可用/密钥变更）则拒写，不把真实 Key 覆盖成不可恢复的值。
-            // apiKey 与 proxyPassword 同为 SecretVault 加密字段，需一并校验：否则 Keystore 失效时
-            // 保存 provider 会把解不开的代理密码静默覆盖成新密文。
+            // apiKey、proxyPassword 与 apiKeys（多 Key 候选，每行一个密文）同为 SecretVault 加密字段，
+            // 需一并校验：否则 Keystore 失效时保存 provider 会把解不开的值静默覆盖成新密文。
             if (current != null &&
                 (!secretVault.canSafelyOverwrite(current.apiKey) ||
-                    !secretVault.canSafelyOverwrite(current.proxyPassword))
+                    !secretVault.canSafelyOverwrite(current.proxyPassword) ||
+                    current.apiKeys.split('\n').any { it.isNotBlank() && !secretVault.canSafelyOverwrite(it.trim()) })
             ) {
                 FileLogger.e(TAG, "既有密文无法解密，拒绝写入以免覆盖真实凭据 provider=${sanitizedProvider.id}")
                 return@withTransaction

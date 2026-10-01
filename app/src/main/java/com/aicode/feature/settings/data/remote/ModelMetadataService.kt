@@ -21,6 +21,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 @Singleton
 class ModelMetadataService @Inject constructor(
@@ -66,7 +67,7 @@ class ModelMetadataService @Inject constructor(
         if (refreshAttemptedThisProcess) return
         refreshAttemptedThisProcess = true
         withContext(Dispatchers.IO) {
-            val result = runCatching { repoFetcher.fetch(MODELS_REPO_PATH) }.getOrNull()
+            val result = runCatchingCancellable { repoFetcher.fetch(MODELS_REPO_PATH) }.getOrNull()
             val body = when (result) {
                 is RepoDataFetcher.FetchResult.Success -> result.content
                 is RepoDataFetcher.FetchResult.FallbackDiskCache -> result.content

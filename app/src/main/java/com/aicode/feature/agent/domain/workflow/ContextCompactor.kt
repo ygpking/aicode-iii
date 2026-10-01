@@ -28,6 +28,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 @Singleton
 class ContextCompactor @Inject constructor(
@@ -193,7 +194,7 @@ class ContextCompactor @Inject constructor(
         }
 
         val durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt()
-        runCatching {
+        runCatchingCancellable {
             llmCallRecordDao.insert(
                 LlmCallRecordEntity(
                     sessionId = sessionId,

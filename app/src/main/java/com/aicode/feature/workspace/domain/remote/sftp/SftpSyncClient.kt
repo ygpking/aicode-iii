@@ -23,7 +23,9 @@ class SftpSyncClient(
     private var sftpClient: SFTPClient? = null
 
     override suspend fun connect(host: String, port: Int, username: String, auth: RemoteAuth) = withContext(Dispatchers.IO) {
-        sshClient = SSHClient().apply {
+        // 用局部变量建连、全部成功后才入字段：直接给字段赋值时，若认证/newSFTPClient 抛异常，
+        // 字段会停在「已 connect 但未认证」的半开实例上，后续重试按次泄露半开 TCP 与 Transport。
+        val newClient = SSHClient().apply {
             setConnectTimeout(CONNECT_TIMEOUT_MS.toInt())
             addHostKeyVerifier(hostKeyVerifier)
             connect(host, port)
@@ -40,7 +42,14 @@ class SftpSyncClient(
                 }
             }
         }
-        sftpClient = sshClient?.newSFTPClient()
+        val newSftp = try {
+            newClient.newSFTPClient()
+        } catch (e: Exception) {
+            runCatching { newClient.disconnect() }
+            throw e
+        }
+        sshClient = newClient
+        sftpClient = newSftp
     }
 
     override suspend fun disconnect() = withContext(Dispatchers.IO) {

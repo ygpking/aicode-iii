@@ -92,6 +92,13 @@ class GitRepository @Inject constructor(
         return result.output
     }
 
+    /** 同 [gitRaw]，但同时返回退出码，供「取不到内容属正常」（如 ref 下无此文件）的调用方据退出码判成败。 */
+    private suspend fun gitRawWithExit(args: Array<out String>): Pair<String, Int?> {
+        val result = engine.runCommandSyncUnbounded(buildGitCommand(args), workspaceRepository.currentPath())
+        if (result.outputTruncated) throw GitOutputTooLargeException()
+        return result.output to result.exitCode
+    }
+
     /** 拼成交给 `/bin/sh -c` 的单条命令字符串，逐参数 [shellQuote] 转义。 */
     private fun buildGitCommand(args: Array<out String>): String = buildString {
         append("git -c core.quotepath=false")
@@ -709,10 +716,11 @@ class GitRepository @Inject constructor(
      */
     suspend fun showFileContent(ref: String, path: String): String {
         if (refBlobSize("$ref:$path") > MAX_DIFF_FILE_BYTES) throw GitOutputTooLargeException()
-        val out = git("show", "$ref:$path")
-        // git show 对不存在的路径输出 fatal 到 stderr，runCommandSync 合并了 stdout+stderr。
-        // 检测到 fatal 前缀视为该版本无此文件，返回空串让 diff 按全增/全删处理。
-        return if (out.startsWith("fatal:") || out.startsWith("error:")) "" else out
+        // 按退出码判「该 ref 下无此文件」，不嗅探输出文本：runCommandSyncUnbounded 合并了
+        // stdout+stderr，若被 diff 的文件首行本身是 fatal:/error:（日志、错误文案类文件），
+        // 文本嗅探会把真实内容误判为空串，diff 页渲染成「整个文件被删除」。
+        val (out, exitCode) = gitRawWithExit(arrayOf("show", "$ref:$path"))
+        return if (exitCode == 0) out else ""
     }
 
     /** 指定 ref 下文件（`<ref>:<path>` / `:<path>`）的字节数；取不到（不存在/非法 ref）时返回 0。 */
@@ -751,8 +759,8 @@ class GitRepository @Inject constructor(
     /** 读取暂存区当前文件内容（index）。文件尚未暂存时返回空串。 */
     suspend fun indexFileContent(path: String): String {
         if (refBlobSize(":$path") > MAX_DIFF_FILE_BYTES) throw GitOutputTooLargeException()
-        val out = git("show", ":$path")
-        return if (out.startsWith("fatal:") || out.startsWith("error:")) "" else out
+        val (out, exitCode) = gitRawWithExit(arrayOf("show", ":$path"))
+        return if (exitCode == 0) out else ""
     }
 
     /**

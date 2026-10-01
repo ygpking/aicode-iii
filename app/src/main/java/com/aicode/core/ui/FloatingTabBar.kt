@@ -83,6 +83,8 @@ fun FloatingTabBar(
     modifier: Modifier = Modifier,
     isScrolling: Boolean = false
 ) {
+    // 空列表时 items.lastIndex 为 -1，coerceIn(0f, -1f) 会抛 IllegalArgumentException。
+    if (items.isEmpty()) return
     val coroutineScope = rememberCoroutineScope()
     val isLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
 

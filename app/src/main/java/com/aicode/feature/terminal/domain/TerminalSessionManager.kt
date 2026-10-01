@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.atomic.AtomicInteger
@@ -90,8 +91,9 @@ class TerminalSessionManager @Inject constructor(
 
     private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    /** 后台命令标签 → 其持有的保活租约。命令结束/标签关闭时释放，避免锁屏后 CPU 被冻结致构建中断。 */
-    private val backgroundLeases = mutableMapOf<String, RuntimeLifecycleSupervisor.ProcessingPowerLease>()
+    /** 后台命令标签 → 其持有的保活租约。命令结束/标签关闭时释放，避免锁屏后 CPU 被冻结致构建中断。
+     *  写于 suspend 上下文、读/删于 IO 监控与主线程回调，故用并发容器。 */
+    private val backgroundLeases = ConcurrentHashMap<String, RuntimeLifecycleSupervisor.ProcessingPowerLease>()
 
     val activeTab: TerminalTab? get() = _tabs.value.firstOrNull { it.id == _activeTabId.value }
 

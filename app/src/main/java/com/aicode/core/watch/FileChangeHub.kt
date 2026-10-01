@@ -71,7 +71,11 @@ class FileChangeHub @Inject constructor(
         /** 单次快照最多收集的条目数，防止超大订阅每轮遍历开销失控。 */
         private const val MAX_SNAPSHOT_ENTRIES = 4096
 
-        /** 单订阅可持有 inotify 句柄的目录数上限，防止大仓库把 inotify watch 用尽。 */
+        /**
+         * 全进程可持有 inotify 句柄的目录数上限，防止大仓库把 inotify watch 用尽。
+         * 注意 [dirWatches] 是进程级共享，故这是**跨所有订阅**的总额（不是单订阅配额），
+         * 先占满者会让后续订阅静默停止补挂新目录。
+         */
         private const val MAX_WATCHED_DIRS = 512
 
         /** 待处理原始事件队列上限；超出时丢弃最旧事件（有快照轮询兜底），防止文件暴增时内存无界增长。 */

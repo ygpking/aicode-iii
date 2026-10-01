@@ -392,6 +392,7 @@ class WorkspaceRepository @Inject constructor(
         if (existing.any { it.path == path }) {
             _addError.value = context.getString(R.string.workspace_external_exists)
             FileLogger.w(TAG, "添加本地工作区失败：目录已是工作区 $path")
+            releaseUriGrant(uri, uriFlags)
             return@withContext null
         }
         if (!dir.isDirectory) {
@@ -460,7 +461,7 @@ class WorkspaceRepository @Inject constructor(
             val cfg = remoteSshConnection.config
             if (cfg != null) {
                 val remotePath = "${pathHomeResolver.expandHome(cfg.remoteWorkspacePath).trimEnd('/')}/$name"
-                runCatching { execRemoteExit("rm -rf ${shellQuote(remotePath)}") }
+                runCatchingCancellable { execRemoteExit("rm -rf ${shellQuote(remotePath)}") }
                     .onFailure { FileLogger.e(TAG, "远程删除工作区失败: $remotePath", it) }
             }
             target?.let { sessionUseCase.deleteSessionsByWorkspace(it.path) }

@@ -251,7 +251,8 @@ fun CodeEditorScreen(
                     fileName = path.substringAfterLast('/'),
                     dirty = dirty,
                     line = cursorLine,
-                    column = cursorColumn
+                    column = cursorColumn,
+                    encodingLabel = (state as? EditorUiState.Success)?.encoding?.displayName ?: FILE_ENCODING
                 )
                 HorizontalDivider()
             }
@@ -355,7 +356,7 @@ fun CodeEditorScreen(
 
 /** 导航栏下方的文件名小栏：左侧文件名（未保存时名前加星号），右侧行:列与文件编码。 */
 @Composable
-private fun FileTitleBar(fileName: String, dirty: Boolean, line: Int, column: Int) {
+private fun FileTitleBar(fileName: String, dirty: Boolean, line: Int, column: Int, encodingLabel: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -388,7 +389,7 @@ private fun FileTitleBar(fileName: String, dirty: Boolean, line: Int, column: In
             modifier = Modifier.padding(start = Spacing.sm)
         )
         Text(
-            text = FILE_ENCODING,
+            text = encodingLabel,
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = Spacing.md)

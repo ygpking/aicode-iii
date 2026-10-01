@@ -67,6 +67,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 @Singleton
 class BackupManagerImpl @Inject constructor(
@@ -193,7 +194,7 @@ class BackupManagerImpl @Inject constructor(
         val pw = password?.takeIf { it.isNotEmpty() }
         return withContext(Dispatchers.IO) {
             FileLogger.i(TAG, "导入备份开始（${if (pw != null) "加密" else "明文"}${if (selectedWorkspaces != null) "，勾选工作区=${selectedWorkspaces.size}个" else "，全量"}）")
-            runCatching {
+            runCatchingCancellable {
                 openTar(input, pw).use { source ->
                     restoreFromTar(source.tar, selectedWorkspaces)
                 }

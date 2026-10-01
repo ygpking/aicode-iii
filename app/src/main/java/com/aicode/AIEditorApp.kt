@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.aicode.core.util.runCatchingCancellable
 
 @HiltAndroidApp
 class AIEditorApp : Application(), Configuration.Provider {
@@ -283,7 +284,7 @@ class AIEditorApp : Application(), Configuration.Provider {
             executionModeHolder.setMode(mode)
             if (mode == com.aicode.feature.settings.data.repository.ExecutionMode.REMOTE_SSH) {
                 executionModeRepository.remoteConnectionFlow.first()?.let { settings ->
-                    runCatching {
+                    runCatchingCancellable {
                         remoteSshConnection.connect(
                             com.aicode.feature.agent.domain.container.RemoteConnectionConfig(
                                 host = settings.host,
@@ -299,7 +300,7 @@ class AIEditorApp : Application(), Configuration.Provider {
                 }
                 // 启动 SSH 连接监督：定期探活、断线自动重连、重连成功后重新加载工作区与同步文档。
                 remoteSshConnection.startSupervisor(appScope) {
-                    runCatching { workspaceRepository.initialize() }
+                    runCatchingCancellable { workspaceRepository.initialize() }
                         .onFailure { FileLogger.w(TAG, "SSH 重连后重新加载工作区失败", it) }
                     syncDocsToRemote()
                 }
@@ -374,7 +375,7 @@ class AIEditorApp : Application(), Configuration.Provider {
      * 连接成功与重连成功后调用，保证远程文档随 App 升级更新。失败仅记日志，不阻断流程。
      */
     private suspend fun syncDocsToRemote() {
-        runCatching {
+        runCatchingCancellable {
             val docs = linkedMapOf<String, String>()
             collectAssetDocs("docs", "", docs)
             remoteSshConnection.uploadDocs(docs)

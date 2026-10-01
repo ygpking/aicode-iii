@@ -13,6 +13,7 @@ import java.io.File
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 /**
  * 记忆提炼的编排层：**取素材 → 调 LLM → 逐字校验 → 存回执**，落盘由 [apply] 显式触发。
@@ -81,7 +82,7 @@ class MemoryCurationService @Inject constructor(
             MemoryExtraction.Source.NOTES -> MemoryExtraction.notesUserPrompt(material, names)
         }
 
-        val response = runCatching {
+        val response = runCatchingCancellable {
             // 一次性请求：不写服务端缓存（结果不会被复用，写入纯属白花钱）。
             provider.complete(
                 systemPrompt = MemoryExtraction.systemPrompt(source),
@@ -184,7 +185,7 @@ class MemoryCurationService @Inject constructor(
      * 不得被当作系统指令执行。
      */
     private suspend fun renderConversation(sessionId: String): String {
-        val history = runCatching {
+        val history = runCatchingCancellable {
             messagePersistenceUseCase.buildHistory(sessionId, SessionUseCase.PENDING_TOOL_MARKER)
         }.getOrElse {
             FileLogger.w(TAG, "读取会话历史失败", it)

@@ -32,7 +32,8 @@ enum class OnboardingStatus(val persisted: String) {
 /**
  * 首次启动引导的进度持久化：一个 key 记录三态。
  *
- * 每推进一格即写入，进程被杀、重启后回到当前步；完成/跳过只在状态发生跳变时写一次。
+ * 只持久化「进行中/已完成/已跳过」三态，**不记录具体步骤号**：进程被杀重启后
+ * 引导会从第一步重放（状态仍是进行中）。完成/跳过只在状态发生跳变时写一次。
  * 风格对齐 [ThemeSettingsRepository]（同一个 DataStore 模式）。
  */
 @Singleton

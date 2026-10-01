@@ -167,10 +167,27 @@ class WorkspaceDocumentsProvider : DocumentsProvider() {
 
     override fun deleteDocument(documentId: String) {
         val file = fileForDocId(documentId)
+        // 拒删白名单根（projects / aicode）与 projects 下的一级工作区目录：
+        // 这些是整棵树（aicode/ 含 skills 与 mcp.json、projects/<ws> 是整个工作区），
+        // deleteRecursively 会一次性抹掉且 aicode/ 下用户自建部分不可恢复。
+        // 被授权访问根目录的第三方文件管理器此前可一删到底。
+        if (isProtectedDeleteTarget(file)) {
+            FileLogger.e(TAG, "拒绝删除受保护的根级目录: ${file.absolutePath}")
+            throw FileNotFoundException("Refusing to delete protected directory: $documentId")
+        }
         if (!file.deleteRecursively()) {
             FileLogger.e(TAG, "删除文档失败: $documentId")
             throw FileNotFoundException("Failed to delete document: $documentId")
         }
+    }
+
+    /** 白名单根及其直接子项（工作区）不允许删除。 */
+    private fun isProtectedDeleteTarget(file: File): Boolean {
+        val canonical = runCatching { file.canonicalFile }.getOrNull() ?: return true
+        val roots = exposedChildren().mapNotNull { runCatching { it.canonicalFile }.getOrNull() }
+        if (roots.any { it == canonical }) return true
+        if (canonical.parentFile?.let { p -> roots.any { it == p } } == true) return true
+        return false
     }
 
     override fun getDocumentType(documentId: String): String =

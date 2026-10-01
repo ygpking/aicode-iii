@@ -10,6 +10,7 @@ import com.aicode.feature.agent.presentation.MessageRole
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 @Singleton
 class SessionUseCase @Inject constructor(
@@ -32,7 +33,7 @@ class SessionUseCase @Inject constructor(
 
     /** 冷启动收尾：上次进程被杀时若有工具正在执行，其占位行会永久显示「执行中」。 */
     suspend fun initColdStartCleanup() {
-        runCatching {
+        runCatchingCancellable {
             val n = listOf(PENDING_TOOL_MARKER, LEGACY_PENDING_TOOL_MARKER).sumOf { marker ->
                 agentMessageDao.markPendingToolsInterrupted(
                     toolRole = MessageRole.TOOL.name,

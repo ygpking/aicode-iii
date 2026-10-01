@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.aicode.core.util.runCatchingCancellable
 
 @HiltViewModel
 class WorkspaceViewModel @Inject constructor(
@@ -54,41 +55,41 @@ class WorkspaceViewModel @Inject constructor(
     }
 
     init {
-        viewModelScope.launch { runCatching { repository.initialize() } }
+        viewModelScope.launch { runCatchingCancellable { repository.initialize() } }
         // 模式切换后重新加载工作区列表（本地 File.listFiles ↔ 远程 SFTP ls）。
         // drop(1) 跳过首帧（init 已调 initialize），仅响应后续切换。
         viewModelScope.launch {
             executionModeHolder.mode.drop(1).distinctUntilChanged().collect {
-                runCatching { repository.initialize() }
+                runCatchingCancellable { repository.initialize() }
             }
         }
     }
 
     fun selectWorkspace(name: String) = viewModelScope.launch {
-        runCatching { repository.selectWorkspace(name) }
+        runCatchingCancellable { repository.selectWorkspace(name) }
     }
 
     fun createWorkspace(name: String, onResult: (Workspace?) -> Unit = {}) = viewModelScope.launch {
-        val ws = runCatching { repository.createWorkspace(name) }.getOrNull()
+        val ws = runCatchingCancellable { repository.createWorkspace(name) }.getOrNull()
         onResult(ws)
     }
 
     /** 打开面板前刷新外部工作区可用性（存储卡拔插后列表与当前选中及时更新）。 */
     fun refreshAvailability() = viewModelScope.launch {
-        runCatching { repository.refreshAvailability() }
+        runCatchingCancellable { repository.refreshAvailability() }
     }
 
     fun setExternalWarningDismissed(dismissed: Boolean) = viewModelScope.launch {
-        runCatching { repository.setExternalWarningDismissed(dismissed) }
+        runCatchingCancellable { repository.setExternalWarningDismissed(dismissed) }
     }
 
     /** 注册用户所选设备目录为外部本地工作区，不自动切换；切换由调用方走确认流程。 */
     fun addExternalWorkspace(uri: Uri, onResult: (Workspace?) -> Unit = {}) = viewModelScope.launch {
-        val ws = runCatching { repository.addExternalWorkspace(uri) }.getOrNull()
+        val ws = runCatchingCancellable { repository.addExternalWorkspace(uri) }.getOrNull()
         onResult(ws)
     }
 
     fun deleteWorkspace(name: String) = viewModelScope.launch {
-        runCatching { repository.deleteWorkspace(name) }
+        runCatchingCancellable { repository.deleteWorkspace(name) }
     }
 }

@@ -44,6 +44,8 @@ fun SegmentedTabs(
     onSelect: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 空列表时 labels.size 为 0，maxWidth / 0 会得到 Infinity/NaN 并传进布局。
+    if (labels.isEmpty()) return
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val trackColor = MaterialTheme.semanticColors.mutedSurface
     val thumbColor = if (dark) MaterialTheme.semanticColors.capsuleSurface else MaterialTheme.semanticColors.cardSurface

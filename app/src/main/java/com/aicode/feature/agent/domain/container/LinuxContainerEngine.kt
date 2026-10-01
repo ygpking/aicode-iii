@@ -32,6 +32,7 @@ import java.io.InputStreamReader
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 /**
  * 本地 PRoot 容器命令执行后端，实现 [CommandEngine]。
@@ -639,7 +640,7 @@ class LinuxContainerEngine @Inject constructor(
     private suspend fun ensureProvisioned(profile: ContainerProfile) {
         if (profile.mode == ExecutionMode.REMOTE_SSH) return
         if (isProvisionedFor(profile)) return
-        runCatching {
+        runCatchingCancellable {
             FileLogger.i(TAG, "基础工具未配置，自动执行 provision.sh --auto（profile=${profile.id}）")
             val script = "/root/.aicode/provision.sh"
             val result = execCaptured(
@@ -711,7 +712,7 @@ class LinuxContainerEngine @Inject constructor(
 
     /** 查容器内 $HOME 并缓存到 [com.aicode.feature.workspace.domain.PathHomeResolver]，供各工具展开 ~。 */
     private suspend fun refreshContainerHome() {
-        runCatching {
+        runCatchingCancellable {
             val result = execCaptured("echo \$HOME", projectPath = null, timeoutMs = 3000)
             val home = result.output.trim().ifEmpty { null }
             if (home != null) pathHomeResolver.containerHome = home
@@ -725,7 +726,7 @@ class LinuxContainerEngine @Inject constructor(
     private suspend fun detectAndCacheOsIfNeeded(profile: ContainerProfile) {
         if (profile.mode == ExecutionMode.REMOTE_SSH) return
         if (containerOsDetector.cachedOs(profile.id) != null) return
-        runCatching {
+        runCatchingCancellable {
             val result = execCaptured(
                 "if [ -f /etc/os-release ]; then . /etc/os-release 2>/dev/null; echo \"\$ID\"; fi",
                 projectPath = null,

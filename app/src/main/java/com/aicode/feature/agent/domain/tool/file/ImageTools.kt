@@ -33,6 +33,7 @@ import java.io.File
 import java.net.URLConnection
 import java.util.UUID
 import javax.inject.Inject
+import com.aicode.core.util.runCatchingCancellable
 
 /**
  * 多轮会话式识图工具：第一次传 images（1~5 张）由识图模型一次性分析/对比，返回 vision_id 与文本结果；
@@ -211,7 +212,7 @@ class ViewImageTool @Inject constructor(
             throw e
         } finally {
             val durationMillis = (android.os.SystemClock.elapsedRealtime() - callStartElapsed).toInt()
-            runCatching {
+            runCatchingCancellable {
                 llmCallRecordDao.insert(
                     LlmCallRecordEntity(
                         sessionId = sessionId,

@@ -259,10 +259,12 @@ class RemoteTerminalSessionManager @Inject constructor(
         override fun onTitleChanged(changedSession: TerminalSession) {}
         override fun onSessionFinished(finishedSession: TerminalSession) {
             _tabs.value.firstOrNull { it.session === finishedSession }?.let { target ->
+                // 远程 shell 无有意义的退出码（见文件头说明），恒用 0；本地版取真实 exitStatus。
                 target.runState = RunState.Finished(0)
                 bumpRevision()
                 FileLogger.i(TAG, "远程终端标签 ${target.id} 会话结束（远端 shell 退出，后台=${target.isBackground}）")
-                if (target.notifyOnExit) {
+                if (target.notifyOnExit && !target.finishedNotified) {
+                    target.finishedNotified = true
                     _tabFinishedEvents.tryEmit(
                         TabFinishedEvent(
                             target.id, target.title, target.command, 0, target.sourceSessionId,

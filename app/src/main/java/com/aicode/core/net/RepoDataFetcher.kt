@@ -2,11 +2,13 @@ package com.aicode.core.net
 
 import android.content.Context
 import com.aicode.core.util.FileLogger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.FileOutputStream
 import java.util.concurrent.TimeUnit
 
 /**
@@ -92,13 +94,14 @@ class RepoDataFetcher(
                         response.isSuccessful -> {
                             val body = response.body?.string().orEmpty()
                             if (body.isNotBlank()) {
-                                // 写入磁盘缓存
+                                // 写入磁盘缓存：先写 .tmp 再 rename，避免进程写入中被杀留下截断 JSON
+                                // （下次 readText 得到损坏内容）；rename 同目录按原子替换。
                                 runCatching {
                                     cacheFile.parentFile?.mkdirs()
-                                    cacheFile.writeText(body, Charsets.UTF_8)
+                                    writeAtomically(cacheFile, body)
                                     val newEtag = response.header("ETag")
                                     if (!newEtag.isNullOrBlank()) {
-                                        etagFile.writeText(newEtag.trim(), Charsets.UTF_8)
+                                        writeAtomically(etagFile, newEtag.trim())
                                     } else {
                                         etagFile.delete()
                                     }
@@ -113,6 +116,9 @@ class RepoDataFetcher(
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                // 取消不是「这个节点连不上」，不能当普通失败继续试下一个节点，否则延迟响应取消。
+                throw e
             } catch (e: Throwable) {
                 lastError = e
                 FileLogger.d(TAG, "节点连接异常 url=$url: ${e.message}")
@@ -180,6 +186,19 @@ class RepoDataFetcher(
     private fun getEtagFile(path: String): File {
         val safeName = path.replace('/', '_') + ".etag"
         return File(File(context.filesDir, CACHE_DIR_NAME), safeName)
+    }
+
+    /**
+     * 原子写：先写同目录 .tmp 再 rename 覆盖。
+     * 直接 writeText 在进程写入中被杀时，目标文件会停在截断状态，下次读得损坏内容。
+     */
+    private fun writeAtomically(target: File, content: String) {
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        FileOutputStream(tmp).use { it.write(content.toByteArray(Charsets.UTF_8)) }
+        if (!tmp.renameTo(target)) {
+            target.writeText(content, Charsets.UTF_8)
+            tmp.delete()
+        }
     }
 
     companion object {

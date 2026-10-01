@@ -18,6 +18,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.apache.ftpserver.FtpServer
 import org.apache.ftpserver.FtpServerFactory
@@ -55,6 +57,14 @@ class FtpServerManager @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var ftpServer: FtpServer? = null
+
+    /**
+     * 启停互斥。仅 `withContext(Dispatchers.IO)` 只切线程池、不提供互斥：
+     * `init` 块自动启动与用户 UI 操作天然并发，两个 start 会先后建出两个 server 实例，
+     * 后写覆盖前一个引用，而先那个仍在监听端口且已无引用可停——UI 显示「已停止」
+     * 而 FTP 仍在对外提供工作区读写。
+     */
+    private val lifecycleMutex = Mutex()
 
     private val _isRunning = MutableStateFlow(false)
     val isRunning: StateFlow<Boolean> = _isRunning.asStateFlow()
@@ -141,48 +151,56 @@ class FtpServerManager @Inject constructor(
     }
 
     suspend fun saveConfig(port: Int, username: String, password: String, isAnonymous: Boolean, autoStart: Boolean) = withContext(Dispatchers.IO) {
-        val wasRunning = _isRunning.value
-        if (wasRunning) {
-            stopServerInternal()
-        }
+        lifecycleMutex.withLock {
+            val wasRunning = _isRunning.value
+            if (wasRunning) {
+                stopServerInternal()
+            }
 
-        _port.value = port
-        _username.value = username
-        _password.value = password
-        _isAnonymous.value = isAnonymous
-        _autoStart.value = autoStart
-        updateServerUrl()
+            _port.value = port
+            _username.value = username
+            _password.value = password
+            _isAnonymous.value = isAnonymous
+            _autoStart.value = autoStart
+            updateServerUrl()
 
-        context.ftpServerDataStore.edit { prefs ->
-            prefs[PORT_KEY] = port
-            prefs[USERNAME_KEY] = username
-            prefs[PASSWORD_KEY] = secretVault.encrypt(password).orEmpty()
-            prefs[ANONYMOUS_KEY] = isAnonymous
-            prefs[AUTO_START_KEY] = autoStart
-        }
+            context.ftpServerDataStore.edit { prefs ->
+                prefs[PORT_KEY] = port
+                prefs[USERNAME_KEY] = username
+                prefs[PASSWORD_KEY] = secretVault.encrypt(password).orEmpty()
+                prefs[ANONYMOUS_KEY] = isAnonymous
+                prefs[AUTO_START_KEY] = autoStart
+            }
 
-        if (wasRunning) {
-            startServerInternal()
+            if (wasRunning) {
+                startServerInternal()
+            }
         }
     }
 
     suspend fun toggleServer(): Boolean = withContext(Dispatchers.IO) {
-        if (_isRunning.value) {
-            stopServerInternal()
-            false
-        } else {
-            startServerInternal()
+        lifecycleMutex.withLock {
+            if (_isRunning.value) {
+                stopServerInternal()
+                false
+            } else {
+                startServerInternal()
+            }
         }
     }
 
     suspend fun startServer(): Boolean = withContext(Dispatchers.IO) {
-        if (_isRunning.value) return@withContext true
-        startServerInternal()
+        lifecycleMutex.withLock {
+            if (_isRunning.value) return@withLock true
+            startServerInternal()
+        }
     }
 
     suspend fun stopServer() = withContext(Dispatchers.IO) {
-        if (!_isRunning.value) return@withContext
-        stopServerInternal()
+        lifecycleMutex.withLock {
+            if (!_isRunning.value) return@withLock
+            stopServerInternal()
+        }
     }
 
     private fun startServerInternal(): Boolean {
@@ -197,9 +215,12 @@ class FtpServerManager @Inject constructor(
 
             val userManagerFactory = PropertiesUserManagerFactory()
             val propFile = File(context.cacheDir, "ftp_users.properties")
-            if (!propFile.exists()) {
-                propFile.createNewFile()
+            // 启动前整文件重建白名单：清空用户名/匿名时旧账号会永久留在这个固定路径的文件里，
+            // 用户以为已关闭共享，旧凭据仍能登录并写全部工作区。
+            if (propFile.exists() && !propFile.delete()) {
+                FileLogger.w(TAG, "旧 FTP 账号文件删除失败，旧账号可能仍可登录: ${propFile.absolutePath}")
             }
+            propFile.createNewFile()
             userManagerFactory.file = propFile
             userManagerFactory.passwordEncryptor = ClearTextPasswordEncryptor()
             val userManager = userManagerFactory.createUserManager()

@@ -17,6 +17,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.aicode.core.util.runCatchingCancellable
 
 /** 设置页「虚拟屏」的状态快照。 */
 data class VirtualScreenSettingsState(
@@ -67,7 +68,7 @@ class VirtualScreenViewModel @Inject constructor(
             val enabled = isA11yEnabledInSettings()
             // isRunning 是「系统真的把服务连上了」；勾选但未连接时（如刚勾选、进程刚起）会短暂为 false。
             val connected = VirtualScreenA11yService.isRunning
-            val daemon = runCatching { controller.isDaemonAlive() }.getOrDefault(false)
+            val daemon = runCatchingCancellable { controller.isDaemonAlive() }.getOrDefault(false)
             val active = controller.activeSessions()
             _state.update {
                 it.copy(

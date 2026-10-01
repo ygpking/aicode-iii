@@ -1,5 +1,6 @@
 package com.aicode.feature.onboarding.domain
 
+import com.aicode.core.util.FileLogger
 import com.aicode.feature.onboarding.data.OnboardingStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -12,6 +13,21 @@ class OnboardingCoordinator(
     private val onPersist: suspend (OnboardingStatus) -> Unit,
     private val scope: CoroutineScope
 ) {
+    private companion object {
+        const val TAG = "OnboardingCoordinator"
+    }
+
+    /**
+     * 持久化状态。DataStore 写失败（磁盘满等）不能让异常从 [scope] 冒泡崩溃，
+     * 引导本身是纯 UI 流程，落盘失败只记日志。
+     */
+    private fun persist(status: OnboardingStatus) {
+        scope.launch {
+            runCatching { onPersist(status) }
+                .onFailure { FileLogger.w(TAG, "引导状态持久化失败: $status", it) }
+        }
+    }
+
     /** 启动引导判定：仅当未完成/进行中时激活。 */
     fun initialize(status: OnboardingStatus) {
         if (status == OnboardingStatus.IN_PROGRESS) {
@@ -22,32 +38,30 @@ class OnboardingCoordinator(
     /** 推进到下一步（或完成）。 */
     fun nextStep() {
         stateHolder.nextStep()
-        val current = stateHolder.state.value
-        scope.launch { onPersist(current.status) }
+        persist(stateHolder.state.value.status)
     }
 
     /** 回退或跳转到指定步骤（如关闭弹窗时回退到触发按钮）。 */
     fun goToStep(targetStep: OnboardingStep) {
         stateHolder.goToStep(targetStep)
-        val current = stateHolder.state.value
-        scope.launch { onPersist(current.status) }
+        persist(stateHolder.state.value.status)
     }
 
     /** 用户主动跳过引导。 */
     fun skip() {
         stateHolder.skip()
-        scope.launch { onPersist(OnboardingStatus.SKIPPED) }
+        persist(OnboardingStatus.SKIPPED)
     }
 
     /** 用户完成引导。 */
     fun complete() {
         stateHolder.completeNow()
-        scope.launch { onPersist(OnboardingStatus.COMPLETED) }
+        persist(OnboardingStatus.COMPLETED)
     }
 
     /** 重置并重新启动引导（设置页触发）。 */
     fun resetAndStart() {
         stateHolder.start()
-        scope.launch { onPersist(OnboardingStatus.IN_PROGRESS) }
+        persist(OnboardingStatus.IN_PROGRESS)
     }
 }

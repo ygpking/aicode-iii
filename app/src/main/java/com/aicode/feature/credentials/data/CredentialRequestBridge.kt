@@ -21,6 +21,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 /**
  * 自定义 git credential helper（容器内 /root/.aicode/git-credential-aicode）与 app 之间的文件 IPC 桥。
@@ -107,7 +108,7 @@ class CredentialRequestBridge @Inject constructor(
     private suspend fun fallbackPollLoop(dir: File) {
         while (true) {
             delay(FALLBACK_POLL_MS)
-            runCatching {
+            runCatchingCancellable {
                 dir.listFiles { f -> f.name.startsWith(REQ_PREFIX) && !f.name.endsWith(".tmp") }
                     ?.forEach { f -> handleRequest(f, f.name) }
             }
@@ -150,7 +151,7 @@ class CredentialRequestBridge @Inject constructor(
         val dir = aicodeDir ?: File(context.filesDir, "aicode")
         scope.launch {
             writeRespAtomically(dir, requestId, "username=$username\npassword=$token\n")
-            runCatching {
+            runCatchingCancellable {
                 val h = host.trim().lowercase()
                 credentialRepository.save(
                     GitCredential(id = h, host = h, username = username.trim(), token = token)

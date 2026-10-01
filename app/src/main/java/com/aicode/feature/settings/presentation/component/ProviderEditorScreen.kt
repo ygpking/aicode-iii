@@ -2,6 +2,7 @@ package com.aicode.feature.settings.presentation.component
 
 import com.aicode.feature.onboarding.domain.OnboardingStep
 import com.aicode.feature.onboarding.presentation.onboardingTarget
+import com.aicode.feature.settings.domain.model.ONBOARDING_FALLBACK_MODEL
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -1457,7 +1458,7 @@ private fun FetchModelsDialog(
     val availableNewModels = remember(fetchState, existingModels, isOnboarding) {
         when (fetchState) {
             is FetchState.Success -> fetchState.models.filter { it !in existingModels }
-            is FetchState.Error -> if (isOnboarding) listOf("deepseek-v4-flash").filter { it !in existingModels } else emptyList()
+            is FetchState.Error -> if (isOnboarding) listOf(ONBOARDING_FALLBACK_MODEL).filter { it !in existingModels } else emptyList()
             else -> emptyList()
         }
     }
@@ -1536,7 +1537,7 @@ private fun FetchModelsDialog(
                 is FetchState.Error -> {
                     if (isOnboarding) {
                         // 引导模式下未配置有效 Key 时，呈现 DeepSeek 推荐模型演示供新手继续体验
-                        val fallbackModels = listOf("deepseek-v4-flash").filter { it !in existingModels }
+                        val fallbackModels = listOf(ONBOARDING_FALLBACK_MODEL).filter { it !in existingModels }
                         val grouped = fallbackModels.groupBy { m -> modelBrandKey(m) }
                             .toSortedMap(compareBy<String> { it == "other" }.thenBy { brandDisplayName(context, it) })
                         LazyColumn(
@@ -1627,7 +1628,7 @@ private fun FetchModelsDialog(
                 is FetchState.Success -> {
                     val rawModels = fetchState.models.filter { it !in existingModels && it.contains(searchQuery, ignoreCase = true) }
                     val newModels = if (rawModels.isEmpty() && isOnboarding) {
-                        listOf("deepseek-v4-flash").filter { it !in existingModels }
+                        listOf(ONBOARDING_FALLBACK_MODEL).filter { it !in existingModels }
                     } else rawModels
                     if (newModels.isEmpty()) {
                         SettingsGroup {

@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.aicode.core.util.runCatchingCancellable
 
 /**
  * 凭据页 UI 编排：凭据 CRUD + 提交署名(user.name/email) 配置。
@@ -96,7 +97,7 @@ class CredentialViewModel @Inject constructor(
     /** 从容器 git config 读取当前署名与仓库地址刷新 UI（编辑框初值 + 实际值回显）。可重入，进凭据页时调一次兜住终端改动。 */
     fun refreshIdentity() {
         viewModelScope.launch {
-            runCatching {
+            runCatchingCancellable {
                 _extra.update {
                     it.copy(
                         userName = gitRepository.getUserName(),

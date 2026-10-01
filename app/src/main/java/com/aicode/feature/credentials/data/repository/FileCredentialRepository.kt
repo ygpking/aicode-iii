@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
+import java.io.FileOutputStream
 import java.net.URLDecoder
 import java.net.URLEncoder
 import javax.inject.Inject
@@ -106,7 +107,13 @@ class FileCredentialRepository @Inject constructor(
         }
         credentialsFile.parentFile?.mkdirs()
         val tmp = File(credentialsFile.parentFile, "${credentialsFile.name}.tmp")
-        tmp.writeText(sb.toString())
+        // 写完必须 fsync 再 rename：rename 只保证「文件名切换原子」，不保证内容已落盘。
+        // 缺少 fsync 时掉电/崩溃可能得到「文件存在但内容为空/截断」的凭据文件，
+        // 表现为认证莫名失败且难排查。
+        FileOutputStream(tmp).use { fos ->
+            fos.write(sb.toString().toByteArray(Charsets.UTF_8))
+            fos.fd.sync()
+        }
         // 直接 rename 覆盖（rename 本就原子地替换已存在目标）；不要先 delete，
         // 否则删除与改名之间会出现「文件不存在」窗口，并发读的容器 git 拿不到凭据。
         if (!tmp.renameTo(credentialsFile)) {

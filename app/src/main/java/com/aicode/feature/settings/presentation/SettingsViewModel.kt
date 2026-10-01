@@ -110,6 +110,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
+import com.aicode.core.util.runCatchingCancellable
 
 sealed class FetchState {
     object Idle : FetchState()
@@ -1681,7 +1682,7 @@ class SettingsViewModel @Inject constructor(
                 executionModeRepository.setExecutionMode(ExecutionMode.REMOTE_SSH)
                 executionModeHolder.setMode(ExecutionMode.REMOTE_SSH)
                 // 运行时切换需主动连接（启动时由 AIEditorApp 连）；复用 RemoteSshConnection.connect
-                runCatching {
+                runCatchingCancellable {
                     remoteSshConnection.connect(
                         com.aicode.feature.agent.domain.container.RemoteConnectionConfig(
                             host = settings.host,

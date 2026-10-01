@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
+import com.aicode.core.util.runCatchingCancellable
 
 /**
  * 一次性把历史明文的远程连接敏感字段加密回写：密码（authData）与 passphrase。
@@ -25,7 +26,7 @@ class RemoteSecretEncryptionMigrator @Inject constructor(
     }
 
     suspend fun migrateIfNeeded() = withContext(Dispatchers.IO) {
-        runCatching { migrateConnections() }
+        runCatchingCancellable { migrateConnections() }
             .onFailure { FileLogger.w(TAG, "迁移远程连接敏感字段失败", it) }
     }
 

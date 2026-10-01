@@ -1,5 +1,7 @@
 package com.aicode.core.db
 
+import com.aicode.core.util.FileLogger
+
 /**
  * 把 SQL 脚本按语句切分，识别注释与字面量，保证其中的分号不参与切分。
  *
@@ -8,6 +10,8 @@ package com.aicode.core.db
  * 字面量（含双写转义 `''`）、`[...]` 标识符。块注释按 SQLite 语义不支持嵌套。
  */
 object SqlScriptSplitter {
+
+    private const val TAG = "SqlScriptSplitter"
 
     fun split(script: String): List<String> {
         val statements = mutableListOf<String>()
@@ -37,6 +41,10 @@ object SqlScriptSplitter {
                     if (i < n) {
                         current.append("*/")
                         i += 2
+                    } else {
+                        // 块注释未闭合：后半段会被整段当注释吞掉且 currentHasContent 保持 false，
+                        // 迁移静默 no-op（执行「成功」但什么都没做）。记警告让问题可见。
+                        FileLogger.w(TAG, "SQL 脚本存在未闭合的块注释，其后语句将被丢弃")
                     }
                 }
 

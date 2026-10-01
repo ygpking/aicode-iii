@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.aicode.core.util.runCatchingCancellable
 
 /**
  * Git 页的 UI 状态与操作。
@@ -553,7 +554,7 @@ class GitViewModel @Inject constructor(
     fun loadStashes() {
         viewModelScope.launch {
             _state.update { it.copy(stashesLoading = true) }
-            val list = runCatching { repository.stashList() }.getOrDefault(emptyList())
+            val list = runCatchingCancellable { repository.stashList() }.getOrDefault(emptyList())
             _state.update { it.copy(stashes = list, stashesLoading = false) }
         }
     }
@@ -615,12 +616,12 @@ class GitViewModel @Inject constructor(
     fun loadCommitFileDiff(hash: String, path: String) {
         openDiff(path)
         viewModelScope.launch {
-            val data = runCatching { computeDiff(path, "${hash}^", hash, repository::showFileContent) }
+            val data = runCatchingCancellable { computeDiff(path, "${hash}^", hash, repository::showFileContent) }
                 .getOrElse { e ->
                     FileLogger.e(TAG, "加载提交文件 diff 失败: $path", e)
                     null
                 }
-            finishDiff(data)
+            finishDiff(data, path)
         }
     }
 
@@ -660,13 +661,13 @@ class GitViewModel @Inject constructor(
     ) {
         openDiff(path)
         viewModelScope.launch {
-            val data = runCatching {
+            val data = runCatchingCancellable {
                 computeDiff(path, oldRef, newRef, contentProvider)
             }.getOrElse { e ->
                 FileLogger.e(TAG, "加载 diff 失败: $path", e)
                 null
             }
-            finishDiff(data)
+            finishDiff(data, path)
         }
     }
 
@@ -676,10 +677,16 @@ class GitViewModel @Inject constructor(
         _state.update { it.copy(diffVisible = true, diffPath = path, diffData = null) }
     }
 
-    /** diff 计算完成：成功填数据，失败关闭 diff 页并 toast。 */
-    private fun finishDiff(data: DiffData?) {
+    /**
+     * diff 计算完成：成功填数据，失败关闭 diff 页并 toast。
+     *
+     * [expectedPath] 与当前展示的 diffPath 不符时丢弃：用户在计算期间退出又打开
+     * 另一文件时，旧协程会先返回，不校验就会用旧数据盖掉新页。
+     */
+    private fun finishDiff(data: DiffData?, expectedPath: String) {
+        if (_state.value.diffPath != expectedPath) return
         if (data == null) {
-            _state.update { it.copy(diffVisible = false, diffData = null, toast = context.getString(R.string.git_toast_diff_failed)) }
+            _state.update { it.copy(diffVisible = false, diffPath = null, diffData = null, toast = context.getString(R.string.git_toast_diff_failed)) }
         } else {
             _state.update { it.copy(diffData = data) }
         }

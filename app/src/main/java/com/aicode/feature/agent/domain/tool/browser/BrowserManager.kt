@@ -16,6 +16,7 @@ import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.JsPromptResult
 import android.webkit.JsResult
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -404,6 +405,24 @@ class BrowserManager @Inject constructor(
                     tab.loadDeferred = null
                     publishState()
                 }
+            }
+
+            /**
+             * 渲染进程被系统（通常是低内存）回收时，不处理会表现为标签页静默空白
+             * 且不再响应，而 [BrowserTabState.error] 也不会被置位，UI 不弹错误浮层。
+             * 置错后销毁该 WebView 并返回 true（已处理，不再让系统崩溃当前进程）。
+             */
+            override fun onRenderProcessGone(view: WebView?, detail: RenderProcessGoneDetail?): Boolean {
+                val tab = tabHolderRef() ?: return true
+                val crashed = detail?.didCrash() ?: false
+                FileLogger.e(TAG, "WebView 渲染进程终止: tab=${tab.id} didCrash=$crashed")
+                tab.loading = false
+                tab.error = "页面渲染进程已终止（${if (crashed) "崩溃" else "被系统回收"}），请重试"
+                tab.loadDeferred?.complete(Result.failure(RuntimeException("render process gone")))
+                tab.loadDeferred = null
+                view?.destroy()
+                publishState()
+                return true
             }
         }
 
@@ -873,6 +892,10 @@ class BrowserManager @Inject constructor(
             tab.consoleLogs.clear()
         }
         tabs.clear()
+        // 解绑 hiddenHost 并清掉 activeTabId：否则销毁后 hiddenHost 仍持有已 destroy 的
+        // WebView 引用，且旧 activeTabId 会让 publishState() 计算出不一致的快照。
+        detachHiddenHost()
+        activeTabId = ""
         containerView?.removeAllViews()
         containerView = null
         publishState()

@@ -5,6 +5,7 @@ import com.aicode.core.net.RepoDataFetcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import com.aicode.core.util.runCatchingCancellable
 
 /** 内置/动态 provider 的展示预设：包含 name/type/baseUrl 及推荐与推广扩展属性。 */
 @Serializable
@@ -53,7 +54,7 @@ object ProviderPresetLibrary {
         refreshAttemptedThisProcess = true
 
         val fetcher = RepoDataFetcher(context)
-        val remoteResult = runCatching { fetcher.fetch(REMOTE_PROVIDERS_PATH) }.getOrNull()
+        val remoteResult = runCatchingCancellable { fetcher.fetch(REMOTE_PROVIDERS_PATH) }.getOrNull()
         val remoteContent = when (remoteResult) {
             is RepoDataFetcher.FetchResult.Success -> remoteResult.content
             is RepoDataFetcher.FetchResult.FallbackDiskCache -> remoteResult.content
