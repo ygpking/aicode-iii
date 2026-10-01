@@ -24,6 +24,8 @@ object MemoryParser {
         // triggers：YAML 列表或单个标量都接受；缺失/非法时为空（旧文件零影响）。
         // 拉丁项小写化，与 tokenizeForRecall 的拉丁分词口径一致，保证匹配时不会因大小写失配。
         val triggers = parseTriggers(frontmatter["triggers"])
+        // 内容派生的更新时间；缺失（存量文件）为 0，由 [Memory.effectiveUpdatedAtMs] 回退到 mtime。
+        val updatedAtMs = (frontmatter["updated"] as? Number)?.toLong()?.takeIf { it > 0L } ?: 0L
 
         return Memory(
             name = name,
@@ -34,6 +36,7 @@ object MemoryParser {
             pinned = pinned,
             triggers = triggers,
             malformed = malformed,
+            updatedAtMs = updatedAtMs,
         )
     }
 
@@ -60,7 +63,8 @@ object MemoryParser {
         description: String,
         content: String,
         pinned: Boolean = false,
-        triggers: List<String> = emptyList()
+        triggers: List<String> = emptyList(),
+        updatedAtMs: Long = 0L,
     ): String {
         val safeName = yamlScalar(name)
         val safeDesc = yamlScalar(description)
@@ -68,7 +72,9 @@ object MemoryParser {
         // triggers 仅在非空时输出——默认参数下字节与旧实现完全一致，存量测试不受影响。
         val triggersLine = if (triggers.isEmpty()) "" else
             "\ntriggers: [" + triggers.joinToString(", ") { yamlScalar(it) } + "]"
-        return "---\nname: $safeName\ndescription: $safeDesc$pinnedLine$triggersLine\n---\n$content"
+        // updated 同理仅在已知时输出：存量文件没有该字段，字节不变。
+        val updatedLine = if (updatedAtMs > 0L) "\nupdated: $updatedAtMs" else ""
+        return "---\nname: $safeName\ndescription: $safeDesc$pinnedLine$triggersLine$updatedLine\n---\n$content"
     }
 
     /** 把任意字符串转成安全的 YAML 标量，避免冒号/引号/换行破坏 frontmatter。 */

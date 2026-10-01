@@ -1484,7 +1484,7 @@ class StatefulAgentWorkflow @Inject constructor(
                 scope = m.scope,
                 text = if (m.description.isBlank()) m.content else "${m.description}\n${m.content}",
                 pinned = m.pinned,
-                updatedAtMs = m.file?.lastModified() ?: 0L,
+                updatedAtMs = m.effectiveUpdatedAtMs,
                 triggers = m.triggers,
             )
         }

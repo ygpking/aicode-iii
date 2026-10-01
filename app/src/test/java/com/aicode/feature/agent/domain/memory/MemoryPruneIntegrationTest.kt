@@ -27,25 +27,63 @@ class MemoryPruneIntegrationTest {
     private val day = 24L * 60 * 60 * 1000
 
     private fun writeMemory(name: String, description: String, pinned: Boolean, ageDays: Long) {
-        assertTrue(source.saveMemory(name, description, "body of $name", triggers = null))
-        if (pinned) {
-            // pinned 通过 frontmatter 表达，直接改文件内容
-            val f = File(File(tmpDir, "memory"), "${MemorySource.sanitizeName(name)}.md")
-            f.writeText(MemoryParser.format(name, description, "body of $name", pinned = true))
-        }
-        val f = File(File(tmpDir, "memory"), "${MemorySource.sanitizeName(name)}.md")
-        f.setLastModified(System.currentTimeMillis() - ageDays * day + 3000)
+        val dir = File(tmpDir, "memory").also { it.mkdirs() }
+        val f = File(dir, "${MemorySource.sanitizeName(name)}.md")
+        val aged = System.currentTimeMillis() - ageDays * day
+        // 直接写文件并显式带上 updated：语义上「这份内容最后一次被有意义地改动」是 aged 之前。
+        // mtime 一并对齐，让两个信号一致（否则测不出真正关心的那条判据）。
+        f.writeText(
+            MemoryParser.format(name, description, "body of $name", pinned = pinned, updatedAtMs = aged)
+        )
+        f.setLastModified(aged)
     }
 
-    /** 真实 mtime 能被读回来，陈旧判定与文件系统一致。 */
+    /** 内容派生的 updated 能被读回来，陈旧判定与之一致（不再依赖 mtime）。 */
     @Test
-    fun realFileMtime_drivesStaleness() {
+    fun contentDerivedUpdatedAt_drivesStaleness() {
         writeMemory("old-note", "很旧", pinned = false, ageDays = 300)
         writeMemory("fresh-note", "很新", pinned = false, ageDays = 1)
 
         val report = MemoryRetention.assess(source.listMemories(), System.currentTimeMillis(), staleDays = 180)
         assertEquals(listOf("old-note"), report.ages.filter { it.stale }.map { it.name })
         assertTrue(report.ages.first { it.name == "fresh-note" }.ageDays in 0..2)
+    }
+
+    /**
+     * **本次修复的核心回归**：内容一字未改的「格式重写」（只把 mtime 刷新）
+     * 不得把 updated 往前推——否则陈旧判据会重演 mtime 的错误。
+     */
+    @Test
+    fun saveMemory_unchangedContent_doesNotRefreshUpdatedAt() {
+        val dir = File(tmpDir, "memory").also { it.mkdirs() }
+        val f = File(dir, "keep-age.md")
+        val old = System.currentTimeMillis() - 300 * day
+        f.writeText(MemoryParser.format("keep-age", "描述", "正文", updatedAtMs = old))
+        // 模拟工具批量处理：文件被重写，mtime 刷新，但内容毫无变化
+        f.setLastModified(System.currentTimeMillis())
+
+        assertTrue(source.saveMemory("keep-age", "描述", "正文", triggers = null))
+
+        val reloaded = source.listMemories().first { it.name == "keep-age" }
+        assertEquals("内容未变，updated 不得被刷新", old, reloaded.updatedAtMs)
+        val report = MemoryRetention.assess(listOf(reloaded), System.currentTimeMillis(), staleDays = 180)
+        assertTrue("内容确实很旧，应仍判陈旧（mtime 的新鲜不得掩盖它）", report.isStale("keep-age"))
+    }
+
+    /** 内容真变时 updated 必须前进，否则该记忆永远清不掉。 */
+    @Test
+    fun saveMemory_changedContent_refreshesUpdatedAt() {
+        val dir = File(tmpDir, "memory").also { it.mkdirs() }
+        val f = File(dir, "revived.md")
+        val old = System.currentTimeMillis() - 300 * day
+        f.writeText(MemoryParser.format("revived", "描述", "旧正文", updatedAtMs = old))
+
+        assertTrue(source.saveMemory("revived", "描述", "新正文", triggers = null))
+
+        val reloaded = source.listMemories().first { it.name == "revived" }
+        assertTrue("正文变了，updated 应该前进", reloaded.updatedAtMs > old)
+        val report = MemoryRetention.assess(listOf(reloaded), System.currentTimeMillis(), staleDays = 180)
+        assertFalse("刚被更新的内容不应判陈旧", report.isStale("revived"))
     }
 
     /**

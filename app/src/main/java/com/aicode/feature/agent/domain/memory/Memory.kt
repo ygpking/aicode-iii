@@ -16,6 +16,10 @@ import java.io.File
  *   「用户没说正文里那些字」的查询也能命中（如「发正式版」→ android-build-env）。
  * @param malformed true 表示文件 frontmatter 畸形（未闭合，已尽力恢复）。此时 [content] 可能仍残留
  *   文档头部碎片，回写（edit）会把畸形固化，故 [MemorySource.editMemory] 会直接拒绝。
+ * @param updatedAtMs **内容派生的**更新时间（frontmatter `updated`，epoch 毫秒）；0 表示未知。
+ *   **不要用文件 mtime 代替它**：mtime 只说明「文件被写过」，批量格式重写（补 triggers、
+ *   统一 frontmatter 风格）会把它全部刷成同一时刻，而内容年龄根本没变——09-30 那次
+ *   15 个文件的时间戳被刷到同一秒，此后 mtime 不再是「内容新旧」的证据。
  */
 data class Memory(
     val name: String,
@@ -25,8 +29,18 @@ data class Memory(
     val content: String,
     val pinned: Boolean = false,
     val triggers: List<String> = emptyList(),
-    val malformed: Boolean = false
-)
+    val malformed: Boolean = false,
+    val updatedAtMs: Long = 0L,
+) {
+    /**
+     * 有效更新时间：优先用 frontmatter 的 `updated`（内容派生），缺失时**回退**文件 mtime。
+     *
+     * 一切「这份内容有多新」的判据都走这里（陈旧评估、召回时衰）。回退只为兼容存量文件
+     * （它们还没有 `updated`）；一旦某文件被有意义地改过一次，此后就不再依赖 mtime。
+     */
+    val effectiveUpdatedAtMs: Long
+        get() = updatedAtMs.takeIf { it > 0L } ?: (file?.lastModified() ?: 0L)
+}
 
 enum class MemoryScope {
     GLOBAL, PROJECT

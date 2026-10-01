@@ -62,7 +62,10 @@ class ProjectMemorySource(
             val effectiveTriggers = triggers ?: existing?.triggers ?: emptyList()
             file.writeText(
                 MemoryParser.format(
-                    MemorySource.sanitizeName(name), description, content, pinned, effectiveTriggers
+                    MemorySource.sanitizeName(name), description, content, pinned, effectiveTriggers,
+                    updatedAtMs = MemorySource.resolveUpdatedAt(
+                        existing, description, content, System.currentTimeMillis()
+                    ),
                 )
             )
             true

@@ -32,7 +32,8 @@ object MemoryRetention {
     data class Age(
         val name: String,
         val scope: MemoryScope,
-        val lastModifiedMs: Long,
+        /** 评估所依据的**内容更新时间**（[Memory.effectiveUpdatedAtMs]），非裸 mtime。 */
+        val updatedAtMs: Long,
         val ageDays: Long,
         val pinned: Boolean,
         val stale: Boolean,
@@ -54,14 +55,17 @@ object MemoryRetention {
      * @param memories 待评估的记忆（通常来自 [MemoryRepository.listMemories]）。
      * @param nowMs 当前时刻（epoch 毫秒）。
      * @param staleDays 超过该天数未更新即视为陈旧；`<= 0` 表示关闭评估（全部不陈旧）。
-     * @param lastModifiedOf 取记忆文件最后修改时间的函数；返回 `0` 表示「未知」，
+     * @param updatedAtOf 取「内容更新时间」的函数；返回 `0` 表示「未知」，
      *   该记忆**不计为陈旧**（读取失败时宁可漏报也不误报，避免诱导误删）。
+     *   默认用 [Memory.effectiveUpdatedAtMs]（内容派生的 frontmatter `updated`，缺失回退 mtime）——
+     *   **不是裸 mtime**：批量格式重写会把 mtime 刷成同一时刻而内容未变，用它会把
+     *   「久未改动的老约定」误判为新近更新、同时把「刚被格式刷过的老内容」误判为新鲜。
      */
     fun assess(
         memories: List<Memory>,
         nowMs: Long,
         staleDays: Long = DEFAULT_STALE_DAYS,
-        lastModifiedOf: (Memory) -> Long = { it.file?.lastModified() ?: 0L },
+        updatedAtOf: (Memory) -> Long = { it.effectiveUpdatedAtMs },
     ): Report {
         if (staleDays <= 0) {
             return Report(
@@ -74,14 +78,14 @@ object MemoryRetention {
         var staleCount = 0
         var pinnedExempt = 0
         val ages = memories.map { memory ->
-            val mtime = lastModifiedOf(memory)
-            // 未来时间（mtime > now）按 0 天计，不判陈旧：时钟回拨/文件系统时间异常时不应误伤。
-            val ageDays = if (mtime > 0L && nowMs > mtime) (nowMs - mtime) / MILLIS_PER_DAY else 0L
-            // 未知 mtime（0）不参与陈旧判定——读不到就是信息缺失，不能当作「足够旧」。
-            val stale = !memory.pinned && mtime > 0L && ageDays > staleDays
+            val updated = updatedAtOf(memory)
+            // 未来时间（updated > now）按 0 天计，不判陈旧：时钟回拨/文件系统时间异常时不应误伤。
+            val ageDays = if (updated > 0L && nowMs > updated) (nowMs - updated) / MILLIS_PER_DAY else 0L
+            // 未知时间（0）不参与陈旧判定——读不到就是信息缺失，不能当作「足够旧」。
+            val stale = !memory.pinned && updated > 0L && ageDays > staleDays
             if (memory.pinned) pinnedExempt++
             if (stale) staleCount++
-            Age(memory.name, memory.scope, mtime, ageDays, memory.pinned, stale)
+            Age(memory.name, memory.scope, updated, ageDays, memory.pinned, stale)
         }
         return Report(ages, staleCount, pinnedExempt)
     }

@@ -108,7 +108,10 @@ interface MemorySource {
             // （triggers 丢失会让该记忆从此无法被门控命中，且症状隐蔽）。
             file.writeText(
                 MemoryParser.format(
-                    memory.name, memory.description, content, memory.pinned, memory.triggers
+                    memory.name, memory.description, content, memory.pinned, memory.triggers,
+                    updatedAtMs = MemorySource.resolveUpdatedAt(
+                        memory, memory.description, content, System.currentTimeMillis()
+                    ),
                 )
             )
             MemoryEditResult.Success
@@ -121,6 +124,24 @@ interface MemorySource {
     fun deleteMemory(name: String): Boolean
 
     companion object {
+        /**
+         * 计算写入时应记录的 `updated`（**内容派生**时间戳）。
+         *
+         * 规则：描述/正文**真变了**才取 [nowMs]；没变则沿用原值——否则「改格式」「补字段」
+         * 这类并非内容变更的写操作会把时间戳刷成现在，让陈旧判据失真（mtime 就是这么坏的）。
+         *
+         * 存量文件（无 `updated`）在任意写入时用**写之前的 mtime 回填**：此刻 mtime 还是旧的、
+         * 可信的，回填之后就固定在数据里，不再受后续格式重写影响。
+         */
+        fun resolveUpdatedAt(existing: Memory?, description: String, content: String, nowMs: Long): Long {
+            if (existing == null) return nowMs
+            val changed = existing.description != description || existing.content != content.trim()
+            if (changed) return nowMs
+            return existing.updatedAtMs.takeIf { it > 0L }
+                ?: existing.file?.lastModified()?.takeIf { it > 0L }
+                ?: nowMs
+        }
+
         /**
          * 将模型传入的记忆名归一化为安全文件名片段。
          *
