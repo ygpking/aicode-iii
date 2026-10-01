@@ -56,9 +56,12 @@ public class VirtualScreenHost {
      *
      * <p>必要性：daemon 跨 App 重启存活，若 App 升级后 dex 变了而旧 daemon 仍在，
      * 只凭 PING 通就复用会继续跑旧代码。带上版本号即可识别并重建。
-     * **修改任何指令语义/响应格式时必须递增。**
+     *
+     * <p><b>修改任何指令语义/响应格式时必须递增。</b>但注意：App 侧已改用 dex 内容
+     * 指纹判定（见 VirtualScreenHostManager 的 deployDex），即使忘了递增也不会复用旧 daemon；
+     * 此常量现仅作协议语义变更的显式标记。
      */
-    private static final int PROTOCOL = 1;
+    private static final int PROTOCOL = 2;
 
     private static final int FLAG_PUBLIC = 0x1;
     private static final int FLAG_OWN_CONTENT_ONLY = 0x8;

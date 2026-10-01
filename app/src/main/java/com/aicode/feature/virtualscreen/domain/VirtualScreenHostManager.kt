@@ -91,6 +91,9 @@ class VirtualScreenHostManager @Inject constructor(
         /** 等待端口就绪的总时长与轮询间隔。 */
         const val READY_TIMEOUT_MS = 8_000L
         const val READY_POLL_INTERVAL_MS = 300L
+
+        /** 发 EXIT 后等旧 daemon 收尾（releaseAll 要逐个释放虚拟屏）再覆盖 dex。 */
+        const val EXIT_SETTLE_MS = 800L
     }
 
     private val mutex = Mutex()
@@ -197,17 +200,29 @@ class VirtualScreenHostManager @Inject constructor(
      * 把 APK 内的 dex 抽取到 shell 私有目录。
      *
      * 走 Shizuku 以 shell 身份执行（app 进程自己写不进 `/data/data/com.android.shell/`）。
-     * 内容一致时跳过重写：该目录跨 App 升级仍在，重复投递没有意义。
+     *
+     * ## 为什么用 md5 而不是文件大小
+     *
+     * 原先只比大小。dex 字节数在改动后**可能恰好不变**（改字符串常量、调换指令等），
+     * 此时会误判「已是最新」而跳过投递，新代码永远上不去。更危险的是反向：大小变了而
+     * 旧 daemon 仍在跑——它已用旧 dex 建好了方法表，文件被覆盖后 ArtMethod 解析会读到
+     * 不一致的字节，实测表现为 `ThrowNoSuchMethodError` → **SIGSEGV 崩溃**。
+     * 故两个动作都做：**先停旧 daemon，再按 md5 判断要不要重写**。
      */
     private suspend fun deployDex() {
         val assetBytes = withContext(Dispatchers.IO) {
             context.assets.open(ASSET_PATH).use(InputStream::readBytes)
         }
-        val currentSize = remoteFileSize()
-        if (currentSize == assetBytes.size.toLong()) {
-            FileLogger.d(TAG, "dex 已是最新（$currentSize 字节），跳过投递")
+        val assetMd5 = md5Hex(assetBytes)
+        val currentMd5 = remoteFileMd5()
+        if (currentMd5 != null && currentMd5.equals(assetMd5, ignoreCase = true)) {
+            FileLogger.d(TAG, "dex 已是最新（md5=${assetMd5.take(8)}），跳过投递")
             return
         }
+
+        // 覆盖前先让旧 daemon 退出：它持有的是旧 dex 的已解析方法表，
+        // 文件被换掉后再触发解析会崩（见上方注释）。旧 daemon 不存在时本步无副作用。
+        stopStaleDaemon()
 
         // 经 APK 自身抽取：shell 读得到 /data/app 下的 base.apk（实测 0644 system:system），
         // 但读不到 app 私有目录。用 `unzip -p` 直接输出到目标文件，dex 不落中间文件。
@@ -217,17 +232,40 @@ class VirtualScreenHostManager @Inject constructor(
         if (result.exitCode != 0) {
             throw IllegalStateException("抽取 dex 失败（exit=${result.exitCode}）: ${result.output.take(200)}")
         }
-        val written = remoteFileSize()
-        if (written != assetBytes.size.toLong()) {
-            throw IllegalStateException("dex 投递校验失败：期望 ${assetBytes.size} 字节，实得 $written")
+        val writtenMd5 = remoteFileMd5()
+        if (writtenMd5 == null || !writtenMd5.equals(assetMd5, ignoreCase = true)) {
+            throw IllegalStateException(
+                "dex 投递校验失败：期望 md5=$assetMd5，实得 $writtenMd5"
+            )
         }
-        FileLogger.i(TAG, "dex 已投递到 $SHELL_DIR/host.dex（$written 字节）")
+        FileLogger.i(TAG, "dex 已投递到 $SHELL_DIR/host.dex（md5=${assetMd5.take(8)}）")
     }
 
-    private suspend fun remoteFileSize(): Long {
-        val result: ShizukuCommandResult =
-            shizukuManager.runCommand("stat -c %s $SHELL_DIR/host.dex 2>/dev/null", 5_000L)
-        return result.output.trim().toLongOrNull() ?: -1L
+    /** 让可能存在的旧 daemon 退出；未运行时不产生副作用。 */
+    private suspend fun stopStaleDaemon() {
+        val pong = send("PING", 2_000L)
+        if (pong?.lineSequence()?.firstOrNull { it.startsWith(TAG_PONG) } == null) {
+            FileLogger.d(TAG, "无在跑的 daemon，直接投递 dex")
+            return
+        }
+        FileLogger.i(TAG, "检测到在跑的 daemon，先停掉再覆盖 dex")
+        send("EXIT", 3_000L)
+        // EXIT 后 daemon 需 sib 时间收尾（releaseAll 会逐个 release 虚拟屏）。
+        kotlinx.coroutines.delay(EXIT_SETTLE_MS)
+    }
+
+    private fun md5Hex(bytes: ByteArray): String =
+        java.security.MessageDigest.getInstance("MD5").digest(bytes)
+            .joinToString("") { "%02x".format(it) }
+
+    /** 远端 host.dex 的 md5；文件不存在或工具不可用时返回 null。 */
+    private suspend fun remoteFileMd5(): String? {
+        val result: ShizukuCommandResult = shizukuManager.runCommand(
+            "md5sum $SHELL_DIR/host.dex 2>/dev/null | cut -d' ' -f1",
+            5_000L
+        )
+        val raw = result.output.trim().substringBefore('\n').trim()
+        return raw.takeIf { it.length == 32 && it.all { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' } }
     }
 
     /**
