@@ -106,6 +106,19 @@ public class VirtualScreenHost {
     private static final java.util.Map<Integer, VirtualDisplay> DISPLAYS =
             new java.util.HashMap<Integer, VirtualDisplay>();
 
+    /**
+     * 每块屏投过的包名，与 [DISPLAYS] 同生命周期。
+     *
+     * <p><b>为什么自己记账而不查询系统</b>：曾经用 `dumpsys activity activities | grep -A4
+     * 'Display #<id> '` 反查，再从不含空格的 " u0 <pkg>/<activity>" 里截包名。该写法会
+     * **越过 Display 段边界**——空屏段落自身没有匹配行时，`grep -A4` 继续吃后面的全局记录（如
+     * `ResumedActivity: ...`），于是把**主屏前台应用**当成该屏的目标应用。实测后果：关闭一个
+     * 空虚拟屏会 `am force-stop` 掉用户正在用的应用。包名在 [launch] 时本就已知，直接记下来
+     * 既准确又不依赖 dumpsys 文本格式。
+     */
+    private static final java.util.Map<Integer, String> PACKAGES =
+            new java.util.HashMap<Integer, String>();
+
     public static void main(String[] args) throws Exception {
         Looper.prepare();
         callerPackage = System.getProperty("pkg", "com.android.shell");
@@ -342,6 +355,7 @@ public class VirtualScreenHost {
     private static void launch(int displayId, String packageName) throws Exception {
         String activity = resolveLauncherActivity(packageName);
         shell("am start --display " + displayId + " -n " + activity);
+        PACKAGES.put(displayId, packageName);
         shell("input -d " + displayId + " keyevent 224");
     }
 
@@ -365,7 +379,7 @@ public class VirtualScreenHost {
      * <p>最后必须 {@code release()}：仅靠进程退出不会销毁虚拟屏（实测残留孤儿屏）。
      */
     private static void close(int displayId) throws Exception {
-        String pkg = topPackageOnDisplay(displayId);
+        String pkg = PACKAGES.get(displayId);
         if (pkg != null && !pkg.isEmpty()) {
             shell("am force-stop " + pkg);
             releaseDisplay(displayId);
@@ -376,6 +390,7 @@ public class VirtualScreenHost {
 
     private static void releaseDisplay(int displayId) {
         VirtualDisplay vd = DISPLAYS.remove(displayId);
+        PACKAGES.remove(displayId);
         if (vd == null) {
             println("VDS_WARN 未知 displayId=" + displayId + "，无引用可释放");
             return;
@@ -390,7 +405,7 @@ public class VirtualScreenHost {
     /** 退出前释放全部虚拟屏，避免留下孤儿屏。 */
     private static void releaseAll() {
         for (Integer id : new java.util.ArrayList<Integer>(DISPLAYS.keySet())) {
-            String pkg = topPackageOnDisplay(id);
+            String pkg = PACKAGES.get(id);
             if (pkg != null && !pkg.isEmpty()) {
                 try {
                     shell("am force-stop " + pkg);
@@ -399,22 +414,6 @@ public class VirtualScreenHost {
             }
             releaseDisplay(id);
         }
-    }
-
-    private static String topPackageOnDisplay(int displayId) {
-        try {
-            String out = shell("dumpsys activity activities | grep -A4 'Display #" + displayId + " '");
-            for (String s : out.split("\n")) {
-                int i = s.indexOf(" u0 ");
-                if (i >= 0) {
-                    String rest = s.substring(i + 4);
-                    int slash = rest.indexOf('/');
-                    if (slash > 0) return rest.substring(0, slash);
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return null;
     }
 
     private static String shell(String command) throws Exception {

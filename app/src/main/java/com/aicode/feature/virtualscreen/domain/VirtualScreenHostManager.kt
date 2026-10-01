@@ -66,8 +66,11 @@ class VirtualScreenHostManager @Inject constructor(
         /** shell 私有目录，shell(2000) 与 app_process 子进程都可读写。 */
         const val SHELL_DIR = "/data/data/com.android.shell/files/virtualscreen"
 
-        /** dex 在 APK 内的路径（注意含 `assets/` 前缀，`unzip -p` 需完整路径）。 */
-        const val ASSET_PATH = "assets/virtualscreen/host.dex"
+        /** dex 的 asset 路径。`AssetManager.open` 要的是这条无 `assets/` 前缀的写法。 */
+        const val ASSET_PATH = "virtualscreen/host.dex"
+
+        /** 同一文件在 zip 里的条目路径；`unzip -p` 必须带 `assets/` 前缀。 */
+        const val APK_ENTRY_PATH = "assets/$ASSET_PATH"
 
         const val TAG_READY = "VDS_READY"
         const val TAG_LISTENING = "VDS_LISTENING"
@@ -209,7 +212,7 @@ class VirtualScreenHostManager @Inject constructor(
         // 经 APK 自身抽取：shell 读得到 /data/app 下的 base.apk（实测 0644 system:system），
         // 但读不到 app 私有目录。用 `unzip -p` 直接输出到目标文件，dex 不落中间文件。
         val apkPath = context.applicationInfo.sourceDir
-        val cmd = "mkdir -p $SHELL_DIR && unzip -p '$apkPath' '$ASSET_PATH' > $SHELL_DIR/host.dex"
+        val cmd = "mkdir -p $SHELL_DIR && unzip -p '$apkPath' '$APK_ENTRY_PATH' > $SHELL_DIR/host.dex"
         val result = shizukuManager.runCommand(cmd, LAUNCH_TIMEOUT_MS)
         if (result.exitCode != 0) {
             throw IllegalStateException("抽取 dex 失败（exit=${result.exitCode}）: ${result.output.take(200)}")
