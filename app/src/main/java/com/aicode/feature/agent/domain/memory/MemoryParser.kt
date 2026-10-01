@@ -17,8 +17,7 @@ object MemoryParser {
             return null
         }
 
-        val (frontmatter, body) = splitAndParseFrontmatter(text)
-
+        val (frontmatter, body, malformed) = splitAndParseFrontmatter(text)
         val name = frontmatter["name"]?.toString()?.trim()?.takeIf { it.isNotBlank() } ?: file.nameWithoutExtension
         val description = (frontmatter["description"]?.toString() ?: "").take(MAX_DESC_CHARS)
         val pinned = frontmatter["pinned"]?.let { it == true || it.toString().equals("true", ignoreCase = true) } ?: false
@@ -33,7 +32,8 @@ object MemoryParser {
             file = file,
             content = body.trim(),
             pinned = pinned,
-            triggers = triggers
+            triggers = triggers,
+            malformed = malformed,
         )
     }
 
@@ -88,13 +88,20 @@ object MemoryParser {
      * 切分并解析 frontmatter。切分/空 frontmatter 边界由 [FrontmatterCodec] 唯一实现，
      * 与 SkillParser/AgentDefinitionParser 不再各持一份副本。
      * 不启用 `repair`（本类原先无裸标量补引号能力，保持行为不变）。
+     *
+     * @return 三元组 `(元数据, 正文, 是否畸形)`；畸形指起始符缺闭合符（[FrontmatterCodec.Status.UNCLOSED]），
+     *   已尽力恢复元数据，但仍标记出来让 [MemorySource.editMemory] 拒绝回写（避免把畸形固化）。
      */
-    private fun splitAndParseFrontmatter(text: String): Pair<Map<String, Any>, String> {
-        val (block, body) = FrontmatterCodec.split(text)
-        if (block == null) return emptyMap<String, Any>() to body
+    private fun splitAndParseFrontmatter(text: String): Triple<Map<String, Any>, String, Boolean> {
+        val (block, body, status) = FrontmatterCodec.split(text) { kind ->
+            FileLogger.w(TAG, "$kind（记忆）" + if (kind == FrontmatterCodec.UNCLOSED) "——description/triggers 可能失效，建议重写该记忆文件" else "")
+        }
+        if (block == null) {
+            return Triple(emptyMap(), body, status == FrontmatterCodec.Status.UNCLOSED)
+        }
         val meta = FrontmatterCodec.parse(block, repair = false) { kind, e ->
             FileLogger.w(TAG, "$kind（记忆）", e)
         }
-        return meta to body
+        return Triple(meta, body, status == FrontmatterCodec.Status.UNCLOSED)
     }
 }

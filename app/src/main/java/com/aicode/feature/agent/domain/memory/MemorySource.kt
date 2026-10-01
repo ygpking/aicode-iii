@@ -58,6 +58,16 @@ interface MemorySource {
         if (edits.isEmpty()) {
             return MemoryEditResult.Error("EMPTY_EDITS", "edits 不能为空，请至少提供一个 {old_string,new_string} 编辑")
         }
+        // 拒绝回写无法安全往返的文件：
+        // ① malformed（起始符缺闭合符，见 FrontmatterCodec.UNCLOSED）：正文可能已被当成元数据行截断；
+        // ② 正文以 `---` 开头（多块重复追加，见 FrontmatterCodec.NESTED）：回写会保留畸形并把真元数据继续往下压。
+        // 两者都会「越改越坏」，宁可报错请调用方用 save 重写整条，也不静默损坏。
+        if (memory.malformed || memory.content.trimStart().startsWith("---")) {
+            return MemoryEditResult.Error(
+                "MALFORMED_FRONTMATTER",
+                "记忆「${memory.name}」的 frontmatter 畸形（未闭合或重复追加），直接编辑会固化畸形。请改用 save 重写该记忆。"
+            )
+        }
 
         var content = memory.content
         edits.forEachIndexed { i, e ->

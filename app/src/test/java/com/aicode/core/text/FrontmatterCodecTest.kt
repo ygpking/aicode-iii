@@ -23,12 +23,58 @@ class FrontmatterCodecTest {
         assertEquals("just body\nno frontmatter", split.body)
     }
 
+    /**
+     * 未闭合（缺结束符）不再静默当「无元数据」：2026-09-30 一次外部批量重写记忆文件时漏写闭合符，
+     * 17/20 条记忆的 description/triggers 被静默丢弃（当时无任何日志）。现为「尽力恢复 + 告警」。
+     */
     @Test
-    fun unclosedFrontmatter_treatedAsNoMetadata() {
-        val text = "---\nname: x\n"
-        val split = FrontmatterCodec.split(text)
+    fun unclosedFrontmatter_recoversMetaAndWarns() {
+        val text = "---\nname: x\ndescription: hi\ntriggers: [a, b]\n# 正文\n\n内容"
+        val warns = mutableListOf<String>()
+        val split = FrontmatterCodec.split(text) { warns.add(it) }
+        assertEquals(FrontmatterCodec.Status.UNCLOSED, split.status)
+        assertEquals("name: x\ndescription: hi\ntriggers: [a, b]", split.block)
+        assertEquals("# 正文\n\n内容", split.body)
+        assertEquals(listOf(FrontmatterCodec.UNCLOSED), warns)
+    }
+
+    /** 未闭合但起始符后并无可识别的 `key: 值` 行 → 无从恢复，退回「无元数据」，仍须告警。 */
+    @Test
+    fun unclosedWithoutMetaLines_fallsBackToNoMetadata() {
+        val warns = mutableListOf<String>()
+        val split = FrontmatterCodec.split("---\njust body\nmore") { warns.add(it) }
         assertNull(split.block)
-        assertEquals(text, split.body)
+        assertEquals(FrontmatterCodec.Status.UNCLOSED, split.status)
+        assertEquals(listOf(FrontmatterCodec.UNCLOSED), warns)
+    }
+
+    /** 恢复后正文与元数据分离：此前 `memory read` 会把 `---\nname: ...` 一并当正文显示给模型。 */
+    @Test
+    fun unclosedRecovery_separatesBodyFromMeta() {
+        val split = FrontmatterCodec.split("---\nname: x\nbody text")
+        assertEquals("name: x", split.block)
+        assertEquals("body text", split.body)
+    }
+
+    /** 正常块但正文又以 `---` 开头 → 疑似整块重复追加，只告警、不改行为。 */
+    @Test
+    fun nestedFrontmatter_warnsButKeepsBehavior() {
+        val text = "---\nname: a\ndescription: \"\"\n---\n---\nname: a\ndescription: real"
+        val warns = mutableListOf<String>()
+        val split = FrontmatterCodec.split(text) { warns.add(it) }
+        assertEquals(FrontmatterCodec.Status.OK, split.status)
+        assertEquals("name: a\ndescription: \"\"", split.block)
+        assertEquals(listOf(FrontmatterCodec.NESTED), warns)
+    }
+
+    /** 正常文件与空 frontmatter 都不得告警（空 frontmatter 是合法写法）。 */
+    @Test
+    fun normalAndEmptyFrontmatter_doNotWarn() {
+        val warns = mutableListOf<String>()
+        FrontmatterCodec.split("---\nname: demo\n---\nbody") { warns.add(it) }
+        FrontmatterCodec.split("---\n---\nbody") { warns.add(it) }
+        FrontmatterCodec.split("no frontmatter") { warns.add(it) }
+        assertTrue("正常/空/无 frontmatter 均不应告警，实际: $warns", warns.isEmpty())
     }
 
     /** 曾崩溃的边界：`end == 3`，不得抛 StringIndexOutOfBoundsException。 */

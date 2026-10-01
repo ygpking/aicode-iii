@@ -73,7 +73,9 @@ object SkillParser {
      * @return (frontmatter 键值对, 正文)
      */
     private fun splitAndParseFrontmatter(text: String, source: String?): Pair<Map<String, Any>, String> {
-        val (block, body) = FrontmatterCodec.split(text)
+        val (block, body) = FrontmatterCodec.split(text) { kind ->
+            FileLogger.w(TAG, "$kind${at(source)}" + if (kind == FrontmatterCodec.UNCLOSED) "——该技能 name/description 可能回退兜底值" else "")
+        }
         if (block == null) return emptyMap<String, Any>() to body
         val meta = FrontmatterCodec.parse(block, repair = true) { kind, _ ->
             FileLogger.w(TAG, "$kind${at(source)}" + if (kind == FrontmatterCodec.FAILED) "——该技能 name/description 回退兜底值，可能不会被模型启用" else "")

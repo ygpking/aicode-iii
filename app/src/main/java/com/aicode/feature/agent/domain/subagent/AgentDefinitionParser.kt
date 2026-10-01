@@ -78,7 +78,9 @@ object AgentDefinitionParser {
      * 不启用 `repair`：本类原先没有裸标量补引号能力，抽取时保持行为不变（不扩大也不缩小）。
      */
     private fun splitAndParseFrontmatter(text: String): Pair<Map<String, Any>, String> {
-        val (block, body) = FrontmatterCodec.split(text)
+        val (block, body) = FrontmatterCodec.split(text) { kind ->
+            FileLogger.w(TAG, "$kind（子代理定义）" + if (kind == FrontmatterCodec.UNCLOSED) "——name/description 可能回退兜底值" else "")
+        }
         if (block == null) return emptyMap<String, Any>() to body
         val meta = FrontmatterCodec.parse(block, repair = false) { kind, e ->
             FileLogger.w(TAG, "$kind（子代理定义）", e)
