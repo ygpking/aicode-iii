@@ -85,7 +85,9 @@ internal enum class TemporalDecay(val halfLifeMs: Long) {
  * 一条可被召回的记忆。
  *
  * @param id 稳定标识（记忆名），用于去重与排序兜底。
- * @param scope 作用域，参与打分加权（项目级权重更高）。
+ * @param scope 作用域。**仅用于渲染标注**（`scope=global/project`），**不参与打分加权**——
+ *   `MemoryRepository.listMemories` 已按名称去重且项目级覆盖全局级，一份记忆只会以项目自身作用域的
+ *   身份出现；再按作用域加权是恒等变换，且「项目级权重更高」对未被覆盖的全局记忆不成立。
  * @param text 记忆正文。
  * @param pinned true 表示「必常驻」：与相关性正交，召回时直接置顶。
  * @param updatedAtMs 最近更新时间，用于同分时的稳定排序。
@@ -106,7 +108,7 @@ internal data class RecallDoc(
 /**
  * 记忆召回选择器：给当前查询挑出最相关的若干条记忆，渲染成可挂到本轮 user 消息后缀的文本块。
  *
- * 打分用 BM25（CJK 由 [tokenizeForRecall] 的 bigram 支撑），再按 scope 轻微加权；泛化查询
+ * 打分用 BM25（CJK 由 [tokenizeForRecall] 的 bigram 支撑）。泛化查询
  * （「继续」「好的」这类）一律不召回，避免噪声把上下文撑大。
  *
  * 纯函数、零 IO、结果确定：同一 (query, docs) 必得同一结果，故可安全地每轮重算而不产生漂移。
