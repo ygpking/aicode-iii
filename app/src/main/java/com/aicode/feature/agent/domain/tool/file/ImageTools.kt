@@ -6,30 +6,19 @@ import android.util.Base64
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
-import com.aicode.feature.agent.data.remote.anthropic.AnthropicApi
-import com.aicode.feature.agent.data.remote.gemini.GeminiApi
-import com.aicode.feature.agent.data.remote.openai.OpenAIApi
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.AgentImage
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.provider.AIProvider
 import com.aicode.feature.agent.domain.provider.AIResponse
-import com.aicode.feature.agent.domain.provider.AnthropicAdapter
-import com.aicode.feature.agent.domain.provider.fixedTemperature
-import com.aicode.feature.agent.domain.provider.GeminiAdapter
-import com.aicode.feature.agent.domain.provider.OpenAIAdapter
-import com.aicode.feature.agent.domain.session.SessionUseCase
+import com.aicode.feature.agent.domain.provider.ResolvedChatProvider
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolParameter
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.settings.data.remote.ModelMetadataService
-import com.aicode.feature.settings.data.repository.DefaultModelSettingsRepository
-import com.aicode.feature.settings.data.repository.GeneralSettingsRepository
 import com.aicode.feature.settings.data.repository.VisionModelSettingsRepository
-import com.aicode.feature.settings.domain.model.AIProviderConfig
-import com.aicode.feature.settings.domain.model.ProviderType
 import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.coroutines.CancellationException
@@ -55,15 +44,10 @@ class ViewImageTool @Inject constructor(
     private val fileAccess: FileAccessProvider,
     private val visionSessionStore: VisionSessionStore,
     private val aiProviderRepository: AIProviderRepository,
-    private val defaultModelSettingsRepository: DefaultModelSettingsRepository,
-    private val generalSettingsRepository: GeneralSettingsRepository,
     private val visionModelSettingsRepository: VisionModelSettingsRepository,
     private val modelMetadataService: ModelMetadataService,
-    private val sessionUseCase: SessionUseCase,
-    private val llmCallRecordDao: LlmCallRecordDao,
-    private val openAIApi: OpenAIApi,
-    private val anthropicApi: AnthropicApi,
-    private val geminiApi: GeminiApi
+    private val resolvedChatProvider: ResolvedChatProvider,
+    private val llmCallRecordDao: LlmCallRecordDao
 ) : AbstractContextualTool() {
     override val name = "viewImage"
     override val description = "查看本地图片并让识图模型分析。传 images（1~5 张图片路径）可让识图模型一次性对比/分析多张图片，返回分析结果与 vision_id；之后可传 vision_id + prompt 在同一识图会话内继续追问（识图模型记得图片与之前的问答）。prompt 为可选的提问或关注点，为空时识图模型默认描述图片内容。detail 控制图片清晰度：high（默认）小图原样直传、大图压缩到最长边 1536；original 全部原样直传；low 全部压缩到最长边 512 省 token。"
@@ -275,7 +259,7 @@ class ViewImageTool @Inject constructor(
      * （session 绑定 provider 优先，回退全局默认）。不校验模型的视觉能力。
      */
     private suspend fun isCurrentChatModelSupportsVision(sessionId: String?): Boolean {
-        val config = resolveCurrentChatConfig(sessionId) ?: return false
+        val config = resolvedChatProvider.resolveCurrentChatConfig(sessionId) ?: return false
         val metadata = modelMetadataService.resolve(config.id, config.type, config.effectiveModel)
         return metadata.supportsVision
     }
@@ -286,64 +270,14 @@ class ViewImageTool @Inject constructor(
         if (visionProviderId.isNotEmpty() && visionModel.isNotEmpty()) {
             val config = aiProviderRepository.getProviderById(visionProviderId)
             if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
-                return createStandaloneProvider(config.copy(selectedModel = visionModel), sessionId)
+                return resolvedChatProvider.create(config.copy(selectedModel = visionModel), sessionId)
             }
         }
-        val config = resolveCurrentChatConfig(sessionId)
+        val config = resolvedChatProvider.resolveCurrentChatConfig(sessionId)
             ?: throw IllegalStateException("尚未配置 AI 供应商，请到设置中添加并选择一个")
         if (config.apiKey.isBlank()) throw IllegalStateException("「${config.name}」未填写 API Key")
         if (config.effectiveModel.isBlank()) throw IllegalStateException("「${config.name}」未选择模型")
-        return createStandaloneProvider(config, sessionId)
-    }
-
-    private suspend fun resolveCurrentChatConfig(sessionId: String?): AIProviderConfig? {
-        if (sessionId != null) {
-            val session = sessionUseCase.getSessionById(sessionId)
-            val boundProviderId = session?.providerId
-            val boundModel = session?.model
-            if (!boundProviderId.isNullOrBlank()) {
-                val config = aiProviderRepository.getProviderById(boundProviderId)
-                if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
-                    return if (!boundModel.isNullOrBlank()) config.copy(selectedModel = boundModel) else config
-                }
-            }
-        }
-        val defaultProviderId = defaultModelSettingsRepository.getDefaultProviderId()
-        val defaultModel = defaultModelSettingsRepository.getDefaultModel()
-        if (defaultProviderId.isNotBlank() && defaultModel.isNotBlank()) {
-            val config = aiProviderRepository.getProviderById(defaultProviderId)
-            if (config != null && config.isEnabled && config.apiKey.isNotBlank()) {
-                return config.copy(selectedModel = defaultModel)
-            }
-        }
-        return null
-    }
-
-    private suspend fun createStandaloneProvider(config: AIProviderConfig, sessionId: String?): AIProvider {
-        val provider: AIProvider = when (config.type) {
-            ProviderType.ANTHROPIC -> AnthropicAdapter(anthropicApi).also {
-                it.cacheBreakpointsEnabled = config.anthropicCacheBreakpoints
-            }
-            ProviderType.GEMINI -> GeminiAdapter(geminiApi)
-            else -> OpenAIAdapter(openAIApi).also {
-                it.chatCacheKeyEnabled = config.openaiChatCacheKey
-            }
-        }
-        provider.apiKey = config.apiKey
-        provider.baseUrl = config.baseUrl
-        provider.model = config.effectiveModel
-        provider.useFullUrl = config.useFullUrl
-        provider.useResponseApi = config.useResponseApi
-        provider.providerId = config.id
-        provider.logSessionId = sessionId
-        provider.customHeaders = config.customHeaders
-        val metadata = modelMetadataService.resolve(config.id, config.type, config.effectiveModel)
-        provider.maxOutputTokens = metadata.outputTokens
-        provider.temperature = if (metadata.supportsCustomTemperature) fixedTemperature(config.effectiveModel) else null
-        provider.firstByteTimeoutMs = generalSettingsRepository.firstByteTimeoutMs()
-        provider.streamIdleTimeoutMs = generalSettingsRepository.streamIdleTimeoutMs()
-        provider.maxNetworkRetries = generalSettingsRepository.maxNetworkRetries()
-        return provider
+        return resolvedChatProvider.create(config, sessionId)
     }
 
     private fun encodeImage(path: String, detail: String): EncodeOutcome {

@@ -1,9 +1,11 @@
 package com.aicode.feature.agent.domain.tool.memory
 
 import com.aicode.core.util.FileLogger
-import com.aicode.feature.agent.domain.memory.MemoryEdit
 import com.aicode.feature.agent.domain.memory.MemoryCuration
+import com.aicode.feature.agent.domain.memory.MemoryCurationService
+import com.aicode.feature.agent.domain.memory.MemoryEdit
 import com.aicode.feature.agent.domain.memory.MemoryEditResult
+import com.aicode.feature.agent.domain.memory.MemoryExtraction
 import com.aicode.feature.agent.domain.memory.MemoryRepository
 import com.aicode.feature.agent.domain.memory.MemoryRetention
 import com.aicode.feature.agent.domain.memory.MemoryScope
@@ -24,7 +26,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 
 class MemoryTool @Inject constructor(
-    private val memoryRepository: MemoryRepository
+    private val memoryRepository: MemoryRepository,
+    private val memoryCurationService: MemoryCurationService
 ) : AbstractContextualTool() {
     private companion object {
         const val TAG = "MemoryTool"
@@ -36,7 +39,7 @@ class MemoryTool @Inject constructor(
 
     override fun effectiveCapabilities(args: Map<String, JsonElement>): Set<ToolCapability> {
         return when (args["action"]?.jsonPrimitive?.contentOrNull) {
-            "read", "list", "curate" -> setOf(ToolCapability.READ_AGENT_CONFIG)
+            "read", "list", "curate", "propose" -> setOf(ToolCapability.READ_AGENT_CONFIG)
             else -> capabilities
         }
     }
@@ -67,8 +70,8 @@ class MemoryTool @Inject constructor(
         "action" to ToolParameter(
             name = "action",
             type = ParameterType.STRING,
-            description = "操作类型：read=读取记忆正文；save=保存记忆（创建或全量覆盖）；edit=对已有记忆正文做局部编辑；delete=删除记忆；list=列出所有记忆摘要；curate=只读评估存量记忆的整理建议（近重复/正文过大/缺 triggers）；prune=清理超过指定天数未更新的陈旧记忆（破坏性，默认先预览）",
-            enum = listOf("read", "save", "edit", "delete", "list", "curate", "prune"),
+            description = "操作类型：read=读取记忆正文；save=保存记忆（创建或全量覆盖）；edit=对已有记忆正文做局部编辑；delete=删除记忆；list=列出所有记忆摘要；curate=只读评估存量记忆的整理建议（近重复/正文过大/缺 triggers）；propose=让模型从素材提炼记忆候选（**不写盘**，返回回执 id 供确认）；apply=按回执 id 写入候选（**会覆盖同名记忆**，写前自动备份）；prune=清理超过指定天数未更新的陈旧记忆（破坏性，默认先预览）",
+            enum = listOf("read", "save", "edit", "delete", "list", "curate", "propose", "apply", "prune"),
             required = true
         ),
         "name" to ToolParameter(
@@ -127,6 +130,19 @@ class MemoryTool @Inject constructor(
             type = ParameterType.BOOLEAN,
             description = "prune 可选，默认 true：只列出将被清理的记忆，不真删。确认名单无误后传 false 执行删除。",
             required = false
+        ),
+        "source" to ToolParameter(
+            name = "source",
+            type = ParameterType.STRING,
+            description = "propose 的素材来源：conversation=从当前会话历史提炼用户偏好/约定（默认）；notes=从现有记忆里找可合并/补全的条目。",
+            enum = listOf("conversation", "notes"),
+            required = false
+        ),
+        "receipt_id" to ToolParameter(
+            name = "receipt_id",
+            type = ParameterType.STRING,
+            description = "apply 必填：propose 返回的回执 id。",
+            required = false
         )
     )
 
@@ -145,6 +161,8 @@ class MemoryTool @Inject constructor(
             when (action) {
                 "list" -> handleList(context.projectRoot)
                 "curate" -> handleCurate(context.projectRoot)
+                "propose" -> handlePropose(args, context)
+                "apply" -> handleApply(args, context)
                 "read" -> handleRead(memoryName, context.projectRoot)
                 "save" -> handleSave(args, memoryName, scope, context.projectRoot)
                 "edit" -> handleEdit(args, memoryName, scope, context.projectRoot)
@@ -175,6 +193,51 @@ class MemoryTool @Inject constructor(
             ""
         }
         return ToolResult.Success(JsonPrimitive("当前记忆列表：\n$list$staleNote"))
+    }
+
+    /**
+     * 从素材提炼候选记忆。**只生成候选、绝不写盘**：记忆写错比漏记更糟，故必须先经确认。
+     */
+    private suspend fun handlePropose(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
+        val source = when (args["source"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()) {
+            "notes" -> MemoryExtraction.Source.NOTES
+            else -> MemoryExtraction.Source.CONVERSATION
+        }
+        val outcome = memoryCurationService.propose(source, context.projectRoot, context.sessionId)
+        outcome.error?.let { return ToolResult.Error(it, "CURATION_FAILED") }
+
+        val p = outcome.proposal
+        if (p.items.isEmpty()) {
+            val why = if (p.rejected.isEmpty()) "未发现值得长期保存的内容"
+            else "候选均未通过逐字证据校验：${p.rejected.joinToString("；")}"
+            return ToolResult.Success(JsonPrimitive("提炼完成，但没有可写入的条目（$why）。"))
+        }
+        val sb = StringBuilder("已提炼 ${p.items.size} 条候选（**尚未写入**，回执 id=${outcome.receiptId}）：")
+        p.items.forEach { item ->
+            val act = if (item.isMerge) "合并到「${item.targetName}」" else "新建"
+            sb.append("\n\n[").append(act).append("] ").append(item.name)
+            sb.append("\n  摘要：").append(item.description)
+            sb.append("\n  触发词：").append(item.triggers.joinToString(", "))
+            sb.append("\n  证据：").append(item.evidence.take(160))
+        }
+        if (p.rejected.isNotEmpty()) {
+            sb.append("\n\n另有 ").append(p.rejected.size).append(" 条未通过校验已丢弃：")
+            p.rejected.forEach { sb.append("\n- ").append(it) }
+        }
+        sb.append("\n确认后调 memory(action=apply, receipt_id=${outcome.receiptId}) 写入（写前会自动备份被覆盖的记忆）。")
+        return ToolResult.Success(JsonPrimitive(sb.toString()))
+    }
+
+    /** 按回执写入候选。**破坏性**：会覆盖同名记忆，故写前自动备份。 */
+    private suspend fun handleApply(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
+        val receiptId = args["receipt_id"]?.jsonPrimitive?.contentOrNull?.trim()
+        if (receiptId.isNullOrEmpty()) return ToolResult.Error("apply 操作需要 receipt_id 参数（来自 propose）", "MISSING_RECEIPT_ID")
+        val result = memoryCurationService.apply(receiptId, context.projectRoot, context.sessionId)
+        result.error?.let { return ToolResult.Error(it, "APPLY_FAILED") }
+        val backup = result.backupDir?.let { "，被覆盖的原文件已备份到 $it" } ?: ""
+        return ToolResult.Success(
+            JsonPrimitive("已写入 ${result.written.size} 条记忆：\n" + result.written.joinToString("\n") { "- $it" } + backup)
+        )
     }
 
     /**
