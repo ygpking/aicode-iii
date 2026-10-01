@@ -36,7 +36,7 @@ triggers: [规范, 命名, 约定]
 
 | 参数 | 说明 |
 | --- | --- |
-| `action` | `read` / `save` / `edit` / `delete` / `list` / `prune` |
+| `action` | `read` / `save` / `edit` / `delete` / `list` / `curate` / `propose` / `apply` / `prune` |
 | `name` | 记忆名称（即文件名） |
 | `description` | 摘要，`save` 时必填 |
 | `content` | 正文（Markdown），`save` 时必填 |
@@ -45,10 +45,29 @@ triggers: [规范, 命名, 约定]
 | `triggers` | 触发词列表（可选），用于后续对话自动召回该记忆；`save` 时不传则保留该记忆已有触发词，传空数组 `[]` 则清空 |
 | `stale_days` | 仅 `prune`：超过多少天未更新即视为陈旧，必须为正整数 |
 | `dry_run` | 仅 `prune`：默认 `true` 只列出候选、不删除；确认后才传 `false` 执行 |
+| `source` | 仅 `propose`：`conversation`（默认，从当前会话历史提炼用户偏好/约定）或 `notes`（从既有记忆中找可合并、可补全的条目） |
+| `receipt_id` | 仅 `apply`：要执行的候选回执 id（`propose` 的返回值） |
 
 保存时可带 `triggers` 触发词列表：对话中用户提到触发词时，AI 会按主题召回对应记忆。
 
 同名记忆项目级优先于全局。更新既有记忆时建议使用 `edit` 局部编辑；涉及踩坑经验的内容，应在验证根因后记录。
+
+### 从素材提炼记忆
+
+除手动 `save` 之外，还可让 AI 从既有素材中提炼候选：
+
+1. `memory(action="propose", source="conversation")`——从当前会话历史提炼；`source="notes"` 则从既有记忆中找可合并、可补全的条目。
+2. 工具返回候选与一个 `receipt_id`；**此步不写任何文件**。
+3. 确认候选无误后，`memory(action="apply", receipt_id="…")` 才真正写入。
+
+提炼有两条硬约束：
+
+- **证据必须逐字来自素材**。每条候选都要附上原文片段，对不上原文的整条丢弃并如实回报——模型「总结出」的漂亮结论若在素材中找不到出处，一律不算。
+- **绝不直接写盘**。`propose` 只产候选；写入必须由 `apply` 显式触发，且覆盖同名记忆前会先把原文备份到 `memory/.curation/backup-<receipt_id>/`。回执本身留在 `memory/.curation/` 供事后核对。
+
+若 `propose` 返回空候选，说明素材中确实没有值得长期保留的内容，属正常结果（被拒条目及原因会一并回报）。
+
+> 设计取舍：提炼是「有损压缩」，错记的记忆会被注入后续每轮对话并影响行为，比漏记更糟。因此宁可多一次确认，也不让模型直接落盘。
 
 ### 清理陈旧记忆
 
