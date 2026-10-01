@@ -102,8 +102,20 @@ class MemoryCurationService @Inject constructor(
     /**
      * 执行一份回执里的写入（**破坏性**：会覆盖同名记忆）。写前把将被覆盖的文件备份到
      * `.curation/backup-<receiptId>/`，回执本身留在 `.curation/` 供事后核对。
+     *
+     * [scope] 由调用方（工具参数）**显式传入**，不得由 `projectRoot` 推导——设备实测发现：
+     * 早期实现按 `projectRoot.isNullOrBlank()` 推导，连着工作区时 `scope=global` 被静默忽略，
+     * 文件写到了项目级，用户既无法写全局也无任何提示（与 `save` 尊重 scope 的行为不对称）。
      */
-    suspend fun apply(receiptId: String, projectRoot: String?, sessionId: String?): ApplyResult {
+    suspend fun apply(
+        receiptId: String,
+        scope: MemoryScope,
+        projectRoot: String?,
+        sessionId: String?,
+    ): ApplyResult {
+        if (scope == MemoryScope.PROJECT && projectRoot.isNullOrBlank()) {
+            return ApplyResult(emptyList(), null, "当前未选择工作区，无法写入项目级记忆。请改用 scope=global")
+        }
         val receiptFile = File(receiptDir(), "$receiptId.json")
         if (!receiptFile.isFile) return ApplyResult(emptyList(), null, "找不到回执 $receiptId（可能已被清理或从未来过 propose）")
         val receipt = runCatching { json.decodeFromString<CurationReceipt>(receiptFile.readText()) }.getOrElse {
@@ -112,7 +124,6 @@ class MemoryCurationService @Inject constructor(
         if (receipt.items.isEmpty()) return ApplyResult(emptyList(), null, "该回执没有任何条目")
 
         val backupDir = File(receiptDir(), "backup-$receiptId").also { it.mkdirs() }
-        val scope = if (projectRoot.isNullOrBlank()) MemoryScope.GLOBAL else MemoryScope.PROJECT
         val written = ArrayList<String>()
 
         for (item in receipt.items) {

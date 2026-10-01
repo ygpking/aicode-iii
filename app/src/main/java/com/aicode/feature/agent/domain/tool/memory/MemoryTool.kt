@@ -232,7 +232,13 @@ class MemoryTool @Inject constructor(
     private suspend fun handleApply(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
         val receiptId = args["receipt_id"]?.jsonPrimitive?.contentOrNull?.trim()
         if (receiptId.isNullOrEmpty()) return ToolResult.Error("apply 操作需要 receipt_id 参数（来自 propose）", "MISSING_RECEIPT_ID")
-        val result = memoryCurationService.apply(receiptId, context.projectRoot, context.sessionId)
+        // 作用域从工具参数读出（与 save 同一口径），不得由 projectRoot 推导。
+        val scope = if (args["scope"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase() == "global") {
+            MemoryScope.GLOBAL
+        } else {
+            MemoryScope.PROJECT
+        }
+        val result = memoryCurationService.apply(receiptId, scope, context.projectRoot, context.sessionId)
         result.error?.let { return ToolResult.Error(it, "APPLY_FAILED") }
         val backup = result.backupDir?.let { "，被覆盖的原文件已备份到 $it" } ?: ""
         return ToolResult.Success(
