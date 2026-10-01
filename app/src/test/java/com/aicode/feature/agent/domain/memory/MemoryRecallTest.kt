@@ -117,6 +117,52 @@ class MemoryRecallTest {
         assertTrue(MemoryRecall.select("BM25 排序算法", docs).isEmpty())
     }
 
+    // ---------- 相关性需「多字符 token」命中（防单字档板捞） ----------
+    //
+    // CJK 逐字切分会产出大量单字 token，而「器/好/不/发」这类字几乎每条记忆都有；
+    // 仅凭单字重合召回等于按档板捞。实测真实 21 条记忆：「我午饭吃什么」「讲个笑话」
+    // 各拉满 5 条（占满 maxHits 槽位、白烧上下文），收紧后降为 0 条，
+    // 而 8 个真实查询的目标记忆全部保留。
+
+    @Test
+    fun singleCharOnlyOverlapDoesNotRecall() {
+        // 查询「我午饭吃什么」的单字「饭」「吃」恰好出现在无关记忆里（「吃饭」）。
+        val docs = listOf(RecallDoc("meal", MemoryScope.GLOBAL, "记得先吃饭再干活"))
+        assertTrue(
+            "仅单字重合不得召回（否则任何含常见字的记忆都会被拉进来）",
+            MemoryRecall.select("我午饭吃什么", docs).isEmpty(),
+        )
+    }
+
+    /** 反向保证：真子串（bigram，≥2 字符）命中仍必须召回，修复不得把相关性改废。 */
+    @Test
+    fun bigramOverlapStillRecalls() {
+        val docs = listOf(RecallDoc("build", MemoryScope.GLOBAL, "Gradle 构建缓存与 SDK 路径"))
+        assertTrue(MemoryRecall.select("构建", docs).isNotEmpty())
+    }
+
+    /** 拉丁词天然 ≥2 字符，不受该收紧影响。 */
+    @Test
+    fun latinTokenStillRecalls() {
+        val docs = listOf(RecallDoc("gradle", MemoryScope.GLOBAL, "Gradle 构建缓存"))
+        assertTrue(MemoryRecall.select("gradle", docs).isNotEmpty())
+    }
+
+    /**
+     * 与门控对称：门控命中时不得再施加「多字符」要求。
+     * 门控本身就是「triggers 与查询有实质交集」的判据，若再要求字面多字符命中，
+     * 会把「字面不重叠但语义明确」的桥接能力废掉（正是门控存在的原因）。
+     */
+    @Test
+    fun gateHitBypassesDistinctiveRequirement() {
+        // 正文与查询无任何字面重叠，仅 triggers 标出场景。
+        val docs = listOf(
+            RecallDoc("env", MemoryScope.GLOBAL, "工具链与 SDK 位置", triggers = listOf("发版")),
+            RecallDoc("noise", MemoryScope.GLOBAL, "无关内容", updatedAtMs = 1),
+        )
+        assertEquals("env", MemoryRecall.select("帮我发个正式版", docs).first().id)
+    }
+
     // ---------- pinned 置顶 ----------
 
     @Test

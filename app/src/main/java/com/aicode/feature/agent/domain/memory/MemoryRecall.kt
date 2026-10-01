@@ -202,8 +202,17 @@ internal object MemoryRecall {
         // 门控已命中时，即使 BM25 全为 0（字面无重叠）也应交付这些候选；
         // 否则保留原有的「全无匹配则不召回」行为。
         val gateActive = candidates !== scored
+        // 相关性侧要求至少一个「多字符 token」命中。CJK 逐字切分下，单字 token（「器」「发」「不」）
+        // 几乎每条记忆都有，据此召回等于按档板捞——实测真实 21 条记忆下，「我午饭吃什么」「讲个笑话」
+        // 两问各拉满 5 条（含 maxHits 槽位，白烧上下文），收紧后降为 0 条。
+        // 这与 [triggerHits] 已确立的原则一致（单个 CJK 字符的偶然重合不算命中），此前该原则
+        // 只用在门控、未用在相关性侧，是同一判据两处不对称（根因 R2）。
+        // 门控命中时不施加该要求：门控本身就是「triggers 与查询有实质交集」的判据，
+        // 且需保住「字面不重叠但语义明确」的桥接能力（如「发个正式版」→ android-build-env）。
+        val requireDistinctive = !gateActive
         val rankedPairs = if (!anyMatch && !gateActive) emptyList() else candidates
-            .mapIndexed { i, doc ->
+            .mapIndexedNotNull { i, doc ->
+                if (requireDistinctive && !hasDistinctiveMatch(candidateTokens[i], idf.keys)) return@mapIndexedNotNull null
                 val bm25 = rawBm25(idf, candidateTokens[i], avgLen, k1, b)
                 val boost = W_TRIGGER * minOf(MAX_TRIGGER_HITS, triggerHits(queryRaw, doc.triggers).toDouble())
                 val score = applyTemporalDecay(bm25 + boost, doc.updatedAtMs, temporalDecay, nowMs)
@@ -220,6 +229,18 @@ internal object MemoryRecall {
         val selected = diversify(rankedPairs, maxHits, mmrLambda)
         return (pinned + selected).take(maxHits)
     }
+
+    /**
+     * 判定「文档与查询的匹配是否具有区分度」：至少一个命中的 token 长度 ≥ 2。
+     *
+     * CJK 逐字切分会产生大量单字 token，它们代表「恰好含这个汉字」——而「器」「好」「不」「发」
+     * 这类字几乎每条记忆都会命中，仅凭单字重合就召回等于按档板捞。拉丁词与 CJK bigram 都 ≥2 字符，
+     * 能证明是真实子串而非巧合。
+     *
+     * 与 [triggerHits] 同一原则，两处必须一致；只改一处就会出现「门控很严、相关性很松」的错位。
+     */
+    private fun hasDistinctiveMatch(tokens: List<String>, queryTerms: Set<String>): Boolean =
+        tokens.any { it.length >= 2 && it in queryTerms }
 
     /**
      * 从原文中剥离提问功能词。必须在分词**之前**做：CJK bigram 会跨越被删词的边界，
