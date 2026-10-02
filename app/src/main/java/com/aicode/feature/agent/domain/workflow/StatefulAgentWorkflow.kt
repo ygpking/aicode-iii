@@ -1356,6 +1356,9 @@ class StatefulAgentWorkflow @Inject constructor(
         }
         return completed == true
     }
+
+    /**
+     * 把模型直出的图片（base64）落盘到 `~/.aicode/generated-images/`，
      * 与一一对应的 UI 附件（附件只带路径不含 base64，落库不撑爆数据库行）。
      */
     private suspend fun persistModelImages(images: List<AgentImage>): Pair<List<AgentImage>, List<AgentAttachment>> =

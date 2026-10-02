@@ -6,6 +6,7 @@ import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolParameter
 import com.aicode.feature.agent.domain.tool.ToolResult
+import com.aicode.feature.agent.domain.subagent.SubAgentWriteLease
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import android.util.Base64
 import kotlinx.coroutines.TimeoutCancellationException
@@ -20,7 +21,8 @@ import javax.inject.Inject
 
 class BrowserTool @Inject constructor(
     private val browserManager: BrowserManager,
-    private val fileAccess: FileAccessProvider
+    private val fileAccess: FileAccessProvider,
+    private val writeLease: SubAgentWriteLease
 ) : AgentTool() {
 
     private companion object {
@@ -107,14 +109,21 @@ class BrowserTool @Inject constructor(
         }
     }
 
-    override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
+    override suspend fun execute(args: Map<String, JsonElement>): ToolResult = execute(args, sessionId = "")
+
+    override suspend fun executeWithContext(
+        args: Map<String, JsonElement>,
+        context: com.aicode.feature.agent.domain.model.AgentContext
+    ): ToolResult = execute(args, sessionId = context.sessionId.orEmpty())
+
+    private suspend fun execute(args: Map<String, JsonElement>, sessionId: String): ToolResult {
         val action = args["action"]?.jsonPrimitive?.contentOrNull?.trim()
             ?: return ToolResult.Error("缺少 action 参数", "MISSING_ACTION")
         val tabId = args["tabId"]?.jsonPrimitive?.contentOrNull?.trim()
 
         return try {
             // asAiCall：BrowserManager 内部的用户操作记录在此作用域内被抑制，改由下方统一记录，避免重复。
-            val result = browserManager.asAiCall { executeAction(action, tabId, args) }
+            val result = browserManager.asAiCall { executeAction(action, tabId, args, sessionId) }
             browserManager.recordAiOperation(action, targetSummary(action, args), isError = false)
             result
         } catch (e: IllegalStateException) {
@@ -145,7 +154,7 @@ class BrowserTool @Inject constructor(
         else -> ""
     }
 
-    private suspend fun executeAction(action: String, tabId: String?, args: Map<String, JsonElement>): ToolResult {
+    private suspend fun executeAction(action: String, tabId: String?, args: Map<String, JsonElement>, sessionId: String): ToolResult {
         return when (action) {
             "newTab" -> {
                 val url = args["url"]?.jsonPrimitive?.contentOrNull
@@ -295,6 +304,16 @@ class BrowserTool @Inject constructor(
                     val timestamp = System.currentTimeMillis()
                     val customPath = args["path"]?.jsonPrimitive?.contentOrNull?.trim()
                     val savePath = if (!customPath.isNullOrEmpty()) customPath else "$DEFAULT_SCREENSHOT_DIR/screenshot_${timestamp}_$resolvedTabId.jpg"
+
+                    // 写租约闸门：截图会真实落盘，子代理只允许写自己声明的路径（未声明租约的会话直接放行）。
+                    // 用原始路径比较，与租约声明（同样来自模型参数）保持同源。
+                    if (!writeLease.isWithinLease(sessionId, savePath)) {
+                        FileLogger.w(TAG, "browser.screenshot 超出写租约: $savePath")
+                        return ToolResult.Error(
+                            "$savePath 不在本会话声明的写路径内（write_paths），为避免与其它子代理冲突已拒绝写入。",
+                            "WRITE_LEASE_DENIED"
+                        )
+                    }
 
                     try {
                         val bytes = Base64.decode(image.base64Data, Base64.DEFAULT)

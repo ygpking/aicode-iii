@@ -10,6 +10,7 @@ import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolParameter
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolResult
+import com.aicode.feature.agent.domain.subagent.SubAgentWriteLease
 import com.aicode.feature.virtualscreen.domain.VirtualScreenController
 import com.aicode.feature.virtualscreen.domain.a11y.VirtualScreenA11yService
 import com.aicode.feature.workspace.domain.WorkspacePathMapper
@@ -36,7 +37,8 @@ import javax.inject.Inject
  */
 class VirtualScreenTool @Inject constructor(
     private val controller: VirtualScreenController,
-    private val pathMapper: WorkspacePathMapper
+    private val pathMapper: WorkspacePathMapper,
+    private val writeLease: SubAgentWriteLease
 ) : AbstractContextualTool() {
     private companion object {
         const val TAG = "VirtualScreenTool"
@@ -370,6 +372,16 @@ class VirtualScreenTool @Inject constructor(
             .take(20)
             .ifEmpty { "app" }
         val containerPath = "$SHOT_DIR/${safeName}_${System.currentTimeMillis()}.png"
+        // 写租约闸门：截图会真实落盘，子代理只允许写自己声明的路径（未声明租约的会话直接放行）。
+        // 用原始路径比较，与租约声明（同样来自模型参数）保持同源。
+        val sessionKey = context.sessionId.orEmpty()
+        if (!writeLease.isWithinLease(sessionKey, containerPath)) {
+            FileLogger.w(TAG, "virtualScreen.screenshot 超出写租约: $containerPath")
+            return ToolResult.Error(
+                "$containerPath 不在本会话声明的写路径内（write_paths），为避免与其它子代理冲突已拒绝写入。",
+                code = "WRITE_LEASE_DENIED"
+            )
+        }
         val hostFile = pathMapper.toHostFile(containerPath)
         val writeErr = runCatching {
             hostFile.parentFile?.mkdirs()

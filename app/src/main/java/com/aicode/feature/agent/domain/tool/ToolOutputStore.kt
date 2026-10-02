@@ -95,24 +95,31 @@ class ToolOutputStore @Inject constructor(
         // 与上游一致：超预算返回有界结果 + 显式截断标记。未传预算时不介入（行为不变）。
         val requested = estimateChars(result)
         val reservation = runBudget?.reserve(requested)
-        val forceSpill = reservation != null && !reservation.granted
+        try {
+            val forceSpill = reservation != null && !reservation.granted
 
-        val bounded = when (result) {
-            is ToolResult.Success -> ToolResult.Success(processElement(toolName, callId, result.data, forceSpill))
-            is ToolResult.Partial -> ToolResult.Partial(processElement(toolName, callId, result.data, forceSpill), result.message)
-            is ToolResult.Error -> result
+            val bounded = when (result) {
+                is ToolResult.Success -> ToolResult.Success(processElement(toolName, callId, result.data, forceSpill))
+                is ToolResult.Partial -> ToolResult.Partial(processElement(toolName, callId, result.data, forceSpill), result.message)
+                is ToolResult.Error -> result
+            }
+            // 按差额校正预留量：获排时把「预留的原始量」校正为「实际内联量」（截断后往往小得多）；
+            // 未获排（已超限）时预留量为 0，此处只把本次**实际内联量**（forceSpill 下很小）计上。
+            // 不可直接传 requested：未获排意味着当时没加过这批额度，再减一次会把已累计值冲掉。
+            if (reservation != null) {
+                val reservedForCommit = if (reservation.granted) requested else 0L
+                runBudget?.commit(reservedChars = reservedForCommit, actualChars = estimateChars(bounded))
+            }
+            // 外部内容（网页/MCP 等）加不可信信封。放在截断**之后**：否则预览可能被截断切断闭合标签，
+            // 留下未闭合的信封；落盘原文保持不加信封（磁盘上留存的是可逐字核对的原始证据）。
+            // 本地文件读取（readFile 等）不在 [UntrustedEnvelope.sourceFor] 的名单内，行为完全不变。
+            return UntrustedEnvelope.apply(toolName, bounded)
+        } catch (e: Throwable) {
+            // 预留了额度但没能提交（处理过程抛异常）时必须回滚，否则这批额度永远算在已用里，
+            // 后续输出会被无谓地强制落盘。未获排（reservation.granted=false）时本就没加过额度，不回滚。
+            if (reservation?.granted == true) runBudget?.rollback(requested)
+            throw e
         }
-        // 按差额校正预留量：获排时把「预留的原始量」校正为「实际内联量」（截断后往往小得多）；
-        // 未获排（已超限）时预留量为 0，此处只把本次**实际内联量**（forceSpill 下很小）计上。
-        // 不可直接传 requested：未获排意味着当时没加过这批额度，再减一次会把已累计值冲掉。
-        if (reservation != null) {
-            val reservedForCommit = if (reservation.granted) requested else 0L
-            runBudget?.commit(reservedChars = reservedForCommit, actualChars = estimateChars(bounded))
-        }
-        // 外部内容（网页/MCP 等）加不可信信封。放在截断**之后**：否则预览可能被截断切断闭合标签，
-        // 留下未闭合的信封；落盘原文保持不加信封（磁盘上留存的是可逐字核对的原始证据）。
-        // 本地文件读取（readFile 等）不在 [UntrustedEnvelope.sourceFor] 的名单内，行为完全不变。
-        return UntrustedEnvelope.apply(toolName, bounded)
     }
 
     /** 粗估结果字符量，供 run 预算预留。结构化结果按序列化长度估，不做精确计算。 */
