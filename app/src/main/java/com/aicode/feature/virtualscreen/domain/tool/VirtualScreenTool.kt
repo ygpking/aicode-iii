@@ -145,7 +145,7 @@ class VirtualScreenTool @Inject constructor(
         context: AgentContext
     ): ToolResult {
         val action = args["action"]?.jsonPrimitive?.contentOrNull
-            ?: return ToolResult.Error("缺少必需参数: action", code = "MISSING_ARG")
+            ?: return ToolResult.Error("缺少必需参数: action", code = "MISSING_ARGS")
 
         return try {
             when (action) {
@@ -159,7 +159,7 @@ class VirtualScreenTool @Inject constructor(
                 "status" -> status(context)
                 else -> ToolResult.Error(
                     "未知 action: $action（可选 open/dump/click/input/swipe/screenshot/close/status）",
-                    code = "BAD_ARG"
+                    code = "INVALID_ACTION"
                 )
             }
         } catch (e: CancellationException) {
@@ -174,7 +174,7 @@ class VirtualScreenTool @Inject constructor(
 
     private suspend fun open(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
         val pkg = args["packageName"]?.jsonPrimitive?.contentOrNull
-            ?: return ToolResult.Error("action=open 需要 packageName", code = "MISSING_ARG")
+            ?: return ToolResult.Error("action=open 需要 packageName", code = "MISSING_ARGS")
 
         val result = controller.open(
             packageName = pkg,
@@ -310,7 +310,7 @@ class VirtualScreenTool @Inject constructor(
         val session = requireSession(context) ?: return noSessionError()
         val service = requireA11y() ?: return noA11yError()
         val text = args["text"]?.jsonPrimitive?.contentOrNull
-            ?: return ToolResult.Error("action=input 需要 text", code = "MISSING_ARG")
+            ?: return ToolResult.Error("action=input 需要 text", code = "MISSING_ARGS")
 
         val ok = withContext(Dispatchers.IO) { service.setText(session.displayId, text) }
         EventTrace.recordFor(context.sessionId, "VD", "input ${text.length} 字符 -> $ok")

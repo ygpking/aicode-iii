@@ -86,7 +86,7 @@ class SearchCodeTool @Inject constructor(
             throw e
         } catch (e: Exception) {
             FileLogger.e(TAG, "search 异常", e)
-            ToolResult.Error(e.message ?: "搜索失败", "SEARCH_ERROR")
+            ToolResult.Error(e.message ?: "搜索失败", "SEARCH_FAILED")
         }
     }
 

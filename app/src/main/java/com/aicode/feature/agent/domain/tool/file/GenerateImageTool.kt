@@ -166,7 +166,7 @@ class GenerateImageTool @Inject constructor(
             ?: DEFAULT_SIZE
         val n = args["n"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 1
         if (n !in 1..MAX_IMAGES) {
-            return@withContext ToolResult.Error("n 取值必须在 1 到 $MAX_IMAGES 之间，当前为 $n。", "INVALID_PARAMS")
+            return@withContext ToolResult.Error("n 取值必须在 1 到 $MAX_IMAGES 之间，当前为 $n。", "INVALID_ARGS")
         }
         val quality = args["quality"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()?.ifBlank { null }
         val background = args["background"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()?.ifBlank { null }
@@ -197,7 +197,7 @@ class GenerateImageTool @Inject constructor(
                 background, moderation, style, outputFormat
             )
 ?.let {
-                return@withContext ToolResult.Error(it, "INVALID_PARAMS")
+                return@withContext ToolResult.Error(it, "INVALID_ARGS")
             }
             FileLogger.i(TAG, "generateImage provider=${provider.id} model=$model prompt=$prompt n=$n size=$size")
 
