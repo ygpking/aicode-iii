@@ -76,11 +76,28 @@ class SystemPromptProvider @Inject constructor(
                 return null
             }
 
-            val list = skills.joinToString("\n") { "- ${it.name}: ${it.description.ifBlank { "（无描述）" } }" }
+            val list = skills.joinToString("\n") { "- ${it.name}: ${triggerHint(it.description)}" }
             val content = "可用技能 (skills)（格式为 名称: 何时使用；相关时用 loadSkill 传入名称取完整正文，详见上文「技能」说明）：\n当清单里有与当前任务对口的技能时，在合适的时机主动 `loadSkill` 加载并按其正文行事，让技能辅助你更规范、更高效地完成工作，而不是仅凭默认流程硬做。\n$list"
             cachedByKey[key] = content
             trimIfNeeded()
             return content
+        }
+
+        /**
+         * 清单里只留「何时用」那截，正文留给 loadSkill —— 描述前半段是技能内部做法，
+         * 清单阶段用不上，却随每次请求全量重发。
+         */
+        private fun triggerHint(description: String): String {
+            val d = description.ifBlank { return "（无描述）" }
+            val marks = listOf("当用户说", "触发条件：", "触发：", "触发词：", "当需要", "适用于", "用于")
+            for (m in marks) {
+                val i = d.indexOf(m)
+                if (i > 0) {
+                    val head = d.substring(0, i)
+                    return head.take(60) + "…" + d.substring(i)
+                }
+            }
+            return d.take(160)
         }
 
         private fun trimIfNeeded() {

@@ -57,7 +57,7 @@ class VirtualScreenHostManager @Inject constructor(
         const val TAG = "VirtualScreenHost"
 
         /** 与 `VirtualScreenHost.PROTOCOL` 对应；host 侧改协议时必须同步递增。 */
-        const val PROTOCOL = 1
+        const val PROTOCOL = 2
 
         /** 监听端口。仅绑 127.0.0.1；daemon 会自行判活，端口被占则退出。 */
         const val PORT = 19600

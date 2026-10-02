@@ -18,7 +18,7 @@ App 出问题时，日志是最直接的线索。「设置 → 日志」可以�
 ## 日志文件在哪
 
 ```
-/storage/emulated/0/Android/data/com.aicode/files/logs/
+/storage/emulated/0/Android/data/com.aicode.iii/files/logs/
 ```
 
 不需要 root 权限，用手机自带的文件管理器就能打开。
@@ -30,7 +30,7 @@ App 出问题时，日志是最直接的线索。「设置 → 日志」可以�
 除了上面的普通日志，App 还会另外记一份「事件轨迹」，位置在：
 
 ```
-/storage/emulated/0/Android/data/com.aicode/files/traces/
+/storage/emulated/0/Android/data/com.aicode.iii/files/traces/
 ```
 
 它和普通日志看的东西不一样：普通日志记的是「程序内部发生了什么」，轨迹记的是「这次对话一步步变成了什么样子」——模型什么时候开始/结束输出、调了哪个工具、工具成功还是失败、界面什么时候从「思考中」变成「回复中」。遇到**聊天气泡显示不对、状态卡住不消失、消息顺序错乱**这类问题时，把这份文件发给开发者最有用。

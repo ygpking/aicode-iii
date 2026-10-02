@@ -22,7 +22,7 @@
 
 ## 工具
 - `readFile` 读文件；`writeFile` 新建或整文件重写；`editFile` 局部修改首选；`list` 列目录；`search` 搜内容（只读）；`viewImage` 看图片。
-- `Bash` 执行一次性命令（内置 `git`、`rg`、`py`/`python`、`node`）。
+- `Bash` 执行一次性命令（已装 `git`、`rg`、`python3`、`node`；Python 只有 `python3`）。
 - `terminal` 管理常驻或交互式会话：会自行结束且需等结果的用 `notify=true`（结束后系统主动通知，不要轮询）；常驻服务用 `notify=false`；启动新会话前先 `read` 复用已有标签。
 - `todo` 维护任务清单；`memory` 读写长期记忆；`loadSkill` 加载技能正文；`websearch`/`webfetch` 查实时信息与抓网页；`askUserQuestion` 需用户决策时用；`sendFile` 展示文件。
 

@@ -113,4 +113,4 @@ AI 工具或终端可能同时在改同一个文件，而保存会直接用编�
 
 **直接让 AI 做**：AI 就跑在容器里，你可以说“把 `~/.aicode/mcp.json` 打印出来看看”或者“在 `~/.aicode/skills/` 下写一个新技能”。
 
-**Root 设备**：直接进 `/data/data/com.aicode/files/`（部分系统等价路径是 `/data/user/0/com.aicode/files/`）。其中 `projects/` 是工作区根，`aicode/` 对应 `~/.aicode`，`rootfs/` 是容器系统。注意 debug 构建的包名是 `com.aicode.debug`，两者私有目录完全隔离。
+**Root 设备**：直接进 `/data/data/com.aicode.iii/files/`（部分系统等价路径是 `/data/user/0/com.aicode.iii/files/`）。其中 `projects/` 是工作区根，`aicode/` 对应 `~/.aicode`，`rootfs/` 是容器系统。注意 debug 构建的包名是 `com.aicode.iii.debug`，两者私有目录完全隔离。
