@@ -25,6 +25,10 @@ import java.util.concurrent.atomic.AtomicInteger
 object AILogger {
 
     private const val TAG = "AILogger"
+
+    /** 日志目录名。与 [com.aicode.feature.agent.domain.container.ContainerInstaller.diagnosticViewBindings]
+     *  的只读视图绑定保持一致——有单测守护这层对应关系。 */
+    internal const val DIR_NAME = "ai-logs"
     private const val MAX_AGE_DAYS = 7
     private const val MAX_FILE_BYTES = 20 * 1024 * 1024 // 单会话文件上限 20MB（每轮重发完整历史，增长快）
     /** 原始 SSE 日志缓冲字符上限：流式响应体量无上限，整段累积再 toString 会在移动端把堆顶爆。 */
@@ -53,7 +57,7 @@ object AILogger {
         if (logDir != null) return
         // 优先外部私有目录，便于（root 或 adb 下）取出；不可用时回退内部存储。
         val base = context.getExternalFilesDir(null) ?: context.filesDir
-        val dir = File(base, "ai-logs").apply { mkdirs() }
+        val dir = File(base, DIR_NAME).apply { mkdirs() }
         logDir = dir
         ioExecutor.execute { cleanupOldLogs(dir) }
         FileLogger.i(TAG, "AILogger 初始化完成，AI 会话日志目录: ${dir.absolutePath}")

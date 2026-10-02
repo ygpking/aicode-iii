@@ -2,6 +2,8 @@ package com.aicode.feature.agent.domain.container
 
 import android.content.Context
 import android.system.Os
+import com.aicode.core.util.AILogger
+import com.aicode.core.util.EventTrace
 import com.aicode.core.util.FileLogger
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
@@ -289,6 +291,34 @@ class ContainerInstaller @Inject constructor(
      */
     val aicodeDir: File
         get() = File(context.filesDir, "aicode")
+
+    /**
+     * 诊断数据的**只读视图**绑定：把日志与轨迹目录挂进容器，让 AI 能读自己的运行痕迹
+     * （排查「为什么这么执行」「上一条命令为何失败」时，这些是最直接的证据）。
+     *
+     * 两点理由：
+     * 1. 这三处原本写在**外部私有目录**（`getExternalFilesDir`），而容器只挂了 `/root/.aicode`
+     *    与工作区，AI 在容器内物理上看不到它们——想自查也无从下手。
+     * 2. 目标名统一带 `-view` 后缀，与 `.aicode` 下的可写数据区区分开：PRoot 下无法用文件系统
+     *    权限真正阻止写入（伪 root 会绕过 `chmod`），故靠命名语义 + 提示词约束 + 分析脚本只读
+     *    三重降低误写风险，不假装有强制隔离。
+     *
+     * 目录名必须与 [com.aicode.core.util.FileLogger]（`logs`）、
+     * [com.aicode.core.util.AILogger]（`ai-logs`）、[com.aicode.core.util.EventTrace]（`traces`）
+     * 保持一致——**有单测守护这层对应关系**。
+     *
+     * proot 的 `-b` 要求源路径存在，而这三个目录都是**首次写日志时才创建**，
+     * 故这里统一 `mkdirs()`，避免「先启动容器、后产生日志」时挂载失败。
+     */
+    val diagnosticViewBindings: List<Pair<File, String>>
+        get() {
+            val base = context.getExternalFilesDir(null) ?: context.filesDir
+            return listOf(
+                File(base, FileLogger.DIR_NAME).apply { mkdirs() } to "/root/.aicode/logs-view",
+                File(base, AILogger.DIR_NAME).apply { mkdirs() } to "/root/.aicode/ai-logs-view",
+                File(base, EventTrace.DIR_NAME).apply { mkdirs() } to "/root/.aicode/traces-view",
+            )
+        }
 
     /**
      * proot 全套所在目录：APK 内 `lib/<abi>/lib*.so` 由安装器解压到此（见 build.gradle.kts 的
