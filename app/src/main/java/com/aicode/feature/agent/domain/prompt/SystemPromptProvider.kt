@@ -323,16 +323,16 @@ class SystemPromptProvider @Inject constructor(
         return buildString {
             append(staticContent)
 
-            if (SKILLS_VAR !in rawStatic) skillsContent?.let { append("\n\n"); append(it) }
-            if (SUBAGENTS_VAR !in rawStatic) subAgentsContent?.let { append("\n\n"); append(it) }
-            if (MEMORY_VAR !in rawStatic) memoriesContent?.let { append("\n\n"); append(it) }
-            if (PROJECT_RULES_VAR !in rawStatic) projectRules?.let { append("\n\n"); append(it) }
+            if (!usesStandaloneVar(rawStatic, SKILLS_VAR)) skillsContent?.let { append("\n\n"); append(it) }
+            if (!usesStandaloneVar(rawStatic, SUBAGENTS_VAR)) subAgentsContent?.let { append("\n\n"); append(it) }
+            if (!usesStandaloneVar(rawStatic, MEMORY_VAR)) memoriesContent?.let { append("\n\n"); append(it) }
+            if (!usesStandaloneVar(rawStatic, PROJECT_RULES_VAR)) projectRules?.let { append("\n\n"); append(it) }
 
-            if (WORKSPACE_VAR !in rawStatic) {
+            if (!usesStandaloneVar(rawStatic, WORKSPACE_VAR)) {
                 append("\n\n")
                 append(effectiveWorkspaceContent)
             }
-            if (DATE_VAR !in rawStatic) {
+            if (!usesStandaloneVar(rawStatic, DATE_VAR)) {
                 append("\n\n")
                 append(timeContent)
             }
@@ -375,7 +375,21 @@ class SystemPromptProvider @Inject constructor(
         agentContext: AgentContext
     ): String = buildString {
         if (InjectPart.MAIN_RULES in definition.inject) {
-            append(staticRuleSource.build(agentContext))
+            // 与下方 definition.prompt 同样过 renderVariables：内置片段（如 70-skills-and-mcp.md）
+            // 含 {{AICODE_*}} 占位符，不过这一步会让子代理**看到未展开的字面占位符**，
+            // 与函数注释「{{AICODE_*}} 变量同样会展开」相矛盾。
+            // subAgents 传 null：子代理不能嵌套派发（工具集已剔除 task），与下方口径一致。
+            append(
+                renderVariables(
+                    staticRuleSource.build(agentContext),
+                    activeSkillsSource.build(agentContext),
+                    memoryListSource.build(agentContext),
+                    null,
+                    projectRuleSource.build(agentContext),
+                    workspaceSource.build(agentContext),
+                    currentDate()
+                )
+            )
             append("\n\n")
         }
         if (InjectPart.BASE in definition.inject) {
@@ -475,7 +489,29 @@ class SystemPromptProvider @Inject constructor(
         }
     }
 
-    private companion object {
+    internal companion object {
+        /** 提示词里可渲染的 `AICODE_*` 变量名（不含花括号）。供 [PromptGuard] 校验与单测引用。 */
+        val RENDERABLE_VARIABLES = setOf(
+            "AICODE_SKILLS", "AICODE_MEMORY", "AICODE_SUBAGENTS",
+            "AICODE_PROJECT_RULES", "AICODE_WORKSPACE", "AICODE_DATE",
+        )
+
+        /**
+         * 判断片段是否**显式地**把某个变量当作独立内容块使用——即该占位符单独占据一行。
+         *
+         * 不能用「子串是否出现」判定：内置片段里会有**介绍占位符用法**的说明文字
+         * （如「可用 `{{AICODE_SKILLS}}` 等变量取回…」），子串判定会把它误认为
+         * 「用户已使用该变量」→ 本该追加到末尾的清单不再追加，反而被 `renderVariables`
+         * 塞进那句说明中间（真机实测：一行说明被撑成上万字符）。
+         *
+         * 以「独占一行」为判据，与实际用法（片段里写一行 `{{AICODE_X}}` 让内容落在此处）一致；
+         * 说明文字里的行内引用不再干扰判定。
+         *
+         * 无实例状态依赖，故置于 companion 便于单测直接验证。
+         */
+        fun usesStandaloneVar(text: String, varToken: String): Boolean =
+            text.lineSequence().any { it.trim() == varToken }
+
         const val TAG = "SystemPromptProvider"
         const val AGENTS_FILE = "AGENTS.md"
         const val CLAUDE_FILE = "CLAUDE.md"
