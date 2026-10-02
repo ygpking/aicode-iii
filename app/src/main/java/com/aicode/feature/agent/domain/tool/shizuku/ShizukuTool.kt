@@ -92,7 +92,7 @@ class ShizukuTool @Inject constructor(
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
         val command = args["command"]?.jsonPrimitive?.contentOrNull
-            ?: return ToolResult.Error("缺少必需参数: command")
+            ?: return ToolResult.Error("缺少必需参数: command", "MISSING_COMMAND")
 
         val state = shizukuManager.state.value
         if (state != ShizukuState.READY) {
@@ -103,7 +103,7 @@ class ShizukuTool @Inject constructor(
             val timeoutMs = resolveTimeoutMs(args)
             CommandSleepGuard.blockReason(command)?.let { block ->
                 FileLogger.i(TAG, "Shizuku 命令被 sleep 守卫拦截: ${com.aicode.feature.agent.domain.container.sanitizeCommandForLog(command)}")
-                return ToolResult.Error(block)
+                return ToolResult.Error(block, "SLEEP_BLOCKED")
             }
             FileLogger.d(TAG, "Shizuku exec (timeout=${timeoutMs}ms): ${com.aicode.feature.agent.domain.container.sanitizeCommandForLog(command)}")
             val result = shizukuManager.runCommand(command, timeoutMs)
@@ -114,7 +114,7 @@ class ShizukuTool @Inject constructor(
             throw e
         } catch (e: Exception) {
             FileLogger.e(TAG, "Shizuku exec 失败: $command", e)
-            ToolResult.Error("执行 Shizuku 命令失败: ${e.message}")
+            ToolResult.Error("执行 Shizuku 命令失败: ${e.message}。请先用 Shizuku 只读命令确认服务与授权状态。", "SHIZUKU_EXEC_FAILED")
         }
     }
 

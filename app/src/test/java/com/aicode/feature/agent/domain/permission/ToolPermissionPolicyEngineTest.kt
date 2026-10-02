@@ -44,6 +44,8 @@ class ToolPermissionPolicyEngineTest {
 
     private fun terminal(action: String) = mapOf("action" to JsonPrimitive(action))
 
+    private fun browser(action: String) = mapOf("action" to JsonPrimitive(action))
+
     // ── PLAN 模式：写/执行类工具一律拒绝 ─────────────────────────────
 
     @Test
@@ -80,6 +82,39 @@ class ToolPermissionPolicyEngineTest {
         val e = engine()
         val r = e.evaluate(tool(ToolCapability.READ_WORKSPACE), "terminal", terminal("read"), AgentMode.PLAN)
         // 无任何规则时按整工具 ASK（可记忆），而非 DENY
+        assertEquals(ToolPermissionPolicyEngine.Verdict.ASK, r.verdict)
+    }
+
+    @Test
+    fun planMode_deniesTerminalSend() = runTest {
+        // send 的输入被 shell 解释执行，与 start 同为写/执行类，PLAN 模式必须拦下
+        val e = engine()
+        val r = e.evaluate(tool(ToolCapability.EXECUTE_COMMANDS), "terminal", terminal("send"), AgentMode.PLAN)
+        assertEquals(ToolPermissionPolicyEngine.Verdict.DENY, r.verdict)
+    }
+
+    @Test
+    fun planMode_deniesBrowserScreenshot() = runTest {
+        // screenshot 会把截图写入 path（可指向工作区外），不是只读动作
+        val e = engine()
+        val r = e.evaluate(
+            tool(ToolCapability.NETWORK_READ, ToolCapability.WRITE_WORKSPACE),
+            "browser",
+            browser("screenshot"),
+            AgentMode.PLAN
+        )
+        assertEquals(ToolPermissionPolicyEngine.Verdict.DENY, r.verdict)
+    }
+
+    @Test
+    fun planMode_allowsBrowserReadOnlyAction() = runTest {
+        val e = engine()
+        val r = e.evaluate(
+            tool(ToolCapability.NETWORK_READ),
+            "browser",
+            browser("getText"),
+            AgentMode.PLAN
+        )
         assertEquals(ToolPermissionPolicyEngine.Verdict.ASK, r.verdict)
     }
 

@@ -133,8 +133,8 @@ class StatefulAgentWorkflow @Inject constructor(
          * 而当时整条链路上没有任何一道超时拦得住。
          */
         const val TOOL_GUARD_TIMEOUT_MS = 1_900_000L
-        const val LIVE_TAIL_CHARS = 4_000
-        const val PROGRESS_INTERVAL_MS = 250L
+        const val LIVE_TAIL_CHARS = STREAM_LIVE_TAIL_CHARS
+        const val PROGRESS_INTERVAL_MS = STREAM_PROGRESS_INTERVAL_MS
         const val USER_REJECTED_CODE = "USER_REJECTED"
         const val TITLE_GENERATOR_FILE = "agent/title-generator.md"
         const val TITLE_MAX_CHARS = 50
@@ -871,18 +871,22 @@ class StatefulAgentWorkflow @Inject constructor(
                     is AgentSideEffect.RequestPermission -> {
                         val tool = toolRegistry.getTool(effect.toolCall.name)
                         val argsPreview = JsonObject(effect.toolCall.arguments).toString().take(500)
-                        // sleep 守卫前置：弹窗之前就拦下含独立长 sleep 的 Bash 命令，避免用户白点一次允许。
+                        // sleep 守卫前置：弹窗之前就拦下含独立长 sleep 的命令，避免用户白点一次允许。
                         // 拦截仍走 PermissionEvaluated(false)（非 USER_REJECTED）让 batch 状态机正常推进：
                         // 该 call 以拒绝结果回放给模型；直接跳过会把 pendingPermissionCalls 卡死。
-                        val command = (effect.toolCall.arguments["command"] as? JsonPrimitive)?.contentOrNull
-                        val sleepBlock = if (effect.toolCall.name == "Bash" && command != null) {
-                            CommandSleepGuard.blockReason(command)
-                        } else {
-                            null
+                        // terminal 的 start/send 同样承载 shell 命令，纳入同一道前置守卫。
+                        val guardArgs = effect.toolCall.arguments
+                        val guardAction = (guardArgs["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
+                        val shellPayload = when {
+                            effect.toolCall.name == "Bash" -> (guardArgs["command"] as? JsonPrimitive)?.contentOrNull
+                            effect.toolCall.name == "terminal" && guardAction == "start" -> (guardArgs["command"] as? JsonPrimitive)?.contentOrNull
+                            effect.toolCall.name == "terminal" && guardAction == "send" -> (guardArgs["input"] as? JsonPrimitive)?.contentOrNull
+                            else -> null
                         }
+                        val sleepBlock = shellPayload?.let { CommandSleepGuard.blockReason(it) }
                         if (sleepBlock != null) {
-                            FileLogger.i(TAG, "命令被 sleep 守卫前置拦截: $command")
-                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, "Bash", ToolResult.Error(sleepBlock).toTransportString(), true, argsPreview))
+                            FileLogger.i(TAG, "命令被 sleep 守卫前置拦截: $shellPayload")
+                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, effect.toolCall.name, ToolResult.Error(sleepBlock, "SLEEP_BLOCKED").toTransportString(), true, argsPreview))
                             actionQueue.addLast(AgentAction.PermissionEvaluated(effect.toolCall, false, argsPreview, sleepBlock, "SYSTEM_DENIED"))
                         } else {
                             val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)
@@ -1279,21 +1283,28 @@ class StatefulAgentWorkflow @Inject constructor(
         var lastEmitMs = 0L
         var finalResult: ToolResult? = null
         try {
-            tool.executeStream(toolCall.arguments, context).collect { ev ->
-                when (ev) {
-                    is ToolStreamEvent.Progress -> {
-                        live.append(ev.chunk).append('\n')
-                        if (live.length > LIVE_TAIL_CHARS) {
-                            live.delete(0, live.length - LIVE_TAIL_CHARS)
-                        }
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitMs >= PROGRESS_INTERVAL_MS) {
-                            lastEmitMs = now
-                            onEvent(AgentEvent.ToolCallProgress(toolCall.id, toolCall.name, live.toString()))
-                        }
-                    }
-                    is ToolStreamEvent.Completed -> finalResult = ev.result
-                }
+            // 与非流式路径同款兜底：底层 flow 若不终止（无界重试/卡死），collect 会一直占住本轮，
+            // 链路上没有任何东西能拦住它。这里用 withTimeoutOrNull 判定超时——不能用
+            // catch (TimeoutCancellationException)，它会被下方 catch (CancellationException) 重新抛出。
+            val completed = collectStreamWithin(
+                toolCall = toolCall,
+                context = context,
+                tool = tool,
+                timeoutMs = TOOL_GUARD_TIMEOUT_MS,
+                onProgress = { text ->
+                    onEvent(AgentEvent.ToolCallProgress(toolCall.id, toolCall.name, text))
+                },
+                onCompleted = { finalResult = it }
+            )
+            if (!completed) {
+                return ToolRunResult(
+                    ToolResult.Error(
+                        "工具 ${toolCall.name} 执行超时（超过 ${TOOL_GUARD_TIMEOUT_MS / 60_000} 分钟仍未返回），已中止。" +
+                            timeoutGuidance(toolCall.name),
+                        "TOOL_TIMEOUT"
+                    ).toTransportString(),
+                    true
+                )
             }
             val result = finalResult ?: ToolResult.Error("流式工具未返回结果", "MISSING_STREAM_RESULT")
             val processed = toolOutputStore.process(toolCall.name, toolCall.id, result, runBudget)
@@ -1307,7 +1318,7 @@ class StatefulAgentWorkflow @Inject constructor(
     }
 
     /**
-     * 把模型直出的图片（base64）落盘到 `~/.aicode/generated-images/`，返回带容器路径的 images
+     * 把模型直出的图片（base64）落盘到 `~/.aicode/generated-images/`，
      * 与一一对应的 UI 附件（附件只带路径不含 base64，落库不撑爆数据库行）。
      */
     private suspend fun persistModelImages(images: List<AgentImage>): Pair<List<AgentImage>, List<AgentAttachment>> =
@@ -1640,4 +1651,51 @@ class StatefulAgentWorkflow @Inject constructor(
             }
         }
     }
+}
+
+/** 流式工具过程输出的回看窗口（字符数）：只把尾部这段时间窗喂给 UI，避免超长输出拖垮渲染。 */
+private const val STREAM_LIVE_TAIL_CHARS = 4_000
+
+/** 流式进度事件的最小间隔：逐 chunk 上抛会让 UI 卡死，节流到该间隔。 */
+private const val STREAM_PROGRESS_INTERVAL_MS = 250L
+
+/**
+ * 带兜底超时地收集流式工具的输出，直到 flow 结束（返回 true）或超时（返回 false）。
+ *
+ * 抽成顶层函数是为了让超时可被单测注入——`TOOL_GUARD_TIMEOUT_MS` 是 const，测试无法调小它。
+ * 进度事件沿用节流逻辑，超时判定只看 `withTimeoutOrNull` 的返回值，不依赖异常。
+ *
+ * 单独置于顶层（而非 workflow 成员）是有意的：`StatefulAgentWorkflow` 有 25 个构造依赖，
+ * 为了测这段纯逻辑去实例化它，代价与收益完全不相称。
+ */
+internal suspend fun collectStreamWithin(
+    toolCall: ToolCall,
+    context: AgentContext,
+    tool: StreamingAgentTool,
+    timeoutMs: Long,
+    onProgress: suspend (String) -> Unit,
+    onCompleted: (ToolResult) -> Unit
+): Boolean {
+    val live = StringBuilder()
+    var lastEmitMs = 0L
+    val completed = withTimeoutOrNull(timeoutMs) {
+        tool.executeStream(toolCall.arguments, context).collect { ev ->
+            when (ev) {
+                is ToolStreamEvent.Progress -> {
+                    live.append(ev.chunk).append('\n')
+                    if (live.length > STREAM_LIVE_TAIL_CHARS) {
+                        live.delete(0, live.length - STREAM_LIVE_TAIL_CHARS)
+                    }
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitMs >= STREAM_PROGRESS_INTERVAL_MS) {
+                        lastEmitMs = now
+                        onProgress(live.toString())
+                    }
+                }
+                is ToolStreamEvent.Completed -> onCompleted(ev.result)
+            }
+        }
+        true
+    }
+    return completed == true
 }

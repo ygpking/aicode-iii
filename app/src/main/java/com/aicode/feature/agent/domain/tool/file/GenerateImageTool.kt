@@ -14,6 +14,7 @@ import com.aicode.feature.agent.domain.provider.isKeySwitchFailure
 import com.aicode.feature.agent.domain.provider.joinUrl
 import com.aicode.feature.agent.domain.provider.parseInteractionSteps
 import com.aicode.feature.agent.domain.provider.resolveCustomHeaders
+import com.aicode.feature.agent.domain.subagent.SubAgentWriteLease
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
@@ -61,7 +62,8 @@ class GenerateImageTool @Inject constructor(
     private val openAIApi: OpenAIApi,
     private val geminiApi: GeminiApi,
     private val httpClient: OkHttpClient,
-    private val keyRotator: ProviderKeyRotator
+    private val keyRotator: ProviderKeyRotator,
+    private val writeLease: SubAgentWriteLease
 ) : AbstractContextualTool() {
 
     override val name = "generateImage"
@@ -226,7 +228,7 @@ class GenerateImageTool @Inject constructor(
                 request = request
             )
             AILogger.logResponse(context.sessionId, provider.id, response, seq)
-            buildSuccess(response, n, outputPath, model)
+            buildSuccess(response, n, outputPath, model, context.sessionId)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -257,7 +259,8 @@ class GenerateImageTool @Inject constructor(
         response: ImageGenerationResponse,
         requestedN: Int,
         outputPath: String?,
-        model: String
+        model: String,
+        sessionId: String?
     ): ToolResult {
         if (response.data.isEmpty()) {
             return ToolResult.Error("生图服务未返回任何图片数据", "EMPTY_RESULT")
@@ -288,7 +291,7 @@ class GenerateImageTool @Inject constructor(
                 totalBytes = checkedTotalBytes(totalBytes, bytes.size)
                 persistImageBytes(
                     bytes, base64, effectiveBasePath, overwrite,
-                    agentImages, savedDisplayPaths, filesList
+                    agentImages, savedDisplayPaths, filesList, sessionId.orEmpty()
                 )
             } catch (e: Exception) {
                 failedCount++
@@ -377,7 +380,7 @@ class GenerateImageTool @Inject constructor(
                     runCatching {
                         totalBytes += persistImage(
                             image.base64Data, effectiveBasePath, overwrite, agentImages,
-                            savedDisplayPaths, filesList, totalBytes
+                            savedDisplayPaths, filesList, totalBytes, sessionId.orEmpty()
                         )
                     }.onFailure { FileLogger.w(TAG, "处理 Gemini 生图结果失败", it) }
                 }
@@ -444,7 +447,7 @@ class GenerateImageTool @Inject constructor(
                     runCatching {
                         totalBytes += persistImage(
                             base64, effectiveBasePath, overwrite, agentImages,
-                            savedDisplayPaths, filesList, totalBytes
+                            savedDisplayPaths, filesList, totalBytes, sessionId.orEmpty()
                         )
                     }.onFailure { FileLogger.w(TAG, "处理 Gemini 生图结果失败", it) }
                 }
@@ -494,13 +497,14 @@ class GenerateImageTool @Inject constructor(
         agentImages: MutableList<AgentImage>,
         savedDisplayPaths: MutableList<String>,
         filesList: MutableList<JsonObject>,
-        currentTotalBytes: Long
+        currentTotalBytes: Long,
+        sessionId: String
     ): Long {
         val bytes = decodeImageBase64(base64)
         checkedTotalBytes(currentTotalBytes, bytes.size)
         persistImageBytes(
             bytes, base64, effectiveBasePath, overwrite,
-            agentImages, savedDisplayPaths, filesList
+            agentImages, savedDisplayPaths, filesList, sessionId
         )
         return bytes.size.toLong()
     }
@@ -512,11 +516,17 @@ class GenerateImageTool @Inject constructor(
         overwrite: Boolean,
         agentImages: MutableList<AgentImage>,
         savedDisplayPaths: MutableList<String>,
-        filesList: MutableList<JsonObject>
+        filesList: MutableList<JsonObject>,
+        sessionId: String
     ) {
         if (bytes.isEmpty()) throw IOException("图片内容为空")
         val format = detectImageFormat(bytes)
         val targetPath = buildTargetPath(effectiveBasePath, agentImages.size, format)
+        // 写租约闸门：生成图片会真实落盘，子代理只允许写自己声明的路径（未声明租约的会话直接放行）。
+        if (!writeLease.isWithinLease(sessionId, targetPath)) {
+            FileLogger.w(TAG, "generateImage 超出写租约，跳过落盘: $targetPath")
+            throw IOException("$targetPath 不在本会话声明的写路径内（write_paths），已跳过落盘。")
+        }
         val realMime = mimeForFormat(format)
         fileAccess.writeBytes(targetPath, bytes, overwrite = overwrite)
         val displayPath = fileAccess.toDisplayPath(targetPath)

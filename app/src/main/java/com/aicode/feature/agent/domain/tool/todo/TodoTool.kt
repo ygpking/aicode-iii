@@ -91,7 +91,7 @@ class TodoTool @Inject constructor(
             replaceTodos(args, sessionId)
         } catch (e: Exception) {
             FileLogger.e(TAG, "todo 工具执行失败: ${e.message}", e)
-            ToolResult.Error("待办操作失败: ${e.message}")
+            ToolResult.Error("待办操作失败: ${e.message}", "TODO_FAILED")
         }
     }
 
