@@ -55,7 +55,7 @@ AI 可通过 `browser` 工具控制浏览器执行以下操作：
 | `getText` | 提取页面文本（可指定选择器），已过滤 script/style |
 | `getHtml` | 提取页面 HTML（可指定选择器） |
 | `getBackbone` | 提取无障碍树（role/name/ref，可指定 `maxDepth`），ref 可直接用于后续操作 |
-| `screenshot` | 截取当前页面，返回图片供视觉模型分析（支持后台离屏截图） |
+| `screenshot` | 截取当前页面，返回图片供视觉模型分析（支持后台离屏截图）。截图会写入 `path`（默认存到工作区），因此**属写操作**：PLAN 模式下会被拦截，子代理调用时受 `write_paths` 租约约束 |
 | `console` | 取页面控制台日志（可过滤级别、可清空） |
 | `wait` | 等待条件满足（`text=` / `text*=` / `selector=` / `domStable`，可设 `timeout`） |
 | `scroll` | 滚动页面（滚动到指定元素或滚到底部） |
