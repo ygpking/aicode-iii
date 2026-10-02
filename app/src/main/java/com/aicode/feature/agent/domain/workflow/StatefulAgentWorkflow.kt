@@ -75,6 +75,7 @@ import com.aicode.feature.agent.domain.memory.RecallDoc
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.JsonArray
@@ -124,6 +125,14 @@ class StatefulAgentWorkflow @Inject constructor(
 
     private companion object {
         const val TAG = "StatefulAgentWorkflow"
+
+        /**
+         * 单个工具执行的总时限（兜底）。必须**大于**工具自身上限——命令类工具允许
+         * 1800 秒（CommandEngine.MAX_TIMEOUT_MS），取值更小会误杀正跑着的长构建。
+         * 这里只防「卡死不返回」：实测虚拟屏曾因内部无界重试卡住整夜，
+         * 而当时整条链路上没有任何一道超时拦得住。
+         */
+        const val TOOL_GUARD_TIMEOUT_MS = 1_900_000L
         const val LIVE_TAIL_CHARS = 4_000
         const val PROGRESS_INTERVAL_MS = 250L
         const val USER_REJECTED_CODE = "USER_REJECTED"
@@ -1071,7 +1080,20 @@ class StatefulAgentWorkflow @Inject constructor(
             return ToolRunResult(ToolResult.Error(guidance, "TOOL_NOT_FOUND").toTransportString(), true)
         }
         return try {
-            val result = tool.executeWithContext(toolCall.arguments, context)
+            // 兜底守卫：单个工具不得无限期占住本轮。取值必须**大于**工具自身上限
+            // （命令类工具允许 1800 秒，见 CommandEngine.MAX_TIMEOUT_MS），否则会误杀
+            // 正跑着的长构建。此处只防「卡死不返回」——实测虚拟屏曾因内部逻辑无界重试
+            // 卡住整夜，而当时链路上没有任何一道超时能拦住它。
+            val result = withTimeoutOrNull(TOOL_GUARD_TIMEOUT_MS) {
+                tool.executeWithContext(toolCall.arguments, context)
+            } ?: return ToolRunResult(
+                ToolResult.Error(
+                    "工具 $name 执行超时（超过 ${TOOL_GUARD_TIMEOUT_MS / 60_000} 分钟仍未返回），已中止。" +
+                        "若确实需要更久，请拆分任务后重试。",
+                    "TOOL_TIMEOUT"
+                ).toTransportString(),
+                true
+            )
             val attachments = if (name == "sendFile" || name == "generateImage") extractAttachments(result) else emptyList()
             val images = if (result is ToolResult.Success) result.images else emptyList()
             val transportResult = if (attachments.isNotEmpty()) stripAttachments(result) else result
