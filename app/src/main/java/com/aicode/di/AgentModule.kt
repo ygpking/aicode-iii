@@ -54,6 +54,7 @@ import com.aicode.core.net.AppProxy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.agent.domain.tool.ToolOutputStore
 import com.aicode.feature.agent.domain.tool.RetrieveToolResultTool
+import com.aicode.feature.agent.domain.tool.BrowseHistoryTool
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.terminal.domain.DelegatingTerminalSessionProvider
 import com.aicode.feature.terminal.domain.RemoteTerminalSessionManager
@@ -306,7 +307,8 @@ object AgentModule {
         taskTool: TaskTool,
         messageParentTool: MessageParentTool,
         browserTool: BrowserTool,
-        virtualScreenTool: VirtualScreenTool
+        virtualScreenTool: VirtualScreenTool,
+        browseHistoryTool: BrowseHistoryTool
     ): ToolRegistry {
         return ToolRegistry().apply {
             register("readFile", readFileTool)
@@ -333,6 +335,7 @@ object AgentModule {
             register("messageParent", messageParentTool)
             register("browser", browserTool)
             register("virtualScreen", virtualScreenTool)
+            register("browseHistory", browseHistoryTool)
         }
     }
 

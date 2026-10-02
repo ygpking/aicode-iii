@@ -47,6 +47,43 @@ interface AgentMessageDao {
     @Query("SELECT * FROM agent_messages WHERE id = :id LIMIT 1")
     suspend fun getMessageById(id: String): AgentMessageEntity?
 
+    /**
+     * 翻阅会话历史：按会话取消息，**包含已压缩的**（isCompacted=1），供 AI 在压缩后回捞细节。
+     *
+     * 与 [searchInWorkspace] 的取舍相反——那里排除已压缩消息（UI 搜索只要当前上下文里的内容），
+     * 这里必须包含：压缩只是把 head 标记为不回放，原文仍在库里；排除它们就等于把被折叠的信息
+     * 永久对模型隐藏（压缩后「丢信息」的根因）。
+     *
+     * 关键词为空时返回时间窗内的全部消息；否则在 role/content 上做 LIKE 匹配。
+     * 按 timestamp DESC 取最近 [limit] 条，让一次调用尽可能落在有价值的近处。
+     */
+    @Query(
+        """
+        SELECT * FROM agent_messages
+        WHERE sessionId = :sessionId
+          AND (:keyword = '' OR content LIKE '%' || :keyword || '%' ESCAPE '!')
+          AND (:beforeTimestamp <= 0 OR timestamp < :beforeTimestamp)
+        ORDER BY timestamp DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun browseSessionHistory(
+        sessionId: String,
+        keyword: String,
+        beforeTimestamp: Long,
+        limit: Int
+    ): List<AgentMessageEntity>
+
+    /** 会话内可翻阅消息总数（含已压缩），供工具向模型说明剩余量。 */
+    @Query(
+        """
+        SELECT COUNT(*) FROM agent_messages
+        WHERE sessionId = :sessionId
+          AND (:keyword = '' OR content LIKE '%' || :keyword || '%' ESCAPE '!')
+        """
+    )
+    suspend fun countSessionHistory(sessionId: String, keyword: String): Int
+
     /** 会话是否已有任何消息（LIMIT 1 快速判断，避免全量读取）。 */
     @Query("SELECT EXISTS(SELECT 1 FROM agent_messages WHERE sessionId = :sessionId LIMIT 1)")
     suspend fun hasMessages(sessionId: String): Boolean

@@ -4,6 +4,8 @@ import com.aicode.feature.settings.domain.repository.AIProviderRepository
 import com.aicode.feature.settings.data.repository.AIProviderRepositoryImpl
 import com.aicode.feature.credentials.domain.repository.CredentialRepository
 import com.aicode.feature.credentials.data.repository.FileCredentialRepository
+import com.aicode.feature.agent.domain.session.SessionHistoryRepository
+import com.aicode.feature.agent.data.SessionHistoryRepositoryImpl
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -25,4 +27,10 @@ abstract class RepositoryModule {
     abstract fun bindCredentialRepository(
         fileCredentialRepository: FileCredentialRepository
     ): CredentialRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindSessionHistoryRepository(
+        sessionHistoryRepositoryImpl: SessionHistoryRepositoryImpl
+    ): SessionHistoryRepository
 }
