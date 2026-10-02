@@ -17,7 +17,6 @@ import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.notification.AgentEventInjector
 import com.aicode.feature.agent.domain.notification.AgentNotificationCenter
 import com.aicode.feature.agent.domain.notification.AgentNotificationKind
-import androidx.annotation.VisibleForTesting
 import com.aicode.feature.agent.domain.notification.PendingNotification
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.domain.session.MessagePersistenceUseCase
@@ -134,8 +133,8 @@ class StatefulAgentWorkflow @Inject constructor(
          * 而当时整条链路上没有任何一道超时拦得住。
          */
         const val TOOL_GUARD_TIMEOUT_MS = 1_900_000L
-        const val LIVE_TAIL_CHARS = 4_000
-        const val PROGRESS_INTERVAL_MS = 250L
+        const val LIVE_TAIL_CHARS = STREAM_LIVE_TAIL_CHARS
+        const val PROGRESS_INTERVAL_MS = STREAM_PROGRESS_INTERVAL_MS
         const val USER_REJECTED_CODE = "USER_REJECTED"
         const val TITLE_GENERATOR_FILE = "agent/title-generator.md"
         const val TITLE_MAX_CHARS = 50
@@ -1319,45 +1318,6 @@ class StatefulAgentWorkflow @Inject constructor(
     }
 
     /**
-     * 带兜底超时地收集流式工具的输出，直到 flow 结束（返回 true）或超时（返回 false）。
-     *
-     * 抽成独立函数是为了让超时可被单测注入——[TOOL_GUARD_TIMEOUT_MS] 是 const，测试无法调小它。
-     * 进度事件沿用节流逻辑，超时判定只看 `withTimeoutOrNull` 的返回值，不依赖异常。
-     */
-    @VisibleForTesting
-    internal suspend fun collectStreamWithin(
-        toolCall: ToolCall,
-        context: AgentContext,
-        tool: StreamingAgentTool,
-        timeoutMs: Long,
-        onProgress: suspend (String) -> Unit,
-        onCompleted: (ToolResult) -> Unit
-    ): Boolean {
-        val live = StringBuilder()
-        var lastEmitMs = 0L
-        val completed = withTimeoutOrNull(timeoutMs) {
-            tool.executeStream(toolCall.arguments, context).collect { ev ->
-                when (ev) {
-                    is ToolStreamEvent.Progress -> {
-                        live.append(ev.chunk).append('\n')
-                        if (live.length > LIVE_TAIL_CHARS) {
-                            live.delete(0, live.length - LIVE_TAIL_CHARS)
-                        }
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitMs >= PROGRESS_INTERVAL_MS) {
-                            lastEmitMs = now
-                            onProgress(live.toString())
-                        }
-                    }
-                    is ToolStreamEvent.Completed -> onCompleted(ev.result)
-                }
-            }
-            true
-        }
-        return completed == true
-    }
-
-    /**
      * 把模型直出的图片（base64）落盘到 `~/.aicode/generated-images/`，
      * 与一一对应的 UI 附件（附件只带路径不含 base64，落库不撑爆数据库行）。
      */
@@ -1691,4 +1651,51 @@ class StatefulAgentWorkflow @Inject constructor(
             }
         }
     }
+}
+
+/** 流式工具过程输出的回看窗口（字符数）：只把尾部这段时间窗喂给 UI，避免超长输出拖垮渲染。 */
+private const val STREAM_LIVE_TAIL_CHARS = 4_000
+
+/** 流式进度事件的最小间隔：逐 chunk 上抛会让 UI 卡死，节流到该间隔。 */
+private const val STREAM_PROGRESS_INTERVAL_MS = 250L
+
+/**
+ * 带兜底超时地收集流式工具的输出，直到 flow 结束（返回 true）或超时（返回 false）。
+ *
+ * 抽成顶层函数是为了让超时可被单测注入——`TOOL_GUARD_TIMEOUT_MS` 是 const，测试无法调小它。
+ * 进度事件沿用节流逻辑，超时判定只看 `withTimeoutOrNull` 的返回值，不依赖异常。
+ *
+ * 单独置于顶层（而非 workflow 成员）是有意的：`StatefulAgentWorkflow` 有 25 个构造依赖，
+ * 为了测这段纯逻辑去实例化它，代价与收益完全不相称。
+ */
+internal suspend fun collectStreamWithin(
+    toolCall: ToolCall,
+    context: AgentContext,
+    tool: StreamingAgentTool,
+    timeoutMs: Long,
+    onProgress: suspend (String) -> Unit,
+    onCompleted: (ToolResult) -> Unit
+): Boolean {
+    val live = StringBuilder()
+    var lastEmitMs = 0L
+    val completed = withTimeoutOrNull(timeoutMs) {
+        tool.executeStream(toolCall.arguments, context).collect { ev ->
+            when (ev) {
+                is ToolStreamEvent.Progress -> {
+                    live.append(ev.chunk).append('\n')
+                    if (live.length > STREAM_LIVE_TAIL_CHARS) {
+                        live.delete(0, live.length - STREAM_LIVE_TAIL_CHARS)
+                    }
+                    val now = System.currentTimeMillis()
+                    if (now - lastEmitMs >= STREAM_PROGRESS_INTERVAL_MS) {
+                        lastEmitMs = now
+                        onProgress(live.toString())
+                    }
+                }
+                is ToolStreamEvent.Completed -> onCompleted(ev.result)
+            }
+        }
+        true
+    }
+    return completed == true
 }

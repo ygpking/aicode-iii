@@ -3,6 +3,7 @@ package com.aicode.feature.agent.domain.tool
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -125,5 +126,30 @@ class ToolOutputStoreTest {
         assertTrue("应给出回读入口", obj["output_path"] != null)
         assertEquals("true", obj["output_truncated"]!!.jsonPrimitive.content)
         assertTrue("落盘文件应真实存在", diskStore.readBack(obj["output_path"]!!.jsonPrimitive.content) == longText)
+    }
+
+    /**
+     * 处理过程抛异常时必须回滚已预留的额度。
+     *
+     * 原先只有 `commit` 没有 `rollback`：一次异常会让这批预留永久计在已用里，
+     * 后续输出被无谓地强制落盘，预算越跑越紧却查不出原因。
+     *
+     * 用 mock 让 `commit` 抛异常，确定性触发 `process` 的 catch 分支：
+     * 额度在进入处理逻辑前已预留，故回滚必须覆盖「预留成功、提交失败」这条路径。
+     */
+    @Test
+    fun commitThrows_rollsBackReservation() {
+        val budget = mockk<ToolRunBudget>(relaxed = true)
+        every { budget.reserve(any()) } returns ToolRunBudget.Reservation(granted = true, usedChars = 0L, maxChars = 1_000L)
+        every { budget.commit(any(), any()) } throws IllegalStateException("boom")
+        every { budget.committedChars } returns 999L
+
+        try {
+            store.process("readFile", "call-8", ToolResult.Success(JsonPrimitive(repetitiveOutput)), budget)
+        } catch (_: IllegalStateException) {
+            // 异常是否上抛由实现决定（当前设计为 rethrow），这里只关心额度是否被释放。
+        }
+
+        verify(exactly = 1) { budget.rollback(any()) }
     }
 }
