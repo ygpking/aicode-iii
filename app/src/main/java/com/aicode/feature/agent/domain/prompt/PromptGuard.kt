@@ -8,6 +8,16 @@ internal sealed interface PlaceholderCheck {
 
     /** 片段引用了未知变量（既不在已知变量集，也不在保留变量集）。 */
     data class UnknownVariables(val names: List<String>) : PlaceholderCheck
+
+    /**
+     * 片段把已知变量写在了**行内代码/代码块里**——那通常是「举例说明用法」，而非真要取值。
+     *
+     * 这种写法会出事：`renderVariables` 是无条件 `replace`，会把说明文字里的占位符
+     * 也替换成整段真实内容，把一句说明撑成上万字符（真机实测过），
+     * 同时让 [SystemPromptProvider] 的「是否已显式使用该变量」判定误判，
+     * 本该追加到末尾的清单反而被塞进那句说明中间。
+     */
+    data class QuotedVariables(val names: List<String>) : PlaceholderCheck
 }
 
 /**
@@ -25,6 +35,14 @@ internal object PromptPlaceholderChecker {
     private val PLACEHOLDER = Regex("""\{\{([A-Za-z0-9_]+)\}\}""")
 
     /**
+     * 行内代码（`` `…` ``）与代码块（```` ```…``` ````）的文本跨度。
+     *
+     * 用 `(?s)` 让 `.` 跨行，使代码块能整体匹配；行内代码限制在同段内（不含换行），
+     * 避免把「前面有个反引号…很久之后又有个反引号」误连成一大段。
+     */
+    private val QUOTED_SPAN = Regex("(?s)```.*?```|`[^`\n]*`")
+
+    /**
      * @param body 待校验的片段正文。
      * @param knownVariables 可渲染变量名（不含花括号），如 `AICODE_SKILLS`。
      * @param reservedVariables 保留变量名，不参与校验。
@@ -40,6 +58,23 @@ internal object PromptPlaceholderChecker {
             .distinct()
             .toList()
         return if (unknown.isEmpty()) PlaceholderCheck.Ok else PlaceholderCheck.UnknownVariables(unknown)
+    }
+
+    /**
+     * 检查片段是否把**可渲染变量**写在了行内代码/代码块里（举例说明的典型形态）。
+     *
+     * 与 [check] 分开是为了不破坏后者既有的「只报未知变量」契约；两者语义正交：
+     * [check] 找**拼错的名字**，本函数找**写对但位置错**的名字。
+     *
+     * @param knownVariables 可渲染变量名（不含花括号）。
+     */
+    fun checkQuoted(body: String, knownVariables: Set<String>): PlaceholderCheck {
+        val quoted = QUOTED_SPAN.findAll(body)
+            .flatMap { span -> PLACEHOLDER.findAll(span.value).map { it.groupValues[1] } }
+            .filter { it in knownVariables }
+            .distinct()
+            .toList()
+        return if (quoted.isEmpty()) PlaceholderCheck.Ok else PlaceholderCheck.QuotedVariables(quoted)
     }
 }
 
