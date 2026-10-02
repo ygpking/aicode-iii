@@ -524,11 +524,13 @@ class SystemPromptProvider @Inject constructor(
         /** 内置静态基线：数字身份 → 规范文件名，决定默认拼接顺序。 */
         val BASE_FRAGMENTS = linkedMapOf(
             0 to "00-identity.md",
+            5 to "05-常驻锚点.md",
             10 to "10-communication.md",
             15 to "15-project-rules.md",
             20 to "20-coding-discipline.md",
             30 to "30-comments.md",
             40 to "40-approach.md",
+            45 to "45-环境基线.md",
             50 to "50-safety.md",
             60 to "60-tools-and-paths.md",
             70 to "70-skills-and-mcp.md"
