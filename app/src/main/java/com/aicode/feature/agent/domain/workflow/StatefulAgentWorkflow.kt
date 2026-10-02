@@ -1089,7 +1089,7 @@ class StatefulAgentWorkflow @Inject constructor(
             } ?: return ToolRunResult(
                 ToolResult.Error(
                     "工具 $name 执行超时（超过 ${TOOL_GUARD_TIMEOUT_MS / 60_000} 分钟仍未返回），已中止。" +
-                        "若确实需要更久，请拆分任务后重试。",
+                        "${timeoutGuidance(name)}",
                     "TOOL_TIMEOUT"
                 ).toTransportString(),
                 true
@@ -1104,6 +1104,25 @@ class StatefulAgentWorkflow @Inject constructor(
         } catch (e: Exception) {
             ToolRunResult(ToolResult.Error("工具执行失败: ${e.message}。请勿用完全相同的参数重试；先检查参数或换个思路。", "TOOL_EXECUTION_FAILED").toTransportString(), true)
         }
+    }
+
+    /**
+     * 工具超时后的下一步指引。
+     *
+     * 光说「超时了」模型只能干猜（实测它会直接拿原参数重试，越卡越死）。按已知成因给出
+     * 可执行动作：不同工具卡住的原因与其可用替代路径是确定的，能写明的都写进消息里。
+     */
+    private fun timeoutGuidance(name: String): String = when (name) {
+        "virtualScreen" -> "虚拟屏需要经 Shizuku 与独立进程通信，卡住通常是 Shizuku 授权被回收或" +
+            "后台进程未退出。请先执行 action=status 看 daemon 与无障碍状态，必要时用 action=close 收尾；" +
+            "不要用完全相同的参数重试。"
+        "Bash", "terminal" -> "命令可能仍在后台跑。先用 terminal action=read 读已有标签的输出，" +
+            "确认是否真的还没结束；若是，用 ctrl+c 中断，或改用 notify=true 的后台方式重新发起。"
+        "task" -> "子代理可能仍在运行。先用 task action=list 看状态，需要时 read 取回；" +
+            "不要重复创建同一任务。"
+        "webfetch", "websearch", "browser" -> "网络请求可能卡在无响应的对端。换个来源或缩短范围后重试。"
+        else -> "先确认该工具是否已产生副作用（用只读工具核对现场），再决定是否重试；" +
+            "不要用完全相同的参数原样重试。"
     }
 
     private suspend fun activeModelSupportsVision(sessionId: String?): Boolean {
