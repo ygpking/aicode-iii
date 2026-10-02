@@ -45,7 +45,9 @@ import java.util.concurrent.atomic.AtomicLong
 object EventTrace {
 
     private const val TAG = "EventTrace"
-    private const val DIR_NAME = "traces"
+    /** 轨迹目录名。与 [com.aicode.feature.agent.domain.container.ContainerInstaller.diagnosticViewBindings]
+     *  的只读视图绑定保持一致——有单测守护这层对应关系。 */
+    internal const val DIR_NAME = "traces"
 
     /** 单个轨迹文件上限 4MB；超出后轮转（保留 [MAX_ROTATIONS] 代）。 */
     private const val MAX_FILE_BYTES = 4L * 1024 * 1024
@@ -58,6 +60,15 @@ object EventTrace {
 
     /** 无回合上下文的丢弃告警频率：首条 + 每这么多条一次。 */
     private const val ORPHAN_REPORT_EVERY = 50L
+
+    /**
+     * 回合外的观察类记录（UI / SNAPSHOT）挂靠的虚拟回合号。
+     *
+     * 用 `t0` 而非 `t-outside` 之类的名字：现有解析器与 `EventTrace` 自身的行格式
+     * 都按 `t<数字>` 识别回合，保持同一形态不需要下游额外适配。
+     * 语义上 0 号回合表「不属于任何真实回合的外部观察」，`endTurn` 不会去清它。
+     */
+    private const val OUT_OF_TURN = "t0"
 
     private val ioExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "event-trace").apply { isDaemon = true }
@@ -360,6 +371,16 @@ object EventTrace {
         recordCounters[mapKey] = 0L
         droppedCounters.remove(mapKey)
         activeTurns[key] = turnId
+        // 新回合开始 = 上一轮的回合外观察翻页：把 t0 的计数归零。
+        // 否则 t0 的记录数会跨回合单调累积，撞上 MAX_RECORDS_PER_TURN 后被静默丢弃
+        // （而它永不等不到 endTurn，没有任何其它清理时机）。
+        // seq 随之从 1 重新开始——与真实回合各自从 1 计数的口径一致。
+        val outOfTurnKey = keyOf(key, OUT_OF_TURN)
+        if (seqCounters.containsKey(outOfTurnKey)) {
+            seqCounters[outOfTurnKey] = AtomicLong(0)
+            recordCounters[outOfTurnKey] = 0L
+            droppedCounters.remove(outOfTurnKey)
+        }
         record(turnId, key, "TURN", "轮次开始")
         return turnId
     }
@@ -424,16 +445,38 @@ object EventTrace {
      * 于是「面板创建了却没被清理」这类跨层事实永远进不了日志。按 key 反查当前回合，
      * 任何一层都能把事件挂到正在进行的时间线上；无活动回合时静默丢弃。
      */
-    fun recordFor(scope: String?, layer: String, detail: String) {
-        if (!enabled || scope == null) return
+    /**
+     * 记录一条不带回合上下文的记录（由 [activeTurns] 反查回合号）。
+     *
+     * @return 分配到的 `seq`；未记录（未启用 / scope 为空 / 动作类层缺活跃回合）时返回 null。
+     *   返回值的意义在于**可观测**——调用方与测试都能判断这条到底进没进轨迹。
+     */
+    fun recordFor(scope: String?, layer: String, detail: String): Long? {
+        if (!enabled || scope == null) return null
         val turnId = activeTurns[scope]
         if (turnId == null) {
+            // UI 与 SNAPSHOT 是**观察**类记录（「此刻界面/残留是什么样」），不是回合内的**动作**。
+            // 它们本来就该能在回合外记录：典型如「尾巴气泡为何没隐藏」——那恰恰发生在回合**结束之后**，
+            // 而 endTurn 已摘掉活跃回合，于是这条打点**必然**被丢弃（真机实测 TRACE_DROPPED 全是被丢的
+            // `[UI] 尾巴`，不是偶发时序问题）。用固定虚拟回合号承接，既不丢记录，也不污染真实回合的因果链。
+            // TOOL/EVENT 不在此列：它们本该挂在回合上，缺失就是异常，仍走告警路径。
+            if (isObservationLayer(layer)) {
+                // record() 要求该回合的 seq 计数器存在（否则按「回合已收尾」丢弃）。
+                // t0 不是真实回合，永远不会被 endTurn 建立/清理，故在此按需初始化；
+                // 它的 seq 空间与会话的真实回合相互独立，不干扰因果链。
+                seqCounters.computeIfAbsent(keyOf(scope, OUT_OF_TURN)) { AtomicLong(0) }
+                return record(OUT_OF_TURN, scope, layer, detail)
+            }
             noteOrphan(scope, layer, detail, why = "作用域 $scope 无活跃回合")
-            return
+            return null
         }
         // scope 一并带上：反查得到的回合号在日志里不够用，仍需标明是哪个会话
-        record(turnId, scope, layer, detail)
+        return record(turnId, scope, layer, detail)
     }
+
+    /** 观察类层：描述「此刻是什么状态」，不描述「发生了什么动作」，可在回合外记录。 */
+    private fun isObservationLayer(layer: String): Boolean =
+        layer == "UI" || layer.startsWith("SNAPSHOT")
 
     /**
      * 记录一条**状态快照**：描述「此刻什么东西仍然存在」，而非「发生了什么动作」。
@@ -497,7 +540,12 @@ object EventTrace {
         val now = Instant.now()
         val session = scope?.take(8) ?: "-"
         val cause = if (causeSeq != null) " ←#$causeSeq" else ""
-        val line = "${timestampFormat.format(now)}  s=$session $turnId #$seq$cause  $layer  ${MediaRedactor.redact(detail)}\n"
+        // 先脱敏，再把换行折叠掉：本格式是「一条记录一行」，detail 若含换行会把一条记录撑成多行，
+        // 既破坏 grep（后续行没有时间戳/会话前缀，看起来像格式损坏），也破坏下游按行解析。
+        // 真机实测过：一条 HTTP 504 响应体被写进 detail 后裂成 5 行。
+        // 折叠而非截断：保留「此处原本有换行」的事实，且是纯 ASCII，不影响 grep 与人工阅读。
+        val flatDetail = foldNewlines(MediaRedactor.redact(detail))
+        val line = "${timestampFormat.format(now)}  s=$session $turnId #$seq$cause  $layer  $flatDetail\n"
         ioExecutor.execute {
             runCatching {
                 val day = dayFormat.format(now)
@@ -515,6 +563,18 @@ object EventTrace {
             }.onFailure { Log.e(TAG, "写入事件轨迹失败", it) }
         }
     }
+
+    /**
+     * 把 detail 里的换行折叠成字面量 `\n`，保证「一条记录占一行」的格式契约。
+     *
+     * 用字面量而非直接删掉换行：读轨迹时要能看出「原文这里断过行」——直接拼接会把
+     * 两段不相干的内容粘成一句，比多两个字符更容易误读。
+     * 先把 `\r\n` 与孤立 `\r` 归一，避免 Windows 换行变成 `\n` + 残留空行。
+     */
+    internal fun foldNewlines(text: String): String =
+        text.replace("\r\n", "\n")
+            .replace('\r', '\n')
+            .replace("\n", "\\n")
 
     /**
      * 轮转：把当前文件依次后移（`.1` → `.2` …），超出代数的最旧一份删除。

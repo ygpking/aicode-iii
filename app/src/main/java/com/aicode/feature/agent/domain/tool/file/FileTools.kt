@@ -247,7 +247,7 @@ class WriteFileTool @Inject constructor(
             )
         } catch (e: Exception) {
             FileLogger.e(TAG, "write_file 异常", e)
-            ToolResult.Error(e.message ?: "写入文件失败", "WRITE_ERROR")
+            ToolResult.Error(e.message ?: "写入文件失败", "WRITE_FAILED")
         }
     }
 

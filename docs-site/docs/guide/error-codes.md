@@ -54,8 +54,8 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `MISSING_PATH(S)` / `MISSING_TAB_ID` / `MISSING_KEY` / `MISSING_VALUE` | 缺少路径 / 终端标签 / 键名 / 取值 |
 | `MISSING_URL` / `MISSING_QUERY` / `MISSING_SELECTOR` / `MISSING_CONDITION` | 缺少网址 / 搜索词 / 选择器 / 等待条件 |
 | `MISSING_PROMPT` / `MISSING_ITEMS` / `MISSING_NAME` / `MISSING_CONTENT` | 缺少提示词 / 条目 / 名称 / 内容 |
-| `INVALID_ACTION` / `UNKNOWN_ACTION` / `UNSUPPORTED_ACTION` | 动作名不认识，AI 会被提示可用动作列表 |
-| `INVALID_ARGS` / `INVALID_PARAMS` / `INVALID_ARGUMENT` / `BAD_ARG` | 参数组合或取值非法 |
+| `INVALID_ACTION` | 动作名不认识（或当前工具不支持该动作），AI 会被提示可用动作列表 |
+| `INVALID_ARGS` | 参数组合或取值非法 |
 | `INVALID_URL` / `INVALID_FILE` / `INVALID_PIPE` / `INVALID_OPTIONS` | 网址 / 文件 / 管道 / 选项不合法 |
 
 ### 文件与编辑器
@@ -68,7 +68,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `NO_MATCH` / `MULTIPLE_MATCHES` / `STALE_CONTENT` | 待替换内容找不到 / 匹配到多处 / 文件已被改动 | AI 会重新读取文件后重新定位 |
 | `EMPTY_OLD_STRING` | 替换的旧内容为空 | 参数错误，AI 会补正 |
 | `NO_OP` | 改动内容与原文相同，无实际变化 | 属正常提示，非故障 |
-| `READ_ERROR` / `WRITE_ERROR` / `WRITE_FAILED` / `EDIT_ERROR` | 读写或编辑失败 | 见气泡附带的系统错误文本 |
+| `READ_ERROR` / `WRITE_FAILED` / `EDIT_ERROR` | 读取、写入或编辑失败 | 见气泡附带的系统错误文本 |
 
 ### 命令与终端
 
@@ -86,7 +86,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | 错误码 | 含义 | 常见处置 |
 | --- | --- | --- |
 | `FETCH_FAILED` | 网页抓取失败 | 检查网址可访问性，或改用搜索工具 |
-| `SEARCH_HTTP_ERROR` / `SEARCH_FAILED` / `SEARCH_ERROR` | 联网搜索失败 | 稍后重试 |
+| `SEARCH_FAILED` / `SEARCH_HTTP_ERROR` | 联网搜索失败（后者特指 HTTP 层失败，可稍后重试） | 稍后重试 |
 | `BROWSER_NOT_READY` / `BROWSER_ERROR` | 内置浏览器未就绪或操作出错 | 重开浏览器面板后重试 |
 | `TIMEOUT` | 操作超时 | 目标无响应，见气泡文本 |
 
@@ -110,7 +110,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `SHIZUKU_NOT_READY` / `SHIZUKU_EXEC_FAILED` | Shizuku | 服务未就绪或命令执行失败 |
 | `MCP_SERVER_NOT_FOUND` / `MCP_MANAGE_FAILED` / `MCP_TOOL_ERROR` / `MCP_TOOL_EXEC_FAILED` | MCP | 服务器找不到 / 管理失败 / 远端工具执行失败 |
 | `MISSING_SERVER_NAME` / `INVALID_SERVER_NAME` | MCP | 服务器名缺失或格式非法 |
-| `MEMORY_NOT_FOUND` / `MEMORY_FAILED` / `SAVE_FAILED` / `DELETE_FAILED` / `CURATION_FAILED` / `APPLY_FAILED` | 记忆 | 记忆条目找不到或增删改失败 |
+| `MEMORY_NOT_FOUND` / `MEMORY_FAILED` / `WRITE_FAILED` / `DELETE_FAILED` / `CURATION_FAILED` / `APPLY_FAILED` | 记忆 | 记忆条目找不到或增删改失败 |
 | `MISSING_RECEIPT_ID` / `MISSING_DESCRIPTION` / `MISSING_STALE_DAYS` / `INVALID_STALE_DAYS` | 记忆 | 回执号 / 描述 / 过期天数参数缺失或非法 |
 | `TODO_FAILED` / `INVALID_ITEM` | 待办 | 待办操作或条目非法 |
 | `EMPTY_RESULT` / `IMAGE_GEN_FAILED` / `VISION_CALL_FAILED` / `TOO_MANY_IMAGES` | 生成 / 查看图片 | 生图返回空、调用失败或图片过多 |

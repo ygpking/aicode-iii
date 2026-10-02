@@ -168,7 +168,7 @@ class MemoryTool @Inject constructor(
                 "edit" -> handleEdit(args, memoryName, scope, context.projectRoot)
                 "delete" -> handleDelete(memoryName, scope, context.projectRoot)
                 "prune" -> handlePrune(args, context.projectRoot)
-                else -> ToolResult.Error("不支持的操作: $action", "UNSUPPORTED_ACTION")
+                else -> ToolResult.Error("不支持的操作: $action", "INVALID_ACTION")
             }
         } catch (e: Exception) {
             FileLogger.e(TAG, "Memory 工具执行失败: ${e.message}", e)
@@ -350,7 +350,7 @@ class MemoryTool @Inject constructor(
             val triggerNote = if (triggers.isNullOrEmpty()) "" else "（含 ${triggers.size} 个触发词）"
             ToolResult.Success(JsonPrimitive("已成功保存记忆「$name」到 ${scope.name.lowercase()} 作用域$triggerNote。它将在下一次会话启动时自动注入摘要。当前会话若需立即使用，请通过 read 操作读取。"))
         } else {
-            ToolResult.Error("保存记忆失败，请查看日志。", "SAVE_FAILED")
+            ToolResult.Error("保存记忆失败，请查看日志。", "WRITE_FAILED")
         }
     }
 

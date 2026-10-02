@@ -132,7 +132,7 @@ class BrowserTool @Inject constructor(
             ToolResult.Error(e.message ?: "浏览器未初始化", "BROWSER_NOT_READY")
         } catch (e: IllegalArgumentException) {
             browserManager.recordAiOperation(action, targetSummary(action, args), isError = true)
-            ToolResult.Error(e.message ?: "参数错误", "INVALID_ARGUMENT")
+            ToolResult.Error(e.message ?: "参数错误", "INVALID_ARGS")
         } catch (e: TimeoutCancellationException) {
             browserManager.recordAiOperation(action, targetSummary(action, args), isError = true)
             ToolResult.Error("操作超时: $action", "TIMEOUT")
@@ -409,7 +409,7 @@ class BrowserTool @Inject constructor(
                 ), tabId = targetTabId)
             }
 
-            else -> ToolResult.Error("未知 action: $action", "UNKNOWN_ACTION")
+            else -> ToolResult.Error("未知 action: $action", "INVALID_ACTION")
         }
     }
 

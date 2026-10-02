@@ -859,6 +859,14 @@ class LinuxContainerEngine @Inject constructor(
         argv.add("-b")
         argv.add("${aicodeDir.absolutePath}:/root/.aicode")
 
+        // 诊断数据的只读视图：把 logs / ai-logs / traces 挂进容器，供 AI 自查运行痕迹。
+        // 这些目录原本在外部私有目录、容器不可见；绑定放在 .aicode 之后，目标是它的子目录
+        // （proot 支持嵌套绑定，更具体的路径生效）。详见 [ContainerInstaller.diagnosticViewBindings]。
+        for ((src, dst) in containerInstaller.diagnosticViewBindings) {
+            argv.add("-b")
+            argv.add("${src.absolutePath}:$dst")
+        }
+
         // profile 的额外绑定与参数：内置与导入容器默认也在此注入（见 ContainerProfile.DEFAULT_PROOT_ARGS），
         // 与用户手动添加同一条路径，保证参数落在 argv 末尾。
         for (b in profile.extraBindings) {

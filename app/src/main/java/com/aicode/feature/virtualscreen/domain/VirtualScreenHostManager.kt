@@ -109,6 +109,20 @@ class VirtualScreenHostManager @Inject constructor(
     var lastError: String? = null
         private set
 
+    /**
+     * 已确认的「协议版本不匹配」——记录对方版本号，非 null 表示本次进程内已判定**确定性失败**。
+     *
+     * 为什么要记：版本不匹配（旧 daemon + 新 App，且 dex 没能更新）**重试改变不了结果**，
+     * 但 [awaitReady] 的 `MAX_REBUILD_ATTEMPTS` 是**单次调用内**的上限，每次 [ensureReady]
+     * 都从 attempt=0 重来。真机实测因此刷出 26228 条 WARN（约占当日日志 90%），
+     * 每次操作还要白等 3×[READY_TIMEOUT_MS] 才失败——对外就是「点了没反应」。
+     *
+     * 只进程内有效：App 升级/重启会重新投递 dex，届时自然复位，无需用户手动清理。
+     * [shutdown] 显式清除，供「卸载并重装宿主」这类确实改变了前置条件的操作使用。
+     */
+    @Volatile
+    private var brokenProtocolVersion: Int? = null
+
     val daemonState: VirtualScreenDaemonState get() = state
 
     /**
@@ -117,6 +131,12 @@ class VirtualScreenHostManager @Inject constructor(
      * @return 就绪返回 null，否则返回可读的失败原因。
      */
     suspend fun ensureReady(): String? = mutex.withLock {
+        // 已确认版本不匹配：重试不会改变结果，直接快速失败，避免重复「重建 3 次 × 8 秒」。
+        brokenProtocolVersion?.let { version ->
+            return@withLock "daemon 协议版本不匹配（实为 $version，期望 $PROTOCOL）：" +
+                "本次运行已停止自动重建。请重启 App（会重新投递宿主 dex）后重试。"
+        }
+
         if (ready) {
             // 已就绪仍探活一次：daemon 可能被系统清理（低内存）而无从感知，
             // 只在「上次确认就绪」上盲目相信会让后续每条指令都超时。
@@ -198,6 +218,9 @@ class VirtualScreenHostManager @Inject constructor(
         }
         ready = false
         state = VirtualScreenDaemonState.STOPPED
+        // 显式关停意味着前置条件可能已改变（如重装宿主 dex），解除「确定性失败」标记，
+        // 让下一次 ensureReady 重新走完整流程去验证，而不是被旧结论挡住。
+        brokenProtocolVersion = null
         Unit
     }
 
@@ -315,10 +338,15 @@ class VirtualScreenHostManager @Inject constructor(
                 val version = line.removePrefix(TAG_PONG).trim().toIntOrNull()
                 if (version == PROTOCOL) return true
                 if (attempt >= MAX_REBUILD_ATTEMPTS) {
+                    // 重建到上限仍不匹配 = 确定性失败：记下来供 [ensureReady] 短路，
+                    // 否则每次调用都要把「3 次重建 × 8 秒」重跑一遍（真机实测刷出 2 万+ 条日志）。
+                    if (version != null) brokenProtocolVersion = version
                     lastError = "daemon 协议版本不匹配（实为 $version，期望 $PROTOCOL），重建 $attempt 次仍失败"
                     return false
                 }
                 // 版本不符：旧 daemon 仍在跑，让它退出后再走一遍拉起流程。
+                // 这条日志按 attempt 计数本就最多 3 条/次调用；配合上面的短路，
+                // 不会再有「每次操作都重刷」的问题。
                 FileLogger.w(TAG, "daemon 协议版本 $version != $PROTOCOL，重建（第 ${attempt + 1} 次）")
                 send("EXIT", 3_000L)
                 kotlinx.coroutines.delay(500)

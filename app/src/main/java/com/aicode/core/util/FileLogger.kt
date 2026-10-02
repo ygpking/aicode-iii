@@ -35,6 +35,10 @@ enum class LogLevel {
  */
 object FileLogger {
 
+    /** 日志目录名。与 [com.aicode.feature.agent.domain.container.ContainerInstaller.diagnosticViewBindings]
+     *  的只读视图绑定保持一致——有单测守护这层对应关系。 */
+    internal const val DIR_NAME = "logs"
+
     private const val TAG = "FileLogger"
     private const val MAX_AGE_DAYS = 7
     private const val MAX_FILE_BYTES = 5 * 1024 * 1024 // 单个日志文件上限 5MB（VERBOSE 下增长较快）
@@ -86,7 +90,7 @@ object FileLogger {
         if (logDir != null) return
         // 优先外部私有目录，便于用户用文件管理器查看；不可用时回退内部存储。
         val base = context.getExternalFilesDir(null) ?: context.filesDir
-        val dir = File(base, "logs").apply { mkdirs() }
+        val dir = File(base, DIR_NAME).apply { mkdirs() }
         logDir = dir
         // 默认等级按构建类型兜底：release 不开全量 VERBOSE（AI 高频工具日志会持续刷盘）。
         // 仅当从未设置过时生效——用户/持久化设置随后经 setMinLevel 覆盖，永远优先。
