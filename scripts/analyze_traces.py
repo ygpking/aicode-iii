@@ -78,6 +78,16 @@ ORPHAN_RE = re.compile(
 # 它们要么是新出现的码（白名单该更新），要么是噪声（黑名单该更新），两种都需要人看见。
 CODE_TOKEN_RE = re.compile(r"\b([A-Z][A-Z0-9_]{3,})\b")
 
+# TRACE_DROPPED 的 detail 形如「…，本条未入轨迹（累计 50 条）: [UI] …」。
+# 该计数是**进程内**的（AtomicLong，进程重启归零），故跨天的最大值不可直接相加，
+# 但单份文件内取 max 即该进程段的真实丢弃下界。
+ORPHAN_COUNT_RE = re.compile(r"累计\s+(\d+)\s+条")
+
+# 多行内容污染的识别特征：整行**没有**合法的轨迹前缀（时间戳），且内容像上一条 detail 的延续——
+# 典型是 HTML / JSON 片段（实测见过 HTTP 504 响应体被写进 detail 后裂成多行）。
+# 只作「提示」用途：这类行既不是格式变更，也不该被当成新记录。
+MULTILINE_HINT_RE = re.compile(r"(^\s*</?[a-zA-Z!]|^\s*\{|^\s*\"|</\w+>\s*$|\btransient=\w+)")
+
 # 内置快照：截至提交时的 code 全集。可能滞后于代码，故仅作默认值，
 # 并会在报告中提示「用了内置快照」。
 BUILTIN_ERROR_CODES = frozenset({
@@ -182,6 +192,8 @@ def parse_traces(paths, known_codes=BUILTIN_ERROR_CODES):
         "error_codes": Counter(),      # 白名单内的码
         "unknown_tokens": Counter(),   # 白名单外的大写词（新码 or 噪声）
         "dropped": [],           # TRACE_DROPPED 明细
+        "dropped_max": 0,        # 「累计 N 条」的最大值 = 真实丢弃下界（行数会因限频低估）
+        "multiline_suspects": [],  # 疑似多行内容污染格式的行
         "lifecycle": [],         # LIFECYCLE 明细
         "turns_started": 0,
         "turns_ended": 0,
@@ -207,7 +219,13 @@ def parse_traces(paths, known_codes=BUILTIN_ERROR_CODES):
                             stats["layers"][om.group("layer")] += 1
                             stats["lifecycle"].append(line)
                             continue
-                        if len(stats["unparsed"]) < 10:
+                        # 区分两类「无法解析」：一是真实格式变更，二是**多行内容**被直接拼进
+                        # 单行格式（如 HTTP 响应体含 \n），把一条记录撑成多行。后者是数据污染，
+                        # 会同时破坏 grep 与解析，值得单独指出（实测见过 504 页面被写进轨迹）。
+                        if MULTILINE_HINT_RE.search(line):
+                            if len(stats["multiline_suspects"]) < 20:
+                                stats["multiline_suspects"].append(line[:160])
+                        elif len(stats["unparsed"]) < 10:
                             stats["unparsed"].append(line[:160])
                         continue
                     stats["parsed_lines"] += 1
@@ -223,6 +241,14 @@ def parse_traces(paths, known_codes=BUILTIN_ERROR_CODES):
                         continue
                     if layer == "TRACE_DROPPED":
                         stats["dropped"].append(line)
+                        # EventTrace 对丢弃事实做了限频（首条 + 每 ORPHAN_REPORT_EVERY=50 条一次），
+                        # 所以「数行数」会严重低估真实丢弃量——实测 10-01 只留 17 行，
+                        # 但 detail 里的「累计 N 条」已到 50。真实计数只能从该字段读。
+                        mcount = ORPHAN_COUNT_RE.search(detail)
+                        if mcount:
+                            stats["dropped_max"] = max(
+                                stats["dropped_max"], int(mcount.group(1))
+                            )
                         continue
                     if layer.startswith("SNAPSHOT"):
                         stats["snapshots"].append(line)
@@ -265,9 +291,17 @@ def report(stats, top, codes_source="内置快照"):
     print(f"总行数     : {stats['total_lines']}")
     print(f"可解析行数 : {stats['parsed_lines']}")
     if stats["total_lines"] and stats["parsed_lines"] < stats["total_lines"]:
-        print(f"⚠ 有 {stats['total_lines'] - stats['parsed_lines']} 行无法解析（格式可能已变更）")
+        print(f"⚠ 有 {stats['total_lines'] - stats['parsed_lines']} 行无法解析")
+    if stats["multiline_suspects"]:
+        print(f"  ├ 其中 {len(stats['multiline_suspects'])} 行疑似**多行内容污染**——")
+        print("  │ 某条记录的 detail 含换行（如 HTTP 响应体），被直接拼进单行格式后裂成多行。")
+        print("  │ 这既破坏 grep 也破坏解析，应让写入端对 detail 做换行转义/折叠：")
+        for line in stats["multiline_suspects"][:5]:
+            print("  │   ?", line)
+    if stats["unparsed"]:
+        print(f"  └ 另有 {len(stats['unparsed'])} 行无法归类（可能是格式变更）：")
         for line in stats["unparsed"]:
-            print("    ?", line)
+            print("      ?", line)
     print()
 
     print("-" * 72)
@@ -308,7 +342,13 @@ def report(stats, top, codes_source="内置快照"):
 
     if stats["dropped"]:
         print("-" * 72)
-        print(f"⚠ 被丢弃的轨迹记录（{len(stats['dropped'])} 条）——说明某层没接上轨迹，属设计缺口：")
+        printed = len(stats["dropped"])
+        real = stats["dropped_max"]
+        print(f"⚠ 被丢弃的轨迹记录——说明某层没接上轨迹，属设计缺口：")
+        print(f"    轨迹里只留了 {printed} 行（写入端限频：首条 + 每 50 条一次）")
+        if real > printed:
+            print(f"    但 detail 里的「累计」已到 {real} 条 → **真实丢弃量约 {real} 条**，别被行数骗了")
+        print(f"    这些计数是**进程内**的，跨天不可相加（进程重启归零）")
         for line in stats["dropped"][:top]:
             print("   ", line)
         print()
