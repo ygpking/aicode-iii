@@ -63,10 +63,11 @@ class ToolPermissionPolicyEngine @Inject constructor(
 
         /**
          * 浏览器工具：navigate/click/fill/select/evaluate/dialog/back/forward/reload/newTab/closeTab/selectTab 为写操作（PLAN 拦截），
-         * getText/getHtml/getBackbone/screenshot/console/wait/listTabs 为只读（PLAN 放行）。
+         * getText/getHtml/getBackbone/console/wait/listTabs 为只读（PLAN 放行）。
+         * screenshot 会把截图写入 `path`（可指向工作区外），属写操作，PLAN 模式下必须拦截。
          */
         const val BROWSER_TOOL = "browser"
-        private val BROWSER_READ_ONLY_ACTIONS = setOf("getText", "getHtml", "getBackbone", "screenshot", "console", "wait", "listTabs")
+        private val BROWSER_READ_ONLY_ACTIONS = setOf("getText", "getHtml", "getBackbone", "console", "wait", "listTabs")
 
         /**
          * 提权参数：非 AUTO 模式下，命令因内置安全防护（灾难性 rm）被拒时，

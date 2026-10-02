@@ -1,6 +1,8 @@
 package com.aicode.feature.agent.domain.tool.container
 
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.agent.domain.container.CommandSleepGuard
+import com.aicode.feature.agent.domain.container.sanitizeCommandForLog
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
@@ -260,6 +262,12 @@ class TerminalSessionTool @Inject constructor(
             emit(ToolStreamEvent.Completed(ToolResult.Error("start 操作缺少必需参数: command")))
             return
         }
+        // start 的命令同样承载 shell 命令，可执行 `sleep 3600` 绕过「禁止固定延时等待」，与 Bash 同款拦截。
+        CommandSleepGuard.blockReason(command)?.let { block ->
+            FileLogger.i(TAG, "命令被 sleep 守卫拦截: ${sanitizeCommandForLog(command)}")
+            emit(ToolStreamEvent.Completed(ToolResult.Error(block)))
+            return
+        }
         val title = args["title"]?.asPlainString()
         val notify = args["notify"]?.asPlainString()?.toBooleanStrictOrNull() ?: false
         val tabId = try {
@@ -287,6 +295,12 @@ class TerminalSessionTool @Inject constructor(
         val input = args["input"]?.asPlainString()
         if (input == null) {
             emit(ToolStreamEvent.Completed(ToolResult.Error("send 操作缺少必需参数: input")))
+            return
+        }
+        // send 的输入被 shell 解释执行，`sleep 3600` 一样能绕过，与 start 同款拦截。
+        CommandSleepGuard.blockReason(input)?.let { block ->
+            FileLogger.i(TAG, "命令被 sleep 守卫拦截: ${sanitizeCommandForLog(input)}")
+            emit(ToolStreamEvent.Completed(ToolResult.Error(block)))
             return
         }
         val submit = args["submit"]?.asPlainString()?.toBooleanStrictOrNull() ?: true
@@ -342,6 +356,11 @@ class TerminalSessionTool @Inject constructor(
     private suspend fun start(args: Map<String, JsonElement>, sourceSessionId: String?): ToolResult = withContext(Dispatchers.Main) {
         val command = args["command"]?.asPlainString()
             ?: return@withContext ToolResult.Error("start 操作缺少必需参数: command")
+        // start 的命令同样承载 shell 命令，可执行 `sleep 3600` 绕过「禁止固定延时等待」，与 Bash 同款拦截。
+        CommandSleepGuard.blockReason(command)?.let { block ->
+            FileLogger.i(TAG, "命令被 sleep 守卫拦截: ${sanitizeCommandForLog(command)}")
+            return@withContext ToolResult.Error(block)
+        }
         val title = args["title"]?.asPlainString()
         val notify = args["notify"]?.asPlainString()?.toBooleanStrictOrNull() ?: false
         try {
@@ -386,6 +405,11 @@ class TerminalSessionTool @Inject constructor(
             ?: return@withContext ToolResult.Error("send 操作缺少必需参数: tab_id")
         val input = args["input"]?.asPlainString()
             ?: return@withContext ToolResult.Error("send 操作缺少必需参数: input")
+        // send 的输入被 shell 解释执行，`sleep 3600` 一样能绕过，与 start 同款拦截。
+        CommandSleepGuard.blockReason(input)?.let { block ->
+            FileLogger.i(TAG, "命令被 sleep 守卫拦截: ${sanitizeCommandForLog(input)}")
+            return@withContext ToolResult.Error(block)
+        }
         val submit = args["submit"]?.asPlainString()?.toBooleanStrictOrNull() ?: true
         val ok = sessionManager.sendInput(tabId, input, appendNewline = submit)
         if (ok) {
