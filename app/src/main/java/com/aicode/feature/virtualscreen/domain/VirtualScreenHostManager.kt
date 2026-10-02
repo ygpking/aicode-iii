@@ -2,7 +2,6 @@ package com.aicode.feature.virtualscreen.domain
 
 import android.content.Context
 import com.aicode.core.util.FileLogger
-import com.aicode.feature.agent.domain.shizuku.ShizukuCommandResult
 import com.aicode.feature.agent.domain.shizuku.ShizukuManager
 import com.aicode.feature.agent.domain.shizuku.ShizukuState
 import com.aicode.feature.virtualscreen.domain.model.VirtualScreenDaemonState
@@ -92,8 +91,8 @@ class VirtualScreenHostManager @Inject constructor(
         const val READY_TIMEOUT_MS = 8_000L
         const val READY_POLL_INTERVAL_MS = 300L
 
-        /** 发 EXIT 后等旧 daemon 收尾（releaseAll 要逐个释放虚拟屏）再覆盖 dex。 */
-        const val EXIT_SETTLE_MS = 800L
+        /** 协议版本不符时最多重建几次。避免无上限重试把每次等待叠加成假死的体感。 */
+        const val MAX_REBUILD_ATTEMPTS = 3
     }
 
     private val mutex = Mutex()
@@ -133,6 +132,16 @@ class VirtualScreenHostManager @Inject constructor(
             return@withLock stateError
         }
 
+        // daemon 能跨 App 进程存活（setsid 脱离会话）。若它已在跑**且** dex 已是最新，
+        // 就不必重投重拉——省掉一轮 dex 投递与进程启停，直接确认就绪即可。
+        // `ready` 是内存态，App 重启就会丢；没有这一步的话每次冷开 App 都要白跑一遍全套。
+        if (ping() && dexUpToDate()) {
+            ready = true
+            state = VirtualScreenDaemonState.READY
+            FileLogger.i(TAG, "复用已在跑的 daemon（协议 $PROTOCOL）")
+            return@withLock null
+        }
+
         state = VirtualScreenDaemonState.STARTING
         lastError = null
 
@@ -149,6 +158,11 @@ class VirtualScreenHostManager @Inject constructor(
             state = VirtualScreenDaemonState.READY
             FileLogger.i(TAG, "虚拟屏 daemon 就绪（协议 $PROTOCOL，端口 $PORT）")
             null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 取消不是失败：调用方（工具执行）被取消时应如实向上传播，
+            // 否则会把取消伪装成「拉起 daemon 失败」，误导用户。
+            state = VirtualScreenDaemonState.STOPPED
+            throw e
         } catch (e: Exception) {
             val msg = "拉起虚拟屏 daemon 失败: ${e.message}"
             state = VirtualScreenDaemonState.STOPPED
@@ -197,76 +211,76 @@ class VirtualScreenHostManager @Inject constructor(
     }
 
     /**
-     * 把 APK 内的 dex 抽取到 shell 私有目录。
-     *
-     * 走 Shizuku 以 shell 身份执行（app 进程自己写不进 `/data/data/com.android.shell/`）。
+     * 远端 dex 是否已与随包资源一致。给 [ensureReady] 的「复用已跑 daemon」快路径用；
+     * 查不到（文件缺失/命令失败）按不一致处理，交由正常投递流程覆盖。
+     */
+    private suspend fun dexUpToDate(): Boolean {
+        val assetMd5 = withContext(Dispatchers.IO) {
+            context.assets.open(ASSET_PATH).use { md5Hex(it.readBytes()) }
+        }
+        val result = shizukuManager.runCommand(
+            "md5sum $SHELL_DIR/host.dex 2>/dev/null | cut -d' ' -f1",
+            5_000L
+        )
+        val remote = result.output.trim().substringBefore('\n').trim()
+        return remote.equals(assetMd5, ignoreCase = true)
+    }
+
+    /**
+     * 把 APK 内的 dex 抽取到 shell 私有目录；已在位且内容一致时什么都不做。
      *
      * ## 为什么用 md5 而不是文件大小
      *
      * 原先只比大小。dex 字节数在改动后**可能恰好不变**（改字符串常量、调换指令等），
-     * 此时会误判「已是最新」而跳过投递，新代码永远上不去。更危险的是反向：大小变了而
-     * 旧 daemon 仍在跑——它已用旧 dex 建好了方法表，文件被覆盖后 ArtMethod 解析会读到
-     * 不一致的字节，实测表现为 `ThrowNoSuchMethodError` → **SIGSEGV 崩溃**。
-     * 故两个动作都做：**先停旧 daemon，再按 md5 判断要不要重写**。
+     * 实测确认过：两个不同版本的 host.dex 都是 11828 字节。此时会误判「已是最新」而跳过
+     * 投递，新代码永远上不去。更危险的是反向：大小变了而旧 daemon 仍在跑——它已用旧 dex
+     * 建好了方法表，文件被覆盖后 ArtMethod 解析会读到不一致的字节，实测表现为
+     * `ThrowNoSuchMethodError` → **SIGSEGV 崩溃**。
+     *
+     * ## 为什么全部合到一条 shell 命令里
+     *
+     * 每次 `runCommand` 都是一次 Shizuku/Binder 往返（首次还可能触发 UserService 绑定）。
+     * 拆成「md5 → PING → EXIT → unzip → md5」五次调用时，单次 open 的固定开销累计到肉眼可见
+     * 的卡顿（用户实测到需要手动取消）。合成一条后**常见路径只需 1 次往返**。
      */
     private suspend fun deployDex() {
         val assetBytes = withContext(Dispatchers.IO) {
             context.assets.open(ASSET_PATH).use(InputStream::readBytes)
         }
         val assetMd5 = md5Hex(assetBytes)
-        val currentMd5 = remoteFileMd5()
-        if (currentMd5 != null && currentMd5.equals(assetMd5, ignoreCase = true)) {
-            FileLogger.d(TAG, "dex 已是最新（md5=${assetMd5.take(8)}），跳过投递")
+        val apkPath = context.applicationInfo.sourceDir
+
+        // 顺序有语义：先比 md5，**只有内容不同才停 daemon**——否则每次 open 都会白重启一遍。
+        val script = buildString {
+            append("D=$SHELL_DIR; ")
+            append("C=\$(md5sum \$D/host.dex 2>/dev/null | cut -d' ' -f1); ")
+            append("if [ \"\$C\" = '$assetMd5' ]; then echo VDS_DEX_OK; exit 0; fi; ")
+            // 内容不同：先让旧 daemon 退出（它持有旧 dex 的方法表，直接覆盖会崩）
+            append("if printf 'PING\\n' | timeout 2 toybox nc -w 1 127.0.0.1 $PORT 2>/dev/null | grep -q $TAG_PONG; then ")
+            append("printf 'EXIT\\n' | timeout 3 toybox nc 127.0.0.1 $PORT >/dev/null 2>&1; sleep 0.8; fi; ")
+            append("mkdir -p \$D && unzip -p '$apkPath' '$APK_ENTRY_PATH' > \$D/host.dex; ")
+            append("echo VDS_DEX_WRITTEN \$(md5sum \$D/host.dex 2>/dev/null | cut -d' ' -f1)")
+        }
+        val result = shizukuManager.runCommand(script, LAUNCH_TIMEOUT_MS)
+        val out = result.output
+        if (out.contains("VDS_DEX_OK")) {
+            FileLogger.d(TAG, "dex 已是最新（md5=${assetMd5.take(8)}）")
             return
         }
-
-        // 覆盖前先让旧 daemon 退出：它持有的是旧 dex 的已解析方法表，
-        // 文件被换掉后再触发解析会崩（见上方注释）。旧 daemon 不存在时本步无副作用。
-        stopStaleDaemon()
-
-        // 经 APK 自身抽取：shell 读得到 /data/app 下的 base.apk（实测 0644 system:system），
-        // 但读不到 app 私有目录。用 `unzip -p` 直接输出到目标文件，dex 不落中间文件。
-        val apkPath = context.applicationInfo.sourceDir
-        val cmd = "mkdir -p $SHELL_DIR && unzip -p '$apkPath' '$APK_ENTRY_PATH' > $SHELL_DIR/host.dex"
-        val result = shizukuManager.runCommand(cmd, LAUNCH_TIMEOUT_MS)
-        if (result.exitCode != 0) {
-            throw IllegalStateException("抽取 dex 失败（exit=${result.exitCode}）: ${result.output.take(200)}")
-        }
-        val writtenMd5 = remoteFileMd5()
-        if (writtenMd5 == null || !writtenMd5.equals(assetMd5, ignoreCase = true)) {
+        val written = out.lineSequence()
+            .firstOrNull { it.startsWith("VDS_DEX_WRITTEN") }
+            ?.removePrefix("VDS_DEX_WRITTEN")?.trim()
+        if (written == null || !written.equals(assetMd5, ignoreCase = true)) {
             throw IllegalStateException(
-                "dex 投递校验失败：期望 md5=$assetMd5，实得 $writtenMd5"
+                "dex 投递失败：期望 md5=$assetMd5，实得 ${written ?: "（无输出 exit=${result.exitCode}）"}"
             )
         }
         FileLogger.i(TAG, "dex 已投递到 $SHELL_DIR/host.dex（md5=${assetMd5.take(8)}）")
     }
 
-    /** 让可能存在的旧 daemon 退出；未运行时不产生副作用。 */
-    private suspend fun stopStaleDaemon() {
-        val pong = send("PING", 2_000L)
-        if (pong?.lineSequence()?.firstOrNull { it.startsWith(TAG_PONG) } == null) {
-            FileLogger.d(TAG, "无在跑的 daemon，直接投递 dex")
-            return
-        }
-        FileLogger.i(TAG, "检测到在跑的 daemon，先停掉再覆盖 dex")
-        send("EXIT", 3_000L)
-        // EXIT 后 daemon 需 sib 时间收尾（releaseAll 会逐个 release 虚拟屏）。
-        kotlinx.coroutines.delay(EXIT_SETTLE_MS)
-    }
-
     private fun md5Hex(bytes: ByteArray): String =
         java.security.MessageDigest.getInstance("MD5").digest(bytes)
             .joinToString("") { "%02x".format(it) }
-
-    /** 远端 host.dex 的 md5；文件不存在或工具不可用时返回 null。 */
-    private suspend fun remoteFileMd5(): String? {
-        val result: ShizukuCommandResult = shizukuManager.runCommand(
-            "md5sum $SHELL_DIR/host.dex 2>/dev/null | cut -d' ' -f1",
-            5_000L
-        )
-        val raw = result.output.trim().substringBefore('\n').trim()
-        return raw.takeIf { it.length == 32 && it.all { c -> c.isDigit() || c in 'a'..'f' || c in 'A'..'F' } }
-    }
 
     /**
      * 拉起 daemon 进程。
@@ -285,8 +299,14 @@ class VirtualScreenHostManager @Inject constructor(
         FileLogger.d(TAG, "拉起 daemon，exit=${result.exitCode}")
     }
 
-    /** 轮询 `PING` 直到就绪或超时；顺带校验/纠偏协议版本。 */
-    private suspend fun awaitReady(): Boolean {
+    /**
+     * 轮询 `PING` 直到就绪或超时；顺带校验/纠偏协议版本。
+     *
+     * 版本不符时重建 daemon，但**重建次数有上限**：旧版 dex 写的 daemon 若因故
+     * 反复回同一个版本（或拉起总失败），无上限重试会每次都耗掉完整的 [READY_TIMEOUT_MS]，
+     * 对外表现为「点了没反应」。超限后如实报错，让上层能提示用户。
+     */
+    private suspend fun awaitReady(attempt: Int = 0): Boolean {
         val deadline = android.os.SystemClock.elapsedRealtime() + READY_TIMEOUT_MS
         while (android.os.SystemClock.elapsedRealtime() < deadline) {
             val pong = send("PING", 2_000L)
@@ -294,12 +314,16 @@ class VirtualScreenHostManager @Inject constructor(
             if (line != null) {
                 val version = line.removePrefix(TAG_PONG).trim().toIntOrNull()
                 if (version == PROTOCOL) return true
+                if (attempt >= MAX_REBUILD_ATTEMPTS) {
+                    lastError = "daemon 协议版本不匹配（实为 $version，期望 $PROTOCOL），重建 $attempt 次仍失败"
+                    return false
+                }
                 // 版本不符：旧 daemon 仍在跑，让它退出后再走一遍拉起流程。
-                FileLogger.w(TAG, "daemon 协议版本 $version != $PROTOCOL，重建")
+                FileLogger.w(TAG, "daemon 协议版本 $version != $PROTOCOL，重建（第 ${attempt + 1} 次）")
                 send("EXIT", 3_000L)
                 kotlinx.coroutines.delay(500)
                 ensureDaemonProcess()
-                return awaitReady()
+                return awaitReady(attempt + 1)
             }
             kotlinx.coroutines.delay(READY_POLL_INTERVAL_MS)
         }
