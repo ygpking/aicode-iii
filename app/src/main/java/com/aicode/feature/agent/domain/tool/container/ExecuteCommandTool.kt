@@ -126,7 +126,7 @@ class ExecuteCommandTool @Inject constructor(
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
         val command = args["command"]?.jsonPrimitive?.contentOrNull
-            ?: return ToolResult.Error("缺少必需参数: command")
+            ?: return ToolResult.Error("缺少必需参数: command", "MISSING_COMMAND")
 
         return try {
             // 在当前工作区目录内执行，与文件工具保持同一根目录
@@ -136,7 +136,7 @@ class ExecuteCommandTool @Inject constructor(
             if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
             CommandSleepGuard.blockReason(command)?.let { block ->
                 FileLogger.i(TAG, "命令被 sleep 守卫拦截: ${sanitizeCommandForLog(command)}")
-                return ToolResult.Error(block)
+                return ToolResult.Error(block, "SLEEP_BLOCKED")
             }
             // 命令正文不在这里记：engine 的 execCaptured 已记同一条（还多带 cwd），
             // 两处重复实测占日志 15%+，且工具执行期必然经过 engine，不会漏记。
@@ -149,7 +149,7 @@ class ExecuteCommandTool @Inject constructor(
             throw e
         } catch (e: Exception) {
             FileLogger.e(TAG, "execute_command 失败: ${sanitizeCommandForLog(command)}", e)
-            ToolResult.Error("执行命令失败: ${e.message}")
+            ToolResult.Error("执行命令失败: ${e.message}。请勿用完全相同的参数重试；先检查命令或换个思路。", "COMMAND_FAILED")
         }
     }
 
@@ -167,7 +167,7 @@ class ExecuteCommandTool @Inject constructor(
     ): Flow<ToolStreamEvent> = flow {
         val command = args["command"]?.jsonPrimitive?.contentOrNull
         if (command == null) {
-            emit(ToolStreamEvent.Completed(ToolResult.Error("缺少必需参数: command")))
+            emit(ToolStreamEvent.Completed(ToolResult.Error("缺少必需参数: command", "MISSING_COMMAND")))
             return@flow
         }
 
@@ -183,7 +183,7 @@ class ExecuteCommandTool @Inject constructor(
             if (guarded.rewritten) FileLogger.i(TAG, "命令已加内存保护: ${sanitizeCommandForLog(guarded.command)}")
             CommandSleepGuard.blockReason(command)?.let { block ->
                 FileLogger.i(TAG, "命令被 sleep 守卫拦截: ${sanitizeCommandForLog(command)}")
-                emit(ToolStreamEvent.Completed(ToolResult.Error(block)))
+                emit(ToolStreamEvent.Completed(ToolResult.Error(block, "SLEEP_BLOCKED")))
                 return@flow
             }
             // 命令正文交给 engine 记（见 execute 中同名注释），此处不重复。
@@ -225,7 +225,7 @@ class ExecuteCommandTool @Inject constructor(
             val result = if (saved.isNotEmpty()) {
                 ToolResult.Success(JsonPrimitive(saved))
             } else {
-                ToolResult.Error("执行命令失败: ${e.message}")
+                ToolResult.Error("执行命令失败: ${e.message}。请勿用完全相同的参数重试；先检查命令或换个思路。", "COMMAND_FAILED")
             }
             emit(ToolStreamEvent.Completed(result))
         }

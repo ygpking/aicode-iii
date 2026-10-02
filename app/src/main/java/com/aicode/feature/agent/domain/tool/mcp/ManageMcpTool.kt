@@ -107,7 +107,7 @@ class ManageMcpTool @Inject constructor(
     }
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
-        val action = args["action"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("缺少 action 参数")
+        val action = args["action"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("缺少 action 参数", "MISSING_ACTION")
         val scope = resolveScope(args)
         val scopeLabel = if (scope == McpScope.PROJECT) "当前项目" else "全局"
 
@@ -125,7 +125,7 @@ class ManageMcpTool @Inject constructor(
                     ToolResult.Success(JsonPrimitive(mcpConfigRepository.serialize(servers)))
                 }
                 "remove" -> {
-                    val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("remove 缺少 server_name")
+                    val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("remove 缺少 server_name", "MISSING_SERVER_NAME")
                     val servers = readServers().toMutableList()
                     // ignoreCase：与合并（小写作 key）及 UI 的忽略大小写匹配一致，否则大小写不一致时删不掉。
                     val removed = servers.removeIf { it.name.equals(name, ignoreCase = true) }
@@ -134,13 +134,13 @@ class ManageMcpTool @Inject constructor(
                         FileLogger.i(TAG, "manage_mcp remove: server=$name scope=$scopeLabel")
                         ToolResult.Success(JsonPrimitive("已成功移除 $scopeLabel MCP server: $name"))
                     } else {
-                        ToolResult.Error("未找到 $scopeLabel MCP server: $name")
+                        ToolResult.Error("未找到 $scopeLabel MCP server: $name。可用 manageMcp(action=\"list\", scope=...) 查看现有 server。", "MCP_SERVER_NOT_FOUND")
                     }
                 }
                 "add_stdio" -> {
-                    val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_stdio 缺少 server_name")
-                    if (!McpServerConfig.isValidName(name)) return ToolResult.Error(invalidNameMessage(name))
-                    val command = args["command"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_stdio 缺少 command")
+                    val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_stdio 缺少 server_name", "MISSING_SERVER_NAME")
+                    if (!McpServerConfig.isValidName(name)) return ToolResult.Error(invalidNameMessage(name), "INVALID_SERVER_NAME")
+                    val command = args["command"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_stdio 缺少 command", "MISSING_COMMAND")
                     val commandArgs = args["args"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
                     
                     val newServer = McpServerConfig(
@@ -160,9 +160,9 @@ class ManageMcpTool @Inject constructor(
                     ToolResult.Success(JsonPrimitive("成功添加 $scopeLabel 本地 MCP server: $name。配置将在下一次会话生效。若命令依赖 Node/Python 等运行时，请通过命令工具在用户确认后安装。"))
                 }
                 "add_http" -> {
-                    val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_http 缺少 server_name")
-                    if (!McpServerConfig.isValidName(name)) return ToolResult.Error(invalidNameMessage(name))
-                    val url = args["url"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_http 缺少 url")
+                    val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_http 缺少 server_name", "MISSING_SERVER_NAME")
+                    if (!McpServerConfig.isValidName(name)) return ToolResult.Error(invalidNameMessage(name), "INVALID_SERVER_NAME")
+                    val url = args["url"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_http 缺少 url", "MISSING_URL")
                     
                     val newServer = McpServerConfig(
                         name = name,
@@ -179,11 +179,11 @@ class ManageMcpTool @Inject constructor(
                     FileLogger.i(TAG, "manage_mcp add_http: server=$name scope=$scopeLabel url=$url")
                     ToolResult.Success(JsonPrimitive("成功添加 $scopeLabel HTTP MCP server: $name. 配置将在下一次会话生效。"))
                 }
-                else -> ToolResult.Error("未知的 action: $action")
+                else -> ToolResult.Error("未知的 action: $action。支持：list / add_stdio / add_http / remove。", "INVALID_ACTION")
             }
         } catch (e: Exception) {
             FileLogger.e(TAG, "manage_mcp 执行失败: ${e.message}", e)
-            ToolResult.Error("管理 MCP 失败: ${e.message}")
+            ToolResult.Error("管理 MCP 失败: ${e.message}。检查 server 名称、命令或 URL 后重试。", "MCP_MANAGE_FAILED")
         }
     }
 

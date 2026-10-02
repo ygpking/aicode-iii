@@ -887,7 +887,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         val sleepBlock = shellPayload?.let { CommandSleepGuard.blockReason(it) }
                         if (sleepBlock != null) {
                             FileLogger.i(TAG, "命令被 sleep 守卫前置拦截: $shellPayload")
-                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, effect.toolCall.name, ToolResult.Error(sleepBlock).toTransportString(), true, argsPreview))
+                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, effect.toolCall.name, ToolResult.Error(sleepBlock, "SLEEP_BLOCKED").toTransportString(), true, argsPreview))
                             actionQueue.addLast(AgentAction.PermissionEvaluated(effect.toolCall, false, argsPreview, sleepBlock, "SYSTEM_DENIED"))
                         } else {
                             val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)

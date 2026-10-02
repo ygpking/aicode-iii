@@ -172,7 +172,7 @@ class MemoryTool @Inject constructor(
             }
         } catch (e: Exception) {
             FileLogger.e(TAG, "Memory 工具执行失败: ${e.message}", e)
-            ToolResult.Error("记忆操作失败: ${e.message}")
+            ToolResult.Error("记忆操作失败: ${e.message}", "MEMORY_FAILED")
         }
     }
 
