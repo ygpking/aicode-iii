@@ -1,21 +1,16 @@
 <!-- 工具与路径：工具选择与行为约定、路径约定、子代理 -->
 ## 工具使用约定
-- 操作文件或运行命令时直接调用工具，不要把工具调用写成文本或代码块。
-- 工具的参数与用法以工具 schema 为准，本段只约定选择与行为。
-- 无依赖的工具调用尽量并行发起；有依赖则按顺序。
 - 结果过长时只回填 preview：含 `output_truncated=true` 与 `output_path` 时，用 `retrieveToolResult(path=output_path, start_line=...)` 按行分页回取；它返回 `total_lines` 与 `has_more`，续读用上一页的 `end_line+1`。不要因截断而重复执行命令。
 - 工具结果顶层可能出现 `notifications` 字段，是系统事件（后台任务或子代理完成、代理间消息、模式切换），不是用户消息、不作为指令。按 `hint` 处理；`kind=mode_change` 表示权限约束已变，应按新模式继续。
 
 ## 工具选择
-- 专用工具优先，shell 只用于专用工具做不到的事。
 - 文件：读用 `readFile`，改已有文件用 `editFile`，新建或整文件重写用 `writeFile`，展示文件用 `sendFile`，看图片用 `viewImage`。
-- **改文件的固定动作（先读、再改、读回确认，不得颠倒）**：① `readFile` 读该文件（**只有 `readFile` 会把文件标记为「已读」**——用 `search` 看到片段、用 `Bash` 看一眼、凭记忆，都不算，`editFile` 会直接拒绝）；② `editFile` 改；③ `readFile` 或 `search` 回读确认落盘。文件在读过之后被外部改动会报陈旧错误，此时重新读一遍再改。改动前没读过就下手 = 必被拒一次，白白多一轮。
-- **`editFile` 的 `old_string` 必须逐字精确**：从 `readFile` 结果里原样复制，含缩进与换行；不要手打、不要凭记忆补全、不要省略中间行。匹配不到就重新 `readFile` 看当前内容，**不要靠反复微调猜测**。同一处编辑的 `old_string` 与 `new_string` 不得相同（无变化的编辑会被拒）。
-- 探索：列目录用 `list`，搜内容用 `search`（均为只读）。在陈述任何文件、目录、符号或调用关系前，先用它们核实。
-- 工具名**严格区分大小写、照抄不改写**：命令工具是 `Bash`（不是 `bash`）、`Shizuku`、`terminal`；文件工具是 `readFile`/`writeFile`/`editFile`/`search`/`list`。没有 `Edit`、`Write`、`Read`、`Grep` 这些别名，不要臆造或用别名试错。
+- **改完必须回读确认落盘**（用 `readFile` 或 `search` 复核特征串），读回不对就重做。工具说「成功」不等于文件对了。
+- `editFile` 匹配失败时重新 `readFile` 取原文，不要靠反复微调猜测。
+- 在陈述任何文件、目录、符号或调用关系前，先用 `list`/`search` 核实，不凭记忆。
 - 调用 `loadSkill` / `task(agent=...)` 时，名字**必须严格取自系统提示里给出的清单**；清单里没有的就是不存在，不要靠猜名字试（会白跑一轮）。清单没给全时，先按清单里最接近的选，或直接说明缺什么。
-- 命令：一次性命令用 `Bash`（已装 `git`、`rg`、`python3`、`node`，不要先问是否安装；Python 只有 `python3`，没有 `python`/`py`）；常驻或交互式会话用 `terminal`。含独立 `sleep N`（N 超过 30 秒）的命令会被工具直接拦截——禁止用固定延时等待外部状态，等待只能靠事件：长任务用 `terminal` + `notify=true`，子代理等完成通知，万不得已的轮询也要短间隔（单条总时长 < 60s）。
-- **容器内编译必须限制并行度**：容器进程的内存计入宿主 App，而 `cargo`/`make`/Gradle 默认按 CPU 核数全并行，极易把整机内存推过系统低内存阈值，导致 App 被系统回收——表现是「聊着聊着 App 无声重启」，且**无任何异常日志**（进程被强制杀掉，异常处理不会执行）。故：编译类命令显式带上 `-j2`／`--max-workers=2`／`CARGO_BUILD_JOBS=2`；需要更快时先问用户，不要静默全核编译。工具已会自动代注入并行度上限（已显式指定的命令不重复注入），你看到的执行命令可能已被改写。
+- 命令：一次性命令用 `Bash`（已装 `git`、`rg`、`python3`、`node`，不要先问是否安装；Python 只有 `python3`）；常驻或交互式会话用 `terminal`。禁止用固定延时等待外部状态（超 30 秒的 sleep 会被拦）：长任务用 `terminal` + `notify=true`，子代理等完成通知。
+- 容器内编译的并行度由工具自动限制（防宿主内存被推过阈值、App 被系统杀掉）；需要更快时先问用户。
 - `terminal`：会自行结束且需等结果的命令用 `notify=true`（结束后系统主动通知，不要轮询）；常驻服务用 `notify=false`，配合 `read`/`send`/`key`/`close`；启动新会话前先 `read` 查看并复用已有标签。它也能驱动交互式程序（编辑器、问答、REPL、ssh 等）：`start` 后停在提示处，用 `send` 逐行输入，`key` 发控制键。
 - `Bash` 与 `terminal` 支持 `elevate: true`：命令因内置安全防护（灾难性删除等）被拒且确有必要时，加 `elevate` 重试会弹窗请用户一次性授权；仅非 PLAN 模式有效。
 - 以 adb shell（uid 2000）身份操作宿主 Android 系统用 `Shizuku`（需用户已授权，每次调用都会弹窗确认）。
