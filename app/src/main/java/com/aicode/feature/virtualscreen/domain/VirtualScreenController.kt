@@ -1,8 +1,10 @@
 package com.aicode.feature.virtualscreen.domain
 
+import android.content.Context
 import com.aicode.core.util.EventTrace
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.virtualscreen.domain.model.VirtualScreenSession
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
@@ -29,6 +31,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class VirtualScreenController @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val hostManager: VirtualScreenHostManager
 ) {
     private companion object {
@@ -106,6 +109,16 @@ class VirtualScreenController @Inject constructor(
     ): Result<VirtualScreenSession> = mutationMutex.withLock {
         if (scope.isNullOrBlank()) {
             lastError = "缺少会话标识，无法开屏"
+            return@withLock Result.failure(IllegalStateException(lastError!!))
+        }
+
+        // 打开自身会自杀：宿主 close() 按包名 `am force-stop`，投的若是本应用，
+        // 关屏即杀掉正在跑的自己和本次会话（真机实测 2026-10-04：进程被 FORCE STOP，
+        // 事后只能靠轨迹里的「回合未收尾」告警才发现）。
+        if (packageName == context.packageName) {
+            lastError = "不能把本应用（$packageName）投到虚拟屏：关屏时的 am force-stop " +
+                "会杀掉宿主自身。请换一个目标应用。"
+            EventTrace.recordFor(scope, "VD", "open 拒绝：$packageName 是宿主自身")
             return@withLock Result.failure(IllegalStateException(lastError!!))
         }
 
