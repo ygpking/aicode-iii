@@ -18,9 +18,9 @@ private const val TAG = "SshShellBackend"
  * emulator, user input → shell stdin, resize → PTY window size change.
  *
  * The [Session.Shell] must already be started (with a PTY allocated) before being wrapped
- * here. [waitForExit] blocks on [Session.Shell.join]; remote shells have no meaningful
- * exit status, so 0 is returned (the emulator appends its own "[Process completed]" notice
- * via [com.termux.terminal.TerminalSession] once the reader thread hits EOF).
+ * here. [waitForExit] blocks on [Session.Shell.join] and returns 0: sshj 只在
+ * `Session.Command` 上提供 `getExitStatus()`，`Session.Shell` 没有，交互式 shell 无退出码可读。
+ * 真实退出码由 RemoteTerminalSessionManager 在命令尾部打印退出标记后从屏幕缓冲解析。
  */
 class SshShellBackend(
     private val shell: Session.Shell

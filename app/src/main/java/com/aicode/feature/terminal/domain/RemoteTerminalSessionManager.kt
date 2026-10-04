@@ -7,7 +7,11 @@ import com.aicode.feature.settings.data.repository.ExecutionModeHolder
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.termux.terminal.TerminalSession
 import com.termux.terminal.TerminalSessionClient
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -23,6 +27,16 @@ private const val TAG = "RemoteTerminalSessionManager"
 private const val TRANSCRIPT_ROWS = 2000
 private const val DEFAULT_COLUMNS = 80
 private const val DEFAULT_ROWS = 24
+
+/**
+ * 命令尾部退出标记的前缀（与本地 [TerminalSessionManager] 同口径）。
+ *
+ * 远程必须靠标记而非 `exitStatus`：sshj 只给 [net.schmizz.sshj.connection.channel.direct.Session.Command]
+ * 提供 `getExitStatus()`，而终端标签用的是 `Session.Shell`，该接口无退出码可读。
+ */
+private const val EXIT_MARKER_PREFIX = "[command exited: "
+private const val EXIT_MARKER_GRACE_MS = 1_500L
+private const val EXIT_MARKER_POLL_MS = 1_000L
 
 /** 已完成的后台标签保留上限（与本地 [TerminalSessionManager] 同值）：超出则自动关最旧的。 */
 private const val MAX_FINISHED_BACKGROUND_TABS = 5
@@ -53,6 +67,9 @@ class RemoteTerminalSessionManager @Inject constructor(
     override val tabFinishedEvents: SharedFlow<TabFinishedEvent> = _tabFinishedEvents.asSharedFlow()
 
     private val idCounter = AtomicInteger(0)
+
+    /** 退出标记兜底监控的后台作用域；生命周期跟随进程（Singleton）。 */
+    private val monitorScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val activeTab: TerminalTab? get() = _tabs.value.firstOrNull { it.id == _activeTabId.value }
 
@@ -125,7 +142,14 @@ class RemoteTerminalSessionManager @Inject constructor(
             termSession.write("cd ~/workspace 2>/dev/null || cd '${wsPath.trimEnd('/')}' 2>/dev/null\n")
         }
         if (command != null) {
-            val init = command + (if (notify) "" else "; exec /bin/sh")
+            // notify=true 时命令尾部打印退出标记并以真实退出码退出。
+            // 不能调 `exec /bin/sh`（保活）也不能靠 exitStatus：前者让 shell 不退出、拿不到码，
+            // 后者接口不存在。退出标记 + [monitorBackgroundExit] 轮询是远程唯一可行的路径。
+            val init = if (notify) {
+                "$command; ec=\$?; echo \"$EXIT_MARKER_PREFIX\$ec]\"; exit \$ec"
+            } else {
+                command + "; exec /bin/sh"
+            }
             termSession.write(init + "\n")
         }
         val tab = TerminalTab(
@@ -140,6 +164,7 @@ class RemoteTerminalSessionManager @Inject constructor(
         )
         addTab(tab)
         if (_activeTabId.value == null) _activeTabId.value = id
+        if (command != null && notify) monitorBackgroundExit(id)
         return id
     }
 
@@ -241,6 +266,66 @@ class RemoteTerminalSessionManager @Inject constructor(
 
     private fun nextId(): String = "term-${idCounter.incrementAndGet()}"
 
+    /** 从屏幕缓冲尾部解析 `[command exited: N]`；无标记返回 null（交互标签与旧行为）。 */
+    private fun extractExitCode(output: String): Int? {
+        val tail = output.takeLast(1000)
+        val idx = tail.lastIndexOf(EXIT_MARKER_PREFIX)
+        if (idx < 0) return null
+        if (idx > 0 && tail[idx - 1] != '\n' && tail[idx - 1] != '\r') return null
+        var end = idx + EXIT_MARKER_PREFIX.length
+        if (end >= tail.length || !tail[end].isDigit()) return null
+        var code = 0
+        while (end < tail.length && tail[end].isDigit()) {
+            code = code * 10 + (tail[end] - '0')
+            end++
+        }
+        return if (end < tail.length && tail[end] == ']') code else null
+    }
+
+    /**
+     * 完成后兑底：远端 PTY 不总是干净退出（如掉线、shell 未发 EOF），此时不会触发
+     * [TerminalSessionClient.onSessionFinished]，标签会永远停在 Running。观察到退出标记后
+     * 再等 [EXIT_MARKER_GRACE_MS]，若回调仍未触发则强制收尾——退出码取真实值而非 0。
+     */
+    private fun monitorBackgroundExit(tabId: String) {
+        monitorScope.launch {
+            var seenMarker = false
+            var lastOutputLen = -1
+            while (true) {
+                val tab = tab(tabId) ?: return@launch
+                if (tab.runState !is RunState.Running) return@launch
+                val output = getTabOutput(tabId) ?: return@launch
+                if (!seenMarker) {
+                    if (output.length != lastOutputLen) {
+                        lastOutputLen = output.length
+                        if (extractExitCode(output) != null) seenMarker = true
+                    }
+                } else {
+                    delay(EXIT_MARKER_GRACE_MS)
+                    val current = tab(tabId) ?: return@launch
+                    if (current.runState is RunState.Running) {
+                        val exitCode = extractExitCode(getTabOutput(tabId) ?: "") ?: 0
+                        current.runState = RunState.Finished(exitCode)
+                        bumpRevision()
+                        FileLogger.i(TAG, "兑底：远程标签 $tabId 检测到退出标记，强制收尾 exit=$exitCode")
+                        if (current.notifyOnExit && !current.finishedNotified) {
+                            current.finishedNotified = true
+                            _tabFinishedEvents.tryEmit(
+                                TabFinishedEvent(
+                                    current.id, current.title, current.command, exitCode, current.sourceSessionId,
+                                    tailOutput = getTabOutput(current.id)?.takeTailLines(TAIL_LINES)
+                                )
+                            )
+                        }
+                        trimFinishedTabs()
+                    }
+                    return@launch
+                }
+                delay(EXIT_MARKER_POLL_MS)
+            }
+        }
+    }
+
     private fun addTab(tab: TerminalTab) {
         _tabs.value = _tabs.value + tab
         bumpRevision()
@@ -259,15 +344,18 @@ class RemoteTerminalSessionManager @Inject constructor(
         override fun onTitleChanged(changedSession: TerminalSession) {}
         override fun onSessionFinished(finishedSession: TerminalSession) {
             _tabs.value.firstOrNull { it.session === finishedSession }?.let { target ->
-                // 远程 shell 无有意义的退出码（见文件头说明），恒用 0；本地版取真实 exitStatus。
-                target.runState = RunState.Finished(0)
+                // 取屏幕缓冲里的退出标记：远程 `Session.Shell` 无退出码接口，
+                // backend.waitForExit() 恒返 0（见 [SshShellBackend]），标记是唯一的真实来源。
+                // 交互标签（notify=false）无标记 → 退化为 0，与改前行为一致。
+                val exitCode = extractExitCode(getTabOutput(target.id) ?: "") ?: 0
+                target.runState = RunState.Finished(exitCode)
                 bumpRevision()
-                FileLogger.i(TAG, "远程终端标签 ${target.id} 会话结束（远端 shell 退出，后台=${target.isBackground}）")
+                FileLogger.i(TAG, "远程终端标签 ${target.id} 会话结束 exit=$exitCode（后台=${target.isBackground}）")
                 if (target.notifyOnExit && !target.finishedNotified) {
                     target.finishedNotified = true
                     _tabFinishedEvents.tryEmit(
                         TabFinishedEvent(
-                            target.id, target.title, target.command, 0, target.sourceSessionId,
+                            target.id, target.title, target.command, exitCode, target.sourceSessionId,
                             tailOutput = getTabOutput(target.id)?.takeTailLines(TAIL_LINES)
                         )
                     )
