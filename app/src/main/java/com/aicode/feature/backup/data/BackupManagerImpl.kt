@@ -747,11 +747,23 @@ class BackupManagerImpl @Inject constructor(
 
     // ── Entity ↔ DTO 转换 ──────────────────────────────────────
 
+    private fun decryptKeyLines(stored: String): String =
+        stored.split("\n").joinToString("\n") { secretVault.decrypt(it.trim()).orEmpty() }
+
+    /** 导入时逐行加密；[SecretVault.encrypt] 对空串与已加密值幂等。 */
+    private fun encryptKeyLines(plain: String): String =
+        plain.split("\n").joinToString("\n") { secretVault.encrypt(it.trim()).orEmpty() }
+
+    /**
+     * 导出时把敏感字段解密为明文：备份需跨设备迁移，而密文绑定本机 Keystore 别名
+     * `aicode_secret_vault_v1`（随卸载销毁、永不出设备），透传密文会让新设备永远解不开。
+     * 同口径见下方 [RemoteConnectionEntity.toDto]。
+     */
     private fun AIProviderEntity.toDto() = ProviderDto(
         id = id,
         name = name,
         type = type,
-        apiKey = apiKey,
+        apiKey = secretVault.decrypt(apiKey).orEmpty(),
         baseUrl = baseUrl,
         defaultModel = defaultModel,
         models = models,
@@ -765,7 +777,7 @@ class BackupManagerImpl @Inject constructor(
         dashboardRefreshInterval = dashboardRefreshInterval,
         sortOrder = sortOrder,
         multiKeyEnabled = multiKeyEnabled,
-        apiKeys = apiKeys,
+        apiKeys = decryptKeyLines(apiKeys),
         keyRotationStrategy = keyRotationStrategy,
         keyFailoverThreshold = keyFailoverThreshold,
         keyCooldownMinutes = keyCooldownMinutes,
@@ -777,14 +789,15 @@ class BackupManagerImpl @Inject constructor(
         proxyHost = proxyHost,
         proxyPort = proxyPort,
         proxyUsername = proxyUsername,
-        proxyPassword = proxyPassword
+        proxyPassword = secretVault.decrypt(proxyPassword).orEmpty()
     )
 
+    /** 导入时按本机 Keystore 重新加密（备份内为明文，与导出侧对称）。 */
     private fun ProviderDto.toEntity() = AIProviderEntity(
         id = id,
         name = name,
         type = type,
-        apiKey = apiKey,
+        apiKey = secretVault.encrypt(apiKey).orEmpty(),
         baseUrl = baseUrl,
         defaultModel = defaultModel,
         models = models,
@@ -798,7 +811,7 @@ class BackupManagerImpl @Inject constructor(
         dashboardRefreshInterval = dashboardRefreshInterval ?: 5,
         sortOrder = sortOrder ?: 0,
         multiKeyEnabled = multiKeyEnabled ?: false,
-        apiKeys = apiKeys ?: "",
+        apiKeys = encryptKeyLines(apiKeys ?: ""),
         keyRotationStrategy = keyRotationStrategy ?: "SEQUENTIAL",
         keyFailoverThreshold = keyFailoverThreshold ?: 2,
         keyCooldownMinutes = keyCooldownMinutes ?: 5,
@@ -810,7 +823,7 @@ class BackupManagerImpl @Inject constructor(
         proxyHost = proxyHost ?: "",
         proxyPort = proxyPort ?: 0,
         proxyUsername = proxyUsername ?: "",
-        proxyPassword = proxyPassword ?: ""
+        proxyPassword = secretVault.encrypt(proxyPassword).orEmpty()
     )
 
     private fun RemoteConnectionEntity.toDto() = RemoteConnectionDto(
