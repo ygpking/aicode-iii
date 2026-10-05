@@ -27,6 +27,7 @@ import java.io.InputStreamReader
 import java.nio.charset.Charset
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.NoSuchFileException
+import java.nio.file.Paths
 import java.util.EnumSet
 import javax.inject.Inject
 
@@ -308,11 +309,15 @@ class RemoteSftpFileAccess @Inject constructor(
     }
 
     override fun copy(path: String, newPath: String, overwrite: Boolean) {
-        val from = toRemotePath(path)
-        val to = toRemotePath(newPath)
+        val from = Paths.get(toRemotePath(path)).normalize().toString()
+        val to = Paths.get(toRemotePath(newPath)).normalize().toString()
         logFailure(from, "复制远程路径") {
             withSftp { sftp ->
-                if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
+                val source = sftp.statExistence(from) ?: throw NoSuchFileException(File(from))
+                // 目标等于源、或是目录源的子路径：后者会让 copyRecursive 边遍历边写入自己，无限递归。
+                if (to == from || (source.type == FileMode.Type.DIRECTORY && Paths.get(to).startsWith(Paths.get(from)))) {
+                    throw IOException("destination is the source or its descendant: $newPath")
+                }
                 if (sftp.statExistence(to) != null) {
                     if (!overwrite) throw FileAlreadyExistsException(File(to))
                     deleteRecursive(sftp, to)
@@ -323,11 +328,15 @@ class RemoteSftpFileAccess @Inject constructor(
     }
 
     override fun move(path: String, newPath: String, overwrite: Boolean) {
-        val from = toRemotePath(path)
-        val to = toRemotePath(newPath)
+        val from = Paths.get(toRemotePath(path)).normalize().toString()
+        val to = Paths.get(toRemotePath(newPath)).normalize().toString()
         logFailure(from, "移动远程路径") {
             withSftp { sftp ->
-                if (sftp.statExistence(from) == null) throw NoSuchFileException(File(from))
+                val source = sftp.statExistence(from) ?: throw NoSuchFileException(File(from))
+                // 同上：目标不能是源自身或其子路径。
+                if (to == from || (source.type == FileMode.Type.DIRECTORY && Paths.get(to).startsWith(Paths.get(from)))) {
+                    throw IOException("destination is the source or its descendant: $newPath")
+                }
                 if (sftp.statExistence(to) != null) {
                     if (!overwrite) throw FileAlreadyExistsException(File(to))
                     deleteRecursive(sftp, to)
