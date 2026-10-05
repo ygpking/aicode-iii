@@ -871,19 +871,23 @@ class StatefulAgentWorkflow @Inject constructor(
                     is AgentSideEffect.RequestPermission -> {
                         val tool = toolRegistry.getTool(effect.toolCall.name)
                         val argsPreview = JsonObject(effect.toolCall.arguments).toString().take(500)
-                        // sleep 守卫前置：弹窗之前就拦下含独立长 sleep 的 Bash 命令，避免用户白点一次允许。
+                        // sleep 守卫前置：弹窗之前就拦下含独立长 sleep 的 shell 命令（Bash / terminal），
+                        // 避免用户白点一次允许。
                         // 拦截仍走 PermissionEvaluated(false)（非 USER_REJECTED）让 batch 状态机正常推进：
                         // 该 call 以拒绝结果回放给模型；直接跳过会把 pendingPermissionCalls 卡死。
-                        val command = (effect.toolCall.arguments["command"] as? JsonPrimitive)?.contentOrNull
-                        val sleepBlock = if (effect.toolCall.name == "Bash" && command != null) {
-                            CommandSleepGuard.blockReason(command)
-                        } else {
-                            null
+                        val sleepArgs = effect.toolCall.arguments
+                        val sleepAction = (sleepArgs["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
+                        val shellPayload = when {
+                            effect.toolCall.name == "Bash" -> (sleepArgs["command"] as? JsonPrimitive)?.contentOrNull
+                            effect.toolCall.name == "terminal" && sleepAction == "start" -> (sleepArgs["command"] as? JsonPrimitive)?.contentOrNull
+                            effect.toolCall.name == "terminal" && sleepAction == "send" -> (sleepArgs["input"] as? JsonPrimitive)?.contentOrNull
+                            else -> null
                         }
+                        val sleepBlock = shellPayload?.let { CommandSleepGuard.blockReason(it) }
                         if (sleepBlock != null) {
-                            FileLogger.i(TAG, "命令被 sleep 守卫前置拦截: $command")
-                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, "Bash", ToolResult.Error(sleepBlock).toTransportString(), true, argsPreview))
-                            actionQueue.addLast(AgentAction.PermissionEvaluated(effect.toolCall, false, argsPreview, sleepBlock, "SYSTEM_DENIED"))
+                            FileLogger.i(TAG, "命令被 sleep 守卫前置拦截（${effect.toolCall.name}）")
+                            send(AgentEvent.ToolCallFinished(effect.toolCall.id, effect.toolCall.name, ToolResult.Error(sleepBlock, "SLEEP_BLOCKED").toTransportString(), true, argsPreview))
+                            actionQueue.addLast(AgentAction.PermissionEvaluated(effect.toolCall, false, argsPreview, sleepBlock, "SLEEP_BLOCKED"))
                         } else {
                             val checkResult = requestPermissionIfNeeded(tool, effect.toolCall.id, effect.toolCall.arguments, argsPreview, currentContext.mode, currentContext.sessionId)
 
@@ -1279,21 +1283,37 @@ class StatefulAgentWorkflow @Inject constructor(
         var lastEmitMs = 0L
         var finalResult: ToolResult? = null
         try {
-            tool.executeStream(toolCall.arguments, context).collect { ev ->
-                when (ev) {
-                    is ToolStreamEvent.Progress -> {
-                        live.append(ev.chunk).append('\n')
-                        if (live.length > LIVE_TAIL_CHARS) {
-                            live.delete(0, live.length - LIVE_TAIL_CHARS)
+            // 兜底超时：与非流式路径 runToolSync 对齐。流式工具（Bash/terminal）一旦底层 flow 不终止，
+            // 原先无任何超时能拦住，会无限期占住本轮。用 withTimeoutOrNull 而非 catch
+            // TimeoutCancellationException——后者会被下方 catch (CancellationException) 重新抛出。
+            val completed = withTimeoutOrNull(TOOL_GUARD_TIMEOUT_MS) {
+                tool.executeStream(toolCall.arguments, context).collect { ev ->
+                    when (ev) {
+                        is ToolStreamEvent.Progress -> {
+                            live.append(ev.chunk).append('\n')
+                            if (live.length > LIVE_TAIL_CHARS) {
+                                live.delete(0, live.length - LIVE_TAIL_CHARS)
+                            }
+                            val now = System.currentTimeMillis()
+                            if (now - lastEmitMs >= PROGRESS_INTERVAL_MS) {
+                                lastEmitMs = now
+                                onEvent(AgentEvent.ToolCallProgress(toolCall.id, toolCall.name, live.toString()))
+                            }
                         }
-                        val now = System.currentTimeMillis()
-                        if (now - lastEmitMs >= PROGRESS_INTERVAL_MS) {
-                            lastEmitMs = now
-                            onEvent(AgentEvent.ToolCallProgress(toolCall.id, toolCall.name, live.toString()))
-                        }
+                        is ToolStreamEvent.Completed -> finalResult = ev.result
                     }
-                    is ToolStreamEvent.Completed -> finalResult = ev.result
                 }
+                true
+            }
+            if (completed == null) {
+                return ToolRunResult(
+                    ToolResult.Error(
+                        "工具 ${toolCall.name} 执行超时（超过 ${TOOL_GUARD_TIMEOUT_MS / 60_000} 分钟仍未返回），已中止。" +
+                            timeoutGuidance(toolCall.name),
+                        "TOOL_TIMEOUT"
+                    ).toTransportString(),
+                    true
+                )
             }
             val result = finalResult ?: ToolResult.Error("流式工具未返回结果", "MISSING_STREAM_RESULT")
             val processed = toolOutputStore.process(toolCall.name, toolCall.id, result, runBudget)

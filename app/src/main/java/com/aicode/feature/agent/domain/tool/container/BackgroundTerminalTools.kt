@@ -1,6 +1,8 @@
 package com.aicode.feature.agent.domain.tool.container
 
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.agent.domain.container.CommandSleepGuard
+import com.aicode.feature.agent.domain.container.sanitizeCommandForLog
 import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
@@ -233,7 +235,7 @@ class TerminalSessionTool @Inject constructor(
             "key" -> sendKey(args)
             "read" -> read(args)
             "close" -> close(args)
-            else -> ToolResult.Error("缺少或非法的 action 参数（应为 start/send/key/read/close）")
+            else -> ToolResult.Error("缺少或非法的 action 参数（应为 start/send/key/read/close）", "MISSING_ACTION")
         }
 
     /**
@@ -257,18 +259,23 @@ class TerminalSessionTool @Inject constructor(
     ) {
         val command = args["command"]?.asPlainString()
         if (command == null) {
-            emit(ToolStreamEvent.Completed(ToolResult.Error("start 操作缺少必需参数: command")))
+            emit(ToolStreamEvent.Completed(ToolResult.Error("start 操作缺少必需参数: command", "MISSING_COMMAND")))
             return
         }
         val title = args["title"]?.asPlainString()
         val notify = args["notify"]?.asPlainString()?.toBooleanStrictOrNull() ?: false
+        CommandSleepGuard.blockReason(command)?.let { block ->
+            FileLogger.i(TAG, "终端命令被 sleep 守卫拦截: ${sanitizeCommandForLog(command)}")
+            emit(ToolStreamEvent.Completed(ToolResult.Error(block, "SLEEP_BLOCKED")))
+            return
+        }
         val tabId = try {
             withContext(Dispatchers.Main) { sessionManager.startBackgroundCommand(command, title, notify, context.sessionId) }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             FileLogger.e(TAG, "启动后台命令失败: $command", e)
-            emit(ToolStreamEvent.Completed(ToolResult.Error("启动后台命令失败: ${e.message}")))
+            emit(ToolStreamEvent.Completed(ToolResult.Error("启动后台命令失败: ${e.message}。可先用 Bash 验证命令本身能否执行。", "START_FAILED")))
             return
         }
 
@@ -281,25 +288,30 @@ class TerminalSessionTool @Inject constructor(
     private suspend fun kotlinx.coroutines.flow.FlowCollector<ToolStreamEvent>.streamSend(args: Map<String, JsonElement>) {
         val tabId = args["tab_id"]?.asPlainString()
         if (tabId.isNullOrBlank()) {
-            emit(ToolStreamEvent.Completed(ToolResult.Error("send 操作缺少必需参数: tab_id")))
+            emit(ToolStreamEvent.Completed(ToolResult.Error("send 操作缺少必需参数: tab_id", "MISSING_TAB_ID")))
             return
         }
         val input = args["input"]?.asPlainString()
         if (input == null) {
-            emit(ToolStreamEvent.Completed(ToolResult.Error("send 操作缺少必需参数: input")))
+            emit(ToolStreamEvent.Completed(ToolResult.Error("send 操作缺少必需参数: input", "MISSING_INPUT")))
             return
         }
         val submit = args["submit"]?.asPlainString()?.toBooleanStrictOrNull() ?: true
+        CommandSleepGuard.blockReason(input)?.let { block ->
+            FileLogger.i(TAG, "终端命令被 sleep 守卫拦截: ${sanitizeCommandForLog(input)}")
+            emit(ToolStreamEvent.Completed(ToolResult.Error(block, "SLEEP_BLOCKED")))
+            return
+        }
 
         val before = withContext(Dispatchers.Main) { sessionManager.getTabOutput(tabId) }
         if (before == null) {
-            emit(ToolStreamEvent.Completed(ToolResult.Error("未找到终端标签: $tabId")))
+            emit(ToolStreamEvent.Completed(ToolResult.Error("未找到终端标签: $tabId", "TERMINAL_NOT_FOUND")))
             return
         }
 
         val ok = withContext(Dispatchers.Main) { sessionManager.sendInput(tabId, input, appendNewline = submit) }
         if (!ok) {
-            emit(ToolStreamEvent.Completed(ToolResult.Error("未找到终端标签: $tabId")))
+            emit(ToolStreamEvent.Completed(ToolResult.Error("终端 $tabId 已结束，不再活跃，无法发送命令。如需执行新命令请用 start 新建终端", "TERMINAL_NOT_ACTIVE")))
             return
         }
         FileLogger.i(TAG, "向 $tabId 发送输入(流式捕获): $input")
@@ -341,9 +353,13 @@ class TerminalSessionTool @Inject constructor(
      */
     private suspend fun start(args: Map<String, JsonElement>, sourceSessionId: String?): ToolResult = withContext(Dispatchers.Main) {
         val command = args["command"]?.asPlainString()
-            ?: return@withContext ToolResult.Error("start 操作缺少必需参数: command")
+            ?: return@withContext ToolResult.Error("start 操作缺少必需参数: command", "MISSING_COMMAND")
         val title = args["title"]?.asPlainString()
         val notify = args["notify"]?.asPlainString()?.toBooleanStrictOrNull() ?: false
+        CommandSleepGuard.blockReason(command)?.let { block ->
+            FileLogger.i(TAG, "终端命令被 sleep 守卫拦截: ${sanitizeCommandForLog(command)}")
+            return@withContext ToolResult.Error(block, "SLEEP_BLOCKED")
+        }
         try {
             val tabId = sessionManager.startBackgroundCommand(command, title, notify, sourceSessionId)
             FileLogger.i(TAG, "后台命令已启动 tab=$tabId: $command")
@@ -371,7 +387,7 @@ class TerminalSessionTool @Inject constructor(
             )
         } catch (e: Exception) {
             FileLogger.e(TAG, "启动后台命令失败: $command", e)
-            ToolResult.Error("启动后台命令失败: ${e.message}")
+            ToolResult.Error("启动后台命令失败: ${e.message}。可先用 Bash 验证命令本身能否执行。", "START_FAILED")
         }
     }
 
@@ -383,10 +399,14 @@ class TerminalSessionTool @Inject constructor(
      */
     private suspend fun send(args: Map<String, JsonElement>): ToolResult = withContext(Dispatchers.Main) {
         val tabId = args["tab_id"]?.asPlainString()
-            ?: return@withContext ToolResult.Error("send 操作缺少必需参数: tab_id")
+            ?: return@withContext ToolResult.Error("send 操作缺少必需参数: tab_id", "MISSING_TAB_ID")
         val input = args["input"]?.asPlainString()
-            ?: return@withContext ToolResult.Error("send 操作缺少必需参数: input")
+            ?: return@withContext ToolResult.Error("send 操作缺少必需参数: input", "MISSING_INPUT")
         val submit = args["submit"]?.asPlainString()?.toBooleanStrictOrNull() ?: true
+        CommandSleepGuard.blockReason(input)?.let { block ->
+            FileLogger.i(TAG, "终端命令被 sleep 守卫拦截: ${sanitizeCommandForLog(input)}")
+            return@withContext ToolResult.Error(block, "SLEEP_BLOCKED")
+        }
         val ok = sessionManager.sendInput(tabId, input, appendNewline = submit)
         if (ok) {
             FileLogger.i(TAG, "向 $tabId 发送输入: $input")
@@ -409,9 +429,9 @@ class TerminalSessionTool @Inject constructor(
     /** 向指定终端发送预定义快捷键/控制字符。TerminalSessionManager 需主线程。 */
     private suspend fun sendKey(args: Map<String, JsonElement>): ToolResult = withContext(Dispatchers.Main) {
         val tabId = args["tab_id"]?.asPlainString()
-            ?: return@withContext ToolResult.Error("key 操作缺少必需参数: tab_id")
+            ?: return@withContext ToolResult.Error("key 操作缺少必需参数: tab_id", "MISSING_TAB_ID")
         val key = args["key"]?.asPlainString()
-            ?: return@withContext ToolResult.Error("key 操作缺少必需参数: key")
+            ?: return@withContext ToolResult.Error("key 操作缺少必需参数: key", "MISSING_KEY")
         val normalized = normalizeKey(key)
         val ok = when (normalized) {
             "ctrl+c" -> sessionManager.writeBytesToTab(tabId, 0x03)
@@ -427,7 +447,7 @@ class TerminalSessionTool @Inject constructor(
             "down" -> sessionManager.writeToTab(tabId, "\u001B[B")
             "right" -> sessionManager.writeToTab(tabId, "\u001B[C")
             "left" -> sessionManager.writeToTab(tabId, "\u001B[D")
-            else -> return@withContext ToolResult.Error("不支持的快捷键: $key。支持：${SUPPORTED_KEYS.joinToString(", ")}")
+            else -> return@withContext ToolResult.Error("不支持的快捷键: $key。支持：${SUPPORTED_KEYS.joinToString(", ")}", "UNSUPPORTED_KEY")
         }
         if (ok) {
             FileLogger.i(TAG, "向 $tabId 发送快捷键: $normalized")
@@ -456,7 +476,7 @@ class TerminalSessionTool @Inject constructor(
             return@withContext ToolResult.Success(JsonPrimitive(text))
         }
         val output = sessionManager.getTabOutput(tabId)
-            ?: return@withContext ToolResult.Error("未找到终端标签: $tabId")
+            ?: return@withContext ToolResult.Error("未找到终端标签: $tabId", "TERMINAL_NOT_FOUND")
         FileLogger.v(TAG, "读取 $tabId 输出 ${output.length} 字符")
         ToolResult.Success(JsonPrimitive(output))
     }
@@ -464,13 +484,13 @@ class TerminalSessionTool @Inject constructor(
     /** 关闭指定终端标签。TerminalSessionManager 需主线程。 */
     private suspend fun close(args: Map<String, JsonElement>): ToolResult = withContext(Dispatchers.Main) {
         val tabId = args["tab_id"]?.asPlainString()
-            ?: return@withContext ToolResult.Error("close 操作缺少必需参数: tab_id")
+            ?: return@withContext ToolResult.Error("close 操作缺少必需参数: tab_id", "MISSING_TAB_ID")
         val ok = sessionManager.closeTab(tabId)
         if (ok) {
             FileLogger.i(TAG, "关闭终端标签: $tabId")
             ToolResult.Success(JsonPrimitive("已关闭终端标签 $tabId。"))
         } else {
-            ToolResult.Error("未找到终端标签: $tabId")
+            ToolResult.Error("未找到终端标签: $tabId", "TERMINAL_NOT_FOUND")
         }
     }
 
@@ -479,7 +499,7 @@ class TerminalSessionTool @Inject constructor(
 
     private fun capturedResult(tabId: String, actionLabel: String): ToolResult {
         val tab = sessionManager.listTabs().firstOrNull { it.id == tabId }
-            ?: return ToolResult.Error("未找到终端标签: $tabId")
+            ?: return ToolResult.Error("未找到终端标签: $tabId", "TERMINAL_NOT_FOUND")
         val rawOutput = sessionManager.getTabOutput(tabId) ?: ""
         FileLogger.v(
             TAG,
