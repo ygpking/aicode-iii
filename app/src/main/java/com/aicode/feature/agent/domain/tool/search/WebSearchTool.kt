@@ -57,7 +57,7 @@ class WebSearchTool @Inject constructor() : AgentTool() {
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
         val query = args["query"]?.jsonPrimitive?.contentOrNull 
-            ?: return ToolResult.Error("缺少 query 参数")
+            ?: return ToolResult.Error("缺少 query 参数", "MISSING_QUERY")
 
         return withContext(Dispatchers.IO) {
             try {
@@ -95,7 +95,7 @@ class WebSearchTool @Inject constructor() : AgentTool() {
                     if (responseCode !in 200..299) {
                         val errorStr = resp.body?.string()
                         FileLogger.e(TAG, "WebSearch 失败: HTTP $responseCode, $errorStr")
-                        return@withContext ToolResult.Error("网络搜索失败 (HTTP $responseCode)")
+                        return@withContext ToolResult.Error("网络搜索失败 (HTTP $responseCode)。可稍后重试，或改用 webfetch 直接抓取已知来源。", "SEARCH_HTTP_ERROR")
                     }
 
                     // 尝试直接读取普通 JSON 或解析 Event-Stream (SSE) 格式
@@ -112,7 +112,7 @@ class WebSearchTool @Inject constructor() : AgentTool() {
                 }
             } catch (e: Exception) {
                 FileLogger.e(TAG, "WebSearch 发生异常", e)
-                ToolResult.Error("搜索时发生异常: ${e.message}")
+                ToolResult.Error("搜索时发生异常: ${e.message}。可稍后重试，或改用 webfetch 直接抓取已知来源。", "SEARCH_FAILED")
             }
         }
     }

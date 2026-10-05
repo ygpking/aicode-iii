@@ -45,11 +45,11 @@ class WebFetchTool @Inject constructor() : AgentTool() {
     )
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
-        val url = args["url"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("缺少 url 参数")
+        val url = args["url"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("缺少 url 参数", "MISSING_URL")
         val format = args["format"]?.jsonPrimitive?.contentOrNull ?: "text"
 
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
-            return ToolResult.Error("URL 必须以 http:// 或 https:// 开头")
+            return ToolResult.Error("URL 必须以 http:// 或 https:// 开头", "INVALID_URL")
         }
 
         return withContext(Dispatchers.IO) {
@@ -60,7 +60,7 @@ class WebFetchTool @Inject constructor() : AgentTool() {
                 val doc = try {
                     fetchDocument(url)
                 } catch (e: FetchException) {
-                    return@withContext ToolResult.Error(e.detailedMessage(url))
+                    return@withContext ToolResult.Error(e.detailedMessage(url), "FETCH_FAILED")
                 }
 
                 // 按要求提取
@@ -78,7 +78,7 @@ class WebFetchTool @Inject constructor() : AgentTool() {
                 ToolResult.Success(kotlinx.serialization.json.JsonPrimitive(finalOutput))
             } catch (e: Exception) {
                 FileLogger.e(TAG, "抓取网页时发生异常", e)
-                ToolResult.Error("抓取失败: ${e.message}")
+                ToolResult.Error("抓取失败: ${e.message}。可检查 URL 是否可访问，或改用 websearch 检索。", "FETCH_FAILED")
             }
         }
     }

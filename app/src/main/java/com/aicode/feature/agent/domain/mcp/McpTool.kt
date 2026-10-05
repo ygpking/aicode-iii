@@ -97,16 +97,16 @@ class McpTool(
             FileLogger.d(TAG, "调用 MCP 工具 $name (remote=$remoteName) args=${args.keys}")
             val call = client.callTool(remoteName, JsonObject(args))
             if (call.isError) {
-                ToolResult.Error(call.text)
+                ToolResult.Error(call.text, "MCP_TOOL_ERROR")
             } else {
                 ToolResult.Success(JsonPrimitive(call.text))
             }
         } catch (e: McpException) {
             FileLogger.e(TAG, "MCP 工具调用失败: $name", e)
-            ToolResult.Error("MCP 工具执行失败: ${e.message}")
+            ToolResult.Error("MCP 工具执行失败: ${e.message}", "MCP_TOOL_EXEC_FAILED")
         } catch (e: Exception) {
             FileLogger.e(TAG, "MCP 工具调用异常: $name", e)
-            ToolResult.Error("MCP 工具执行异常: ${e.message}")
+            ToolResult.Error("MCP 工具执行异常: ${e.message}", "MCP_TOOL_EXEC_FAILED")
         }
     }
 

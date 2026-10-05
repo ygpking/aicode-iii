@@ -164,7 +164,7 @@ class VirtualScreenTool @Inject constructor(
             throw e
         } catch (e: Exception) {
             FileLogger.e(TAG, "virtualScreen $action 失败", e)
-            ToolResult.Error("虚拟屏操作失败: ${e.message}")
+            ToolResult.Error("虚拟屏操作失败: ${e.message}。可用 action=\"status\" 查看 daemon 与无障碍状态后再试。", code = "VSCREEN_FAILED")
         }
     }
 
@@ -215,7 +215,7 @@ class VirtualScreenTool @Inject constructor(
                 "message" to JsonPrimitive("虚拟屏已关闭，目标应用已停止，无任务残留。")
             )))
         } else {
-            ToolResult.Error(controller.lastError ?: "关闭虚拟屏失败")
+            ToolResult.Error(controller.lastError ?: "关闭虚拟屏失败", code = "CLOSE_FAILED")
         }
     }
 
