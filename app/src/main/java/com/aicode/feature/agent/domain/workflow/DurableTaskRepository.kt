@@ -66,9 +66,14 @@ class DurableTaskRepository @Inject constructor(
         val current = guarded { dao.getById(taskId) }.getOrNull() ?: return
         val state = TaskStateMachine.parse(current.state) ?: return
         when (val result = TaskStateMachine.transition(state, event)) {
-            is TransitionResult.Moved -> guarded {
-                dao.upsert(current.copy(state = result.to.name, updatedAt = System.currentTimeMillis()))
-            }.onFailure { FileLogger.w(TAG, "迁移任务状态失败: ${it.message}") }
+            is TransitionResult.Moved -> {
+                // 自转移（result.to == 当前状态）不是真实迁移，不写库：updatedAt 是 prune 的保留期依据，
+                // 每次冷启动重扫 RECOVERABLE 都刷新它，会把这些记录永远挡在保留期之外，长期堆积。
+                if (result.to.name == current.state) return
+                guarded {
+                    dao.upsert(current.copy(state = result.to.name, updatedAt = System.currentTimeMillis()))
+                }.onFailure { FileLogger.w(TAG, "迁移任务状态失败: ${it.message}") }
+            }
             is TransitionResult.Rejected ->
                 FileLogger.w(TAG, "非法任务转移被拒：${result.reason}")
         }
@@ -78,6 +83,16 @@ class DurableTaskRepository @Inject constructor(
     suspend fun finish(taskId: String, event: TaskEvent) {
         transition(taskId, event)
         prune()
+    }
+
+    /**
+     * 用户点「忽略」：把待恢复任务置终态，使其不再出现在冷启动恢复提示中。
+     *
+     * 必须落库：只从内存列表移除的话，下一次冷启动 [scanForRecovery] 会重新扫到同一行，
+     * 用户每次重启都会看到同一个提示。
+     */
+    suspend fun dismiss(taskId: String) {
+        transition(taskId, TaskEvent.CANCEL)
     }
 
     /**

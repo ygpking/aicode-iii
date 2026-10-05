@@ -997,6 +997,7 @@ class AIAgentViewModel @Inject constructor(
             runCatchingCancellable { durableTaskRepository.scanForRecovery() }
                 .onSuccess { verdicts ->
                     val recoverable = verdicts.filterIsInstance<RecoveryVerdict.Recoverable>()
+                        .map { it.withSessionContext(sessionUseCase) }
                     _recoverableTasks.value = recoverable
                     if (recoverable.isNotEmpty()) {
                         FileLogger.i(TAG, "冷启动发现 ${recoverable.size} 个可恢复的长任务（未自动重跑，等待用户继续）")
@@ -2136,6 +2137,23 @@ class AIAgentViewModel @Inject constructor(
     }
 
     /**
+     * 补全会话归属：提示条需要告诉用户这条属于哪个会话、是不是子代理。
+     *
+     * 子代理任务挂在自己的子会话下（[spawnSubAgentWorkflow] 以子会话名义建账），而子会话
+     * 在侧边栏默认折叠，只显示请求摘要的话，用户无从判断「继续」会把自己带到哪里。
+     */
+    private suspend fun RecoveryVerdict.Recoverable.withSessionContext(
+        sessions: SessionUseCase
+    ): RecoveryVerdict.Recoverable {
+        val session = runCatchingCancellable { sessions.getSessionById(sessionId) }.getOrNull()
+            ?: return this
+        return copy(
+            sessionTitle = session.title,
+            isSubAgent = session.parentId != null
+        )
+    }
+
+    /**
      * 用户点「继续」：切到该任务所属会话并重发当时那条请求。
      *
      * 「继续」= 重跑那一轮，不是从断点续跑：crash 时工具执行到哪一步无法可靠还原
@@ -2173,13 +2191,26 @@ class AIAgentViewModel @Inject constructor(
                 FileLogger.w(TAG, "恢复任务 ${verdict.taskId} 取不到请求原文，放弃重发")
                 return@launch
             }
+            // 先置终态再重发：新的一轮会由 begin 另建条目，旧条目若仍悬在 RECOVERABLE，
+            // 下次冷启动会把同一件事再提示一遍。getById 已在上面校验过条目存在。
+            durableTaskRepository.dismiss(verdict.taskId)
             enqueueAgentRequest(request = request, targetSessionId = verdict.sessionId)
         }
     }
 
-    /** 用户点「忽略」：只从提示列表移除，不动任务状态（保持 RECOVERABLE，下次冷启动仍可见）。 */
+    /**
+     * 用户点「忽略」：置终态并移出提示列表。
+     *
+     * 必须落库（`RECOVERABLE -> CANCELLED`）：只改内存列表的话记录仍是 RECOVERABLE，
+     * 下次冷启动 [com.aicode.feature.agent.domain.workflow.DurableTaskRepository.scanForRecovery]
+     * 会重新扫到同一行，用户每次重启都看到同一个提示。
+     */
     fun dismissRecoverableTask(taskId: String) {
         _recoverableTasks.value = _recoverableTasks.value.filterNot { it.taskId == taskId }
+        viewModelScope.launch {
+            runCatchingCancellable { durableTaskRepository.dismiss(taskId) }
+                .onFailure { FileLogger.w(TAG, "忽略恢复任务 $taskId 失败: ${it.message}") }
+        }
     }
 
     fun deleteSessions(ids: Set<String>) = viewModelScope.launch {

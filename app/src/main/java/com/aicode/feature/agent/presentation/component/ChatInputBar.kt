@@ -999,6 +999,22 @@ internal fun RecoverableTaskBanner(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    // 会话归属：子代理任务挂在自己的子会话下，而子会话在侧边栏默认折叠，
+                    // 不标出来的话用户无从判断「继续」会把自己带到哪里。
+                    if (task.sessionTitle.isNotBlank() || task.isSubAgent) {
+                        Spacer(Modifier.height(Spacing.xs))
+                        Text(
+                            text = if (task.isSubAgent) {
+                                stringResource(R.string.chat_recoverable_session_subagent, task.sessionTitle)
+                            } else {
+                                stringResource(R.string.chat_recoverable_session, task.sessionTitle)
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                     if (task.promptSnippet.isNotBlank()) {
                         Spacer(Modifier.height(Spacing.xs))
                         Text(

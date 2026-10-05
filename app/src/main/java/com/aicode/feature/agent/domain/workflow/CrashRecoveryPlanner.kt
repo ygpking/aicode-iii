@@ -4,8 +4,21 @@ package com.aicode.feature.agent.domain.workflow
  * 崩溃恢复的判定结果。
  */
 sealed interface RecoveryVerdict {
-    /** 可恢复：上次进程被杀时任务仍在进行，应提示用户可继续。 */
-    data class Recoverable(val taskId: String, val sessionId: String, val promptSnippet: String, val round: Int) : RecoveryVerdict
+    /**
+     * 可恢复：上次进程被杀时任务仍在进行，应提示用户可继续。
+     *
+     * [isSubAgent] 与 [sessionTitle] 用于告知用户这条属于哪个会话：子代理任务挂在自己的
+     * 子会话下（spawnSubAgentWorkflow 会以子会话名义建账），而子会话在侧边栏默认折叠，
+     * 只显示请求摘要的话用户无从判断「继续」会把自己带到哪里。
+     */
+    data class Recoverable(
+        val taskId: String,
+        val sessionId: String,
+        val promptSnippet: String,
+        val round: Int,
+        val sessionTitle: String = "",
+        val isSubAgent: Boolean = false
+    ) : RecoveryVerdict
 
     /** 应直接置为失败：状态异常（如未知状态字符串），保守收尾，不复活。 */
     data class FailClosed(val taskId: String, val reason: String) : RecoveryVerdict
@@ -40,12 +53,20 @@ object CrashRecoveryPlanner {
         TaskState.RECOVERABLE,
     )
 
-    fun plan(taskId: String, sessionId: String, rawState: String, promptSnippet: String, round: Int): RecoveryVerdict {
+    fun plan(
+        taskId: String,
+        sessionId: String,
+        rawState: String,
+        promptSnippet: String,
+        round: Int,
+        sessionTitle: String = "",
+        isSubAgent: Boolean = false
+    ): RecoveryVerdict {
         val state = TaskStateMachine.parse(rawState)
             ?: return RecoveryVerdict.FailClosed(taskId, "未知任务状态：$rawState")
         if (TaskStateMachine.isTerminal(state)) return RecoveryVerdict.Skip
         return if (state in IN_PROGRESS_STATES) {
-            RecoveryVerdict.Recoverable(taskId, sessionId, promptSnippet, round)
+            RecoveryVerdict.Recoverable(taskId, sessionId, promptSnippet, round, sessionTitle, isSubAgent)
         } else {
             // 非终态但不在可继续白名单（如 PENDING）：保守置失败，避免二次复活。
             RecoveryVerdict.FailClosed(taskId, "状态 $state 不在可恢复白名单")
