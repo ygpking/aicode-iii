@@ -106,6 +106,14 @@ class ToolPermissionPolicyEngineTest {
         assertTrue(r.verdict != ToolPermissionPolicyEngine.Verdict.DENY)
     }
 
+    @Test
+    fun planMode_allowsDiagnosticsReadTool() = runTest {
+        val e = engine()
+        // diagnostics 只读自查：READ_AGENT_CONFIG 命中白名单分支 → 所有模式（含 PLAN）ALLOW
+        val r = e.evaluate(tool(ToolCapability.READ_AGENT_CONFIG), "diagnostics", emptyMap(), AgentMode.PLAN)
+        assertEquals(ToolPermissionPolicyEngine.Verdict.ALLOW, r.verdict)
+    }
+
     // ── AUTO 模式：放行但保留灾难性 rm 防护 ──────────────────────────
 
     @Test
