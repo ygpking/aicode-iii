@@ -10,6 +10,7 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -70,6 +71,13 @@ object EventTrace {
      */
     private const val OUT_OF_TURN = "t0"
 
+    /**
+     * 轨迹行里的「会话短号 + 回合号」桶标识，如 `s=8bd16761 t3`。
+     *
+     * 高水位恢复与未收尾清点共用它，保证两处对「什么是回合记录」的判定一致。
+     */
+    private val TURN_BUCKET_RE = Regex("""s=(\S+)\s+t(\d+)\s+#\d+""")
+
     private val ioExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "event-trace").apply { isDaemon = true }
     }
@@ -89,6 +97,33 @@ object EventTrace {
     private val recordCounters = ConcurrentHashMap<String, Long>()
     private val droppedCounters = ConcurrentHashMap<String, Long>()
     private val activeTurns = ConcurrentHashMap<String, String>()
+
+    /**
+     * 回合号的下限：各会话在上个进程里用到的最大 `tN`，按**会话短号**索引。
+     *
+     * 为什么需要它：[turnCounters] 是内存态，进程重启即清零，于是同一会话的 `t1` 会在
+     * **每个进程段**重新发放。而轨迹里只写会话短号（`s=` 取前 8 位），`turnId` 又只在会话内
+     * 唯一，两者相乘的结果是「`s=<会话> t<N> #<seq>`」这份曾被当作唯一标识的引用**跨进程失效**。
+     * 真机实测（10-05 单日）：36/70 个回合桶被复用，7293/10671 条（68.4%）记录落在复用桶里——
+     * 按该引用倒查会指到另一个时刻的另一个回合，比没有引用更危险。
+     *
+     * 索引用短号而非完整 sessionId：高水位从轨迹文件里回读，而文件里只写短号（[write] 的
+     * `scope.take(8)`），保持同一形态才不需要额外映射。
+     */
+    private val turnFloor = ConcurrentHashMap<String, Long>()
+
+    /** 高水位是否已回读。首次 [beginTurn] 前必须为 true，否则会发放重复的回合号。 */
+    private val turnFloorLoaded = AtomicBoolean(false)
+
+    /**
+     * 回合内「业务键 → 已分配 seq」的绑定，用于表达**真实因果**。
+     *
+     * 起因：默认因果是「同回合上一条」（[record] 的 `causeSeq` 缺省值），但工具调用是**交错**的——
+     * 实测单日 1640 条 `tool_finished` 里 583 条（35.6%）的默认因果指向了另一个工具，
+     * 而非自己那次 `tool_started`（交错 277 次、涉及 37 个回合）。此时「上一条」是并发的邻居，
+     * 不是它的原因，链看着连续却指错了人。绑定后由调用方显式指回真正的发起记录。
+     */
+    private val boundCauses = ConcurrentHashMap<String, ConcurrentHashMap<String, Long>>()
 
     /** 无回合上下文而被丢弃的记录数，用于限频告警。 */
     private val orphanDropped = AtomicLong()
@@ -118,6 +153,10 @@ object EventTrace {
             // 最后才写本次 START——否则 START 会混进被扫描区间，把上轮残局掩盖掉。
             reportPreviousExit(dir)
             reportStaleTurns(dir)
+            // 高水位回读同理必须在写本次 START **之前**：它扫的区间也是「自最后一个 START 起」，
+            // 而本次 START 一旦落盘就成了新的「最后一个 START」，区间被截断到本进程，
+            // 上个进程的回合号再也读不到（那会让修复静默失效）。
+            ensureTurnFloor()
             appendLine(
                 dir,
                 // 末尾必须带 \n：appendLine 只做 appendText，不像同名的 Kotlin appendLine 会自动补行。
@@ -223,6 +262,49 @@ object EventTrace {
     }
 
     /**
+     * 回读上个进程写下的轨迹，恢复各会话的回合号高水位。
+     *
+     * 扫描区间与 [reportStaleTurns] 完全相同（自最后一个 `PROCESS START` 起），差别只在于
+     * 这里要的是**最大**回合号而非未收尾的回合。不合并成一个函数：一个要求「有未收尾的回合」，
+     * 一个要求「读到了高水位」——硬合并会让「有数据但无未收尾回合」这种常见情形走进不该走的分支。
+     *
+     * 取不到（无历史文件 / 无 START）时高水位保持为空，等同于当前行为（从 t1 起），不报错：
+     * 首次安装本就没有「上轮」，不算异常。
+     */
+    private fun loadTurnFloor(dir: File) {
+        val files = dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }
+            ?.sortedBy { it.name } ?: return
+        if (files.isEmpty()) return
+        // 从最新文件往前逐份回读，全部扫完——**不因遇到 `PROCESS START` 而停**。
+        // 与 [reportStaleTurns] 的差异就在这：那个只看「上个进程留下的残局」，故必须停在最后
+        // 一个 START；而这里要的是「历史上哪些回合号已被占用」，更早的进程用过的号同样不能重用，
+        // 只看上个进程反而会漏掉上上个进程用过的号而撞车。高水位偏大只是跳几个号，偏小则直接
+        // 让「s+tN+#seq」重新重号，两者代价不对称。
+        // 文件数量本身有上限（[cleanupOldLogs] 只留 [MAX_AGE_DAYS] 天），不会无限增长。
+        for (file in files) {
+            val part = runCatching { file.readLines() }.getOrNull() ?: continue
+            for (line in part) {
+                val m = TURN_BUCKET_RE.find(line) ?: continue
+                val n = m.groupValues[2].toLongOrNull() ?: continue
+                turnFloor.merge(m.groupValues[1], n) { a, b -> maxOf(a, b) }
+            }
+        }
+    }
+
+    /** 确保回合号高水位已回读；未 [init] 或已读过时直接返回。 */
+    private fun ensureTurnFloor() {
+        if (turnFloorLoaded.get()) return
+        val dir = logDir ?: return
+        // 双检锁：并发首回合可能同时到达，重复回读只是白做功，不产生错误数据。
+        synchronized(turnFloorLoaded) {
+            if (turnFloorLoaded.get()) return
+            runCatching { loadTurnFloor(dir) }
+                .onFailure { Log.e(TAG, "恢复回合号高水位失败", it) }
+            turnFloorLoaded.set(true)
+        }
+    }
+
+    /**
      * 启动时清点「上一个进程留下的未收尾回合」。
      *
      * 为什么不能靠内存里的 [activeTurns]：进程重启后它必然是空的，等真正要查时早已无迹可寻。
@@ -261,7 +343,9 @@ object EventTrace {
 
             // 只跟踪「回合开始」而无「回合结束」的 (会话 → 回合号)。
             val openTurns = LinkedHashMap<String, String>()
-            val turnRe = Regex("""s=(\S+)\s+(t\d+)\s+#\d+""")
+            // 与 [loadTurnFloor] 共用同一个回合号正则：两处对「什么是回合记录」的判定必须一致，
+            // 否则会出现「清点时认得、恢复高水位时不认得」这类看似矛盾的行为。
+            val turnRe = TURN_BUCKET_RE
             // 从 1 起跳：第 0 行是 START 本身。
             for (i in 1 until lines.size) {
                 val line = lines[i]
@@ -351,6 +435,9 @@ object EventTrace {
     private fun keyOf(scope: String?, turnId: String): String = "${scope ?: "-"}/$turnId"
 
     fun beginTurn(key: String): String {
+        // 先确保回合号高水位已从上个进程恢复：本方法可能早于 init 的异步读取被调用，
+        // 那时若直接从 0 起算，发出的就是与上个进程重号的 turnId。
+        ensureTurnFloor()
         // 开启新回合前，先看同作用域上一回合是否留有未收尾状态。
         // 这是进程消失留下的自动痕迹之一：进程突然消失时，finally 与异常处理都不执行，
         // 上一回合永远等不到 endTurn。检测到就写一行显式说明，而不是留下一段无解释的空白。
@@ -364,8 +451,10 @@ object EventTrace {
                 )
             }
         }
-        val n = turnCounters.computeIfAbsent(key) { AtomicLong(0) }.incrementAndGet()
-        val turnId = "t$n"
+        val n = turnFloor[key.take(8)]?.let { floor ->
+            turnCounters.computeIfAbsent(key) { AtomicLong(floor) }
+        } ?: turnCounters.computeIfAbsent(key) { AtomicLong(0) }
+        val turnId = "t${n.incrementAndGet()}"
         val mapKey = keyOf(key, turnId)
         seqCounters[mapKey] = AtomicLong(0)
         recordCounters[mapKey] = 0L
@@ -394,9 +483,18 @@ object EventTrace {
      * @param detail 人类可读细节。**只放结构与度量**（长度、数量、状态、标识），不要塞正文——
      *   正文已由 [AILogger] 完整留存，重复只会撑爆轨迹。
      * @param causeSeq 引发本条的上一条 `seq`；不传时**默认指向同回合的上一条**（有更精确的因果关系时显式传入覆盖）。
+     * @param causeKey 业务键，用于指回**真正的**起因记录（经 [bindCause] 绑定）。
+     *   并发交错时「上一条」是并发的邻居而非原因，必须用它显式指回；解析不到时退回默认行为。
      * @return 本条分配到的 `seq`；未记录（未启用 / 回合未知 / 超上限）时返回 null。
      */
-    fun record(turnId: String?, scope: String?, layer: String, detail: String, causeSeq: Long? = null): Long? {
+    fun record(
+        turnId: String?,
+        scope: String?,
+        layer: String,
+        detail: String,
+        causeSeq: Long? = null,
+        causeKey: String? = null,
+    ): Long? {
         if (!enabled) return null
         if (turnId == null) {
             // 原先直接 return，让轨迹出现无法解释的空白（而本模块的设计初衷恰恰是
@@ -421,8 +519,55 @@ object EventTrace {
         val seq = seqCounter.incrementAndGet()
         recordCounters[mapKey] = count + 1
 
-        write(turnId, scope, seq, layer, detail, causeSeq ?: (seq - 1).takeIf { it >= 1 })
+        val bound = causeKey?.let { boundCauses[mapKey]?.get(it) }
+        write(turnId, scope, seq, layer, detail, causeSeq ?: bound ?: (seq - 1).takeIf { it >= 1 })
         return seq
+    }
+
+    /** 测试入口：读绑定表，验证的是 [record] 实际使用的那份状态。 */
+    internal fun resolveCauseForTest(turnId: String, scope: String?, key: String): Long? =
+        boundCauses[keyOf(scope, turnId)]?.get(key)
+
+    /**
+     * 测试入口：从指定目录重读高水位。
+     *
+     * 走的是与生产**完全相同**的 [loadTurnFloor]（含「遇 PROCESS START 即停」与按会话取最大），
+     * 而不是另写一份等价逻辑——否则测的是副本，真路径仍然没被覆盖。
+     */
+    internal fun reloadTurnFloorForTest(dir: File) {
+        turnFloor.clear()
+        turnFloorLoaded.set(false)
+        loadTurnFloor(dir)
+        turnFloorLoaded.set(true)
+    }
+
+    /** 测试入口：当前高水位快照。 */
+    internal fun turnFloorForTest(): Map<String, Long> = turnFloor.toMap()
+
+    /**
+     * 测试入口：注入回合号高水位。
+     *
+     * 真实路径是 [loadTurnFloor] 从轨迹文件回读；测试里造文件会引入文件系统依赖，
+     * 而这里要验证的是「拿到高水位之后编号怎么走」，两者正交，故直接注入状态。
+     */
+    internal fun setTurnFloorForTest(session: String, floor: Long) {
+        turnFloor[session] = floor
+        turnFloorLoaded.set(true)
+    }
+
+    /**
+     * 把一条**业务键**绑到刚记录的 `seq` 上，供后续记录经 [record] 的 `causeKey` 指回它。
+     *
+     * 用途：表达「真正的因果」而非「时间上的相邻」。工具调用是最典型的一例——
+     * `tool_finished` 的原因是自己那次 `tool_started`，而非同回合的上一条记录；
+     * 并发调用（实测单日交错 277 次）时两者不是同一条，默认因果会把链指错人。
+     *
+     * @param seq 被绑记录的序号；传 null（未记录）时不建立绑定，后续自然退回默认因果。
+     */
+    fun bindCause(turnId: String?, scope: String?, key: String, seq: Long?) {
+        if (turnId == null || seq == null) return
+        // 键里带上 turnId：回合结束后绑定被清，新回合不会误取到上一回合的 seq。
+        boundCauses.computeIfAbsent(keyOf(scope, turnId)) { ConcurrentHashMap() }[key] = seq
     }
 
     /**
@@ -521,6 +666,7 @@ object EventTrace {
         seqCounters.remove(mapKey)
         recordCounters.remove(mapKey)
         droppedCounters.remove(mapKey)
+        boundCauses.remove(mapKey)
         // 只摘掉本会话自己的活跃映射：原 `removeIf { it.value == turnId }` 会误删
         // **其它会话**的映射（它们的 turnId 同样是 t1/t2…），令其后续事件被丢弃。
         if (scope != null && activeTurns[scope] == turnId) activeTurns.remove(scope)

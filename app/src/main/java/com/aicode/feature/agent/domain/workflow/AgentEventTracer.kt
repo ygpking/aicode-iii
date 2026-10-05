@@ -51,8 +51,21 @@ internal object AgentEventTracer {
     fun onEvent(turnId: String?, scope: String?, event: AgentEvent): Long? {
         if (turnId == null) return null
         val detail = describe(event) ?: return null
-        return EventTrace.record(turnId, scope, "EVENT", detail)
+        // 工具调用是**交错**的：同一回合可并发多次，而默认因果是「同回合上一条」，
+        // 于是 `tool_finished` 会指向另一个工具的 `started`（实测 1640 条里 583 条、35.6%）。
+        // 用调用 id 作业务键，把 finished 显式绑回它自己的 started。
+        val seq = EventTrace.record(
+            turnId, scope, "EVENT", detail,
+            causeKey = (event as? AgentEvent.ToolCallFinished)?.let { toolCauseKey(it.id) }
+        )
+        if (event is AgentEvent.ToolCallStarted) {
+            EventTrace.bindCause(turnId, scope, toolCauseKey(event.id), seq)
+        }
+        return seq
     }
+
+    /** 工具调用的因果键。同一 `id` 的 started/finished 成对，并发时彼此不混。 */
+    private fun toolCauseKey(id: String) = "tool:$id"
 
     /**
      * 事件 → 一行摘要；返回 null 表示该事件**不值得记**（逐字/流式片段）。
