@@ -47,7 +47,8 @@ class ShizukuTool @Inject constructor(
             "适用于需要系统权限的操作：`pm`/`am`/`cmd` 等系统命令、读写 /sdcard、查询系统状态等。" +
             "与 `Bash`（在本地容器或远程 SSH 中执行）不同，它直接作用于宿主 Android 系统本身。" +
             "请注意：删系统/他人数据、改系统或应用状态、外发数据、读其他应用私有数据这四类操作属硬红线，" +
-            "会被安全防护直接拦下（仅 `elevate: true` 可单次提权）；只读查询类命令可自动放行。" +
+            "会被安全防护直接拦下（仅 `elevate: true` 可单次提权，涉及私人数据的红线不可提权）；" +
+            "只读查询类命令可自动放行。" +
             "使用前用户需已安装 Shizuku 并在本应用中授权，未就绪时会返回错误提示。"
 
     override val permissionPolicy = ToolPermissionPolicy.ASK
@@ -64,6 +65,14 @@ class ShizukuTool @Inject constructor(
             name = "timeout",
             type = ParameterType.INTEGER,
             description = "命令最长执行时间（秒），超时将被强制终止。默认 $DEFAULT_TIMEOUT_SECONDS 秒，上限 $MAX_TIMEOUT_SECONDS 秒。",
+            required = false
+        ),
+        "elevate" to ToolParameter(
+            name = "elevate",
+            type = ParameterType.BOOLEAN,
+            description = "提权重试：仅当命令因内置安全防护（灾难性删除、删系统/他人数据、外发数据等红线）被拒、" +
+                "且确有必要执行时，置为 true 重试。届时系统会弹窗请求用户一次性授权，用户同意才执行，且不可记忆。" +
+                "涉及私人数据（照片/相册/下载等）的红线不可提权，置 true 也无效。",
             required = false
         )
     )

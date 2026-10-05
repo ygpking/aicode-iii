@@ -30,7 +30,9 @@ object ShellCommandParser {
     data class Analysis(
         val segments: List<List<String>>,
         val analyzable: Boolean,
-        val redirectTargets: List<String> = emptyList()
+        val redirectTargets: List<String> = emptyList(),
+        /** 顶层（引号外）是否出现管道符 `|`。`||` 不算。供调用方判定「管道是否跨程序传递数据」。 */
+        val hasUnquotedPipe: Boolean = false
     )
 
     private const val NONE = 0
@@ -50,6 +52,7 @@ object ShellCommandParser {
         var quote = NONE
         // 上一个算子是输出重定向（`>`/`>>`）时为 true：下一个 token 若是绝对路径则判定为不可静态判定。
         var expectRedirectTarget = false
+        var hasUnquotedPipe = false
         var i = 0
         val n = command.length
 
@@ -117,7 +120,10 @@ object ShellCommandParser {
                             while (i < n && command[i].isDigit()) i++
                         }
                         c == '&' -> { flushSegment(); i += if (i + 1 < n && command[i + 1] == '&') 2 else 1 }
-                        c == '|' -> { flushSegment(); i += if (i + 1 < n && command[i + 1] == '|') 2 else 1 }
+                        c == '|' -> {
+                            if (i + 1 >= n || command[i + 1] != '|') hasUnquotedPipe = true
+                            flushSegment(); i += if (i + 1 < n && command[i + 1] == '|') 2 else 1
+                        }
                         // 重定向：算子本身不入 token；输出重定向标记，待目标 token 判定是否绝对路径。
                         c == '>' -> { flushToken(); i += if (i + 1 < n && command[i + 1] == '>') 2 else 1; expectRedirectTarget = true }
                         c == '<' -> { flushToken(); i++ }
@@ -129,7 +135,7 @@ object ShellCommandParser {
         }
         if (quote != NONE) analyzable = false // 未闭合引号：不可信
         flushSegment()
-        return Analysis(segments, analyzable, redirectTargets)
+        return Analysis(segments, analyzable, redirectTargets, hasUnquotedPipe)
     }
 
     /** 跳过段首环境赋值后的有效 token（用于取程序名与匹配）。 */

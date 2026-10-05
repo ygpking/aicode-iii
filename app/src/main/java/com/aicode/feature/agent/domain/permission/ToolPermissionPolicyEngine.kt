@@ -137,7 +137,8 @@ class ToolPermissionPolicyEngine @Inject constructor(
                 if (cls.verdict == ShizukuCommandClassifier.Verdict.RED_LINE) {
                     return elevationOrDeny(
                         catastrophicReason = "$REASON_SHIZUKU_RED_LINE（${cls.reason}）",
-                        args = args
+                        args = args,
+                        elevatable = cls.elevatable
                     )
                 }
             }
@@ -282,9 +283,12 @@ class ToolPermissionPolicyEngine @Inject constructor(
     /**
      * 灾难性删除的裁决：携带提权参数时降级为一次性用户授权（ASK），否则硬拒绝（DENY）
      * 并在原因里提示可提权重试。AUTO 与非 AUTO 模式共用。提权仅对本次调用生效，不可记忆。
+     *
+     * [elevatable] 为 false 时提权也不放行（私人数据类红线）：这类数据看一眼就泄露，
+     * 弹窗给不出「这次为什么安全」的判据，用户无从判断，故不给任何提权后门。
      */
-    private fun elevationOrDeny(catastrophicReason: String, args: Map<String, JsonElement>): EvalResult =
-        if (isElevationRequested(args)) {
+    private fun elevationOrDeny(catastrophicReason: String, args: Map<String, JsonElement>, elevatable: Boolean = true): EvalResult =
+        if (elevatable && isElevationRequested(args)) {
             EvalResult(
                 verdict = Verdict.ASK,
                 rememberablePatterns = emptyList(),
@@ -295,7 +299,11 @@ class ToolPermissionPolicyEngine @Inject constructor(
             EvalResult(
                 Verdict.DENY,
                 emptyList(),
-                denyReason = "$catastrophicReason。如确需执行，可在调用时加 `$ELEVATE_ARG: true` 重试，系统将向用户请求授权。"
+                denyReason = if (elevatable) {
+                    "$catastrophicReason。如确需执行，可在调用时加 `$ELEVATE_ARG: true` 重试，系统将向用户请求授权。"
+                } else {
+                    "$catastrophicReason。此类操作不支持提权，请改为不接触私人数据的做法。"
+                }
             )
         }
 

@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.workflow
 
 import android.os.SystemClock
 import android.util.Base64
+import com.aicode.core.util.EventTrace
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.runCatchingCancellable
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
@@ -23,6 +24,7 @@ import com.aicode.feature.agent.domain.session.MessagePersistenceUseCase
 import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.domain.permission.PermissionChoice
 import com.aicode.feature.agent.domain.permission.PermissionScope
+import com.aicode.feature.agent.domain.permission.ShizukuCommandClassifier
 import com.aicode.feature.agent.domain.permission.ToolPermissionPolicyEngine
 import com.aicode.feature.agent.domain.prompt.SystemPromptProvider
 import com.aicode.feature.agent.domain.provider.AIProvider
@@ -136,6 +138,11 @@ class StatefulAgentWorkflow @Inject constructor(
         const val LIVE_TAIL_CHARS = STREAM_LIVE_TAIL_CHARS
         const val PROGRESS_INTERVAL_MS = STREAM_PROGRESS_INTERVAL_MS
         const val USER_REJECTED_CODE = "USER_REJECTED"
+        /** 提权参数名；与 [ToolPermissionPolicyEngine] 同名常量对应。 */
+        const val ELEVATE_ARG = "elevate"
+
+        /** 有副作用、值得审计的工具：直接操作宿主或执行命令的。 */
+        val AUDITED_TOOLS = setOf("Shizuku", "Bash", "Terminal")
         const val TITLE_GENERATOR_FILE = "agent/title-generator.md"
         const val TITLE_MAX_CHARS = 50
         const val COMMIT_GENERATOR_FILE = "agent/commit-generator.md"
@@ -1621,6 +1628,7 @@ class StatefulAgentWorkflow @Inject constructor(
             val reason = eval.denyReason ?: "该工具被项目安全规则策略禁止执行"
             val code = if (mode == AgentMode.PLAN) "PLAN_MODE_REJECTED" else "SYSTEM_DENIED"
             FileLogger.i(TAG, "权限判定拒绝 ${tool.name}：$reason（$code）")
+            auditPermissionDecision(tool.name, arguments, sessionId, "DENY", code, reason)
             return PermissionCheckResult(false, reason, code)
         }
 
@@ -1642,14 +1650,17 @@ class StatefulAgentWorkflow @Inject constructor(
                 when (permissionManager.awaitApproval(request)) {
                     PermissionChoice.REJECT -> {
                         FileLogger.i(TAG, "权限判定拒绝 ${tool.name}：用户拒绝（USER_REJECTED）")
+                        auditPermissionDecision(tool.name, arguments, sessionId, "USER_REJECTED", "USER_REJECTED", null)
                         PermissionCheckResult(false, "用户拒绝执行该工具", "USER_REJECTED")
                     }
                     PermissionChoice.ONCE -> {
                         FileLogger.i(TAG, "权限判定放行 ${tool.name}：用户单次允许（ONCE）")
+                        auditPermissionDecision(tool.name, arguments, sessionId, "ONCE", "USER_ALLOWED_ONCE", null)
                         PermissionCheckResult(true)
                     }
                     PermissionChoice.ALWAYS -> {
                         FileLogger.i(TAG, "权限判定放行 ${tool.name}：用户始终允许，记忆 ${eval.rememberablePatterns.size} 条规则")
+                        auditPermissionDecision(tool.name, arguments, sessionId, "ALWAYS", "USER_ALLOWED_ALWAYS", null)
                         if (eval.rememberablePatterns.isNotEmpty()) {
                             policyEngine.remember(tool.name, eval.rememberablePatterns, PermissionScope.PROJECT)
                         }
@@ -1658,6 +1669,38 @@ class StatefulAgentWorkflow @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * 权限决策审计：红线拒绝与提权/放行都留一条结构化记录。
+     *
+     * 为什么不能只靠 [FileLogger]：权限决策此前只进日志、且提权事实从未被记录，
+     * 出事后无法倒查「哪条命令、命中哪一类、用户当时选了什么」。
+     * 仅对有副作用的工具（Shizuku / Bash / 终端）记录，避免刷爆轨迹；
+     * **不记录命令原文**——命令可能含凭据，只记长度与分类结论。
+     */
+    private fun auditPermissionDecision(
+        toolName: String,
+        arguments: Map<String, JsonElement>,
+        sessionId: String?,
+        decision: String,
+        code: String,
+        reason: String?
+    ) {
+        if (toolName !in AUDITED_TOOLS) return
+        val command = (arguments["command"] ?: arguments["input"]) as? JsonPrimitive
+        val elevated = (arguments[ELEVATE_ARG] as? JsonPrimitive)?.contentOrNull?.trim()?.equals("true", true) == true
+        val detail = buildString {
+            append("tool=$toolName decision=$decision code=$code elevate=$elevated")
+            command?.contentOrNull?.takeIf { it.isNotBlank() }?.let { text ->
+                append(" len=${text.length}")
+                val cls = ShizukuCommandClassifier.classify(text)
+                append(" verdict=${cls.verdict} elevatable=${cls.elevatable}")
+                cls.reason?.let { append(" hit=\"$it\"") }
+            }
+            reason?.let { append(" reason=\"$it\"") }
+        }
+        EventTrace.recordFor(sessionId, "PERM", detail)
     }
 }
 
