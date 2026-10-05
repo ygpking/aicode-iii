@@ -533,6 +533,7 @@ class SystemPromptProvider @Inject constructor(
             45 to "45-环境基线.md",
             50 to "50-safety.md",
             60 to "60-tools-and-paths.md",
+            62 to "62-工具执行与等待纪律.md",
             70 to "70-skills-and-mcp.md"
         )
 
