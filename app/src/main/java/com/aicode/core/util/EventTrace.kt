@@ -1,5 +1,7 @@
 package com.aicode.core.util
 
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
 import android.util.Log
@@ -72,11 +74,13 @@ object EventTrace {
     private const val OUT_OF_TURN = "t0"
 
     /**
-     * 轨迹行里的「会话短号 + 回合号」桶标识，如 `s=8bd16761 t3`。
+     * 轨迹行里的「会话短号 + 回合号 + 序号」桶标识，如 `s=8bd16761 t3 #42`。
      *
-     * 高水位恢复与未收尾清点共用它，保证两处对「什么是回合记录」的判定一致。
+     * 高水位恢复、未收尾清点与中断补写共用它，保证三处对「什么是回合记录」的判定一致。
+     * 三个分组必须都带括号：[reportStaleTurns] 需用第三组（seq）决定补写序号接在哪里，
+     * 漏括会导致取值为空、整行被跳过——真机上表现为「清点永远报无未收尾回合」。
      */
-    private val TURN_BUCKET_RE = Regex("""s=(\S+)\s+t(\d+)\s+#\d+""")
+    private val TURN_BUCKET_RE = Regex("""s=(\S+)\s+t(\d+)\s+#(\d+)""")
 
     private val ioExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "event-trace").apply { isDaemon = true }
@@ -87,6 +91,10 @@ object EventTrace {
 
     @Volatile
     private var logDir: File? = null
+
+    /** 应用上下文，仅供 [reportPreviousExit] 查系统侧退出记录。未 [init] 时为 null。 */
+    @Volatile
+    private var appContext: Context? = null
 
     // 以下仅由 ioExecutor 单线程访问。
     private var writer: java.io.BufferedWriter? = null
@@ -146,6 +154,7 @@ object EventTrace {
         val base = context.getExternalFilesDir(null) ?: context.filesDir
         val dir = File(base, DIR_NAME).apply { mkdirs() }
         logDir = dir
+        appContext = context.applicationContext
         // 版本标识：轨迹里此前**没有任何版本信息**，而正式包会随升级换代——
         // 事后看到一段异常轨迹时，无法判断它属于哪个构建，只能靠文件时间猜。
         // 读 packageManager 而非 BuildConfig：无需开 buildFeatures.buildConfig，也不改构建脚本。
@@ -253,16 +262,58 @@ object EventTrace {
             val at = parts.getOrNull(1)?.toLongOrNull()
             if (state != "PROCESS START" || at == null) return@runCatching
             val gapSec = (System.currentTimeMillis() - at) / 1000
-            // 措辞刻意保留不确定性：STOP 标记由 [markCleanExit] 写入，而它依赖生命周期回调，
-            // 在「进程被系统直接回收」时同样不会执行——所以「无 STOP」既可能是被杀，
-            // 也可能是系统没给回调机会。此前写成「判定为进程被杀」是把猜测当结论（实测 19 次启动
-            // 报 19 次「被杀」、STOP 记录 0 条，等于恒真信号、零区分度），会误导排查方向。
+            // 措辞必须以系统侧的真实死因为准——「有 START 无 STOP」本身只是「没走到退出流程」
+            // 这一个事实，而 START/STOP 都靠生命周期回调写入：进程被 kill -9 时两者都不执行，
+            // 于是它区分不了「被 LMK 回收 / Java 崩溃 / 用户强停 / 安装覆盖」。
+            // 此前写成「判定为进程被杀」是把猜测当结论（实测 19 次启动报 19 次「被杀」、STOP 记录 0 条，
+            // 等于恒真信号、零区分度）；改成「可能被系统回收」后又滑向另一个极端——不误导了，
+            // 但也什么都告诉不了排查者。两版共同的缺陷是**没去问那个知道答案的地方**。
+            val reason = appContext?.let { systemExitReason(it) }
+            val tail = reason ?: "系统侧无记录（API < 30 或读取失败）——只能推断未走到退出流程"
             appendLine(
                 dir,
                 "${timestampFormat.format(Instant.now())}  -      -    -    -  LIFECYCLE  " +
-                    "上次未记录到正常退出标记（距今 ${gapSec}s）——进程可能被系统回收，或退出前未进入后台\n"
+                    "上次未记录到正常退出标记（距今 ${gapSec}s）——$tail\n"
             )
         }.onFailure { Log.e(TAG, "检查上次退出状态失败", it) }
+    }
+
+    /**
+     * 从系统侧读上一次进程的**真实**退出原因。
+     *
+     * 为什么必须问系统：应用侧的 START/STOP 标记只能表达「是否走过退出流程」，
+     * 进程被 `kill -9` 时异常处理器、`finally`、生命周期回调全部不执行，日志只剩一段空白——
+     * 死因在应用侧物理上写不下来。Android 11（API 30）起系统保存了带死因枚举的退出记录，
+     * 是唯一可靠来源（取证方法已沉淀为项目记忆 `android-crash-forensics`）。
+     *
+     * @return 形如 `reason=3(LOW_MEMORY) 低内存回收` 的摘要；取不到时返回 null，由调用方
+     *   原样降级为「无法取死因」，**不编造**。
+     */
+    private fun systemExitReason(context: Context): String? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return runCatching {
+            val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                ?: return@runCatching null
+            // pid 传 0 = 不限进程，maxNum 传 1 = 只要最近一次。
+            val info = am.getHistoricalProcessExitReasons(context.packageName, 0, 1).firstOrNull()
+                ?: return@runCatching null
+            val why = when (info.reason) {
+                ApplicationExitInfo.REASON_LOW_MEMORY -> "低内存回收（LMK）"
+                ApplicationExitInfo.REASON_SIGNALED -> "收到信号 status=${info.status}"
+                ApplicationExitInfo.REASON_CRASH -> "Java 异常崩溃"
+                ApplicationExitInfo.REASON_CRASH_NATIVE -> "native 崩溃"
+                ApplicationExitInfo.REASON_ANR -> "无响应（ANR）"
+                ApplicationExitInfo.REASON_USER_REQUESTED -> "用户主动结束"
+                ApplicationExitInfo.REASON_USER_STOPPED -> "用户强制停止"
+                ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "依赖进程死亡"
+                ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE -> "资源占用超限"
+                ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "安装覆盖（无害，非故障）"
+                ApplicationExitInfo.REASON_EXIT_SELF -> "自行退出"
+                ApplicationExitInfo.REASON_OTHER -> "其它系统原因"
+                else -> "未在已知枚举内"
+            }
+            "reason=${info.reason} $why pss=${info.pss / 1024}MB"
+        }.onFailure { Log.e(TAG, "读取系统退出记录失败", it) }.getOrNull()
     }
 
     /**
@@ -339,6 +390,17 @@ object EventTrace {
      * PROCESS START 为止，再从那里扫到末尾。只丢弃该 START 之前的内容（属于更早的进程）。
      */
     private fun reportStaleTurns(dir: File) {
+        // 死因读取依赖 Android API，抽出为参数以便测试注入固定值。
+        reportStaleTurnsForTest(dir, appContext?.let { systemExitReason(it) })
+    }
+
+    /**
+     * [reportStaleTurns] 的实现体。[reason] 为系统侧死因摘要（null = 取不到，不编造）。
+     *
+     * 抽成带参函数而非在内部读 [appContext]：测试要验证的是「清点 + 补写」这套逻辑本身，
+     * 而非 Android 系统 API 能否调通（后者属设备侧验证）。
+     */
+    internal fun reportStaleTurnsForTest(dir: File, reason: String?) {
         runCatching {
             val files = dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }
                 ?.sortedBy { it.name } ?: return@runCatching
@@ -360,30 +422,64 @@ object EventTrace {
             }
             if (!found) return@runCatching
 
-            // 只跟踪「回合开始」而无「回合结束」的 (会话 → 回合号)。
-            val openTurns = LinkedHashMap<String, String>()
+            // 每个会话当前未收尾的回合：scope → turn，及其最大 seq 与条数。
+            // 必须按会话分开：实测真机出现过「同一次启动有 2 个回合未收尾（两个会话各一个）」。
+            val openTurn = HashMap<String, String>()
+            val maxSeqOf = HashMap<String, Long>()      // "scope/turn" → 最大 seq
+            val countOf = HashMap<String, Long>()        // "scope/turn" → 条数
             // 与 [loadTurnFloor] 共用同一个回合号正则：两处对「什么是回合记录」的判定必须一致，
             // 否则会出现「清点时认得、恢复高水位时不认得」这类看似矛盾的行为。
             val turnRe = TURN_BUCKET_RE
-            // 从 1 起跳：第 0 行是 START 本身。
             for (i in 1 until lines.size) {
-                val line = lines[i]
-                if (!line.contains("  TURN  ")) continue
-                val m = turnRe.find(line) ?: continue
+                val m = turnRe.find(lines[i]) ?: continue
                 val scope = m.groupValues[1]
-                val turn = m.groupValues[2]
-                when {
-                    line.contains("轮次开始") -> openTurns[scope] = turn
-                    line.contains("轮次结束") -> if (openTurns[scope] == turn) openTurns.remove(scope)
+                // 正则第 2 组是**纯数字**，而轨迹格式里回合号写作 `t7`——必须补上前缀。
+                // 不补的后果：补写的终止行变成 `s=xxxx 7 #13`，不满足轨迹格式，
+                // analyze_traces.py 的 LINE_RE（要求 t\d+）会整行丢弃——产出的是一堆垃圾行。
+                val turn = "t" + m.groupValues[2]
+                val seq = m.groupValues[3].toLongOrNull() ?: continue
+                val text = lines[i]
+                val key = "$scope/$turn"
+                if (text.contains("  TURN  ")) {
+                    when {
+                        // 开新回合：覆盖该会话旧的未收尾回合（它已被新回合取代）
+                        text.contains("轮次开始") -> openTurn[scope] = turn
+                        // 收尾仅当收的是当前这个回合；旧回合的迟到收尾不算
+                        text.contains("轮次结束") -> if (openTurn[scope] == turn) openTurn.remove(scope)
+                    }
+                }
+                // 只统当前打开的桶：已收尾桶的尾巴行（如 SNAPSHOT）不应再计入
+                if (openTurn[scope] == turn) {
+                    maxSeqOf[key] = maxOf(maxSeqOf[key] ?: 0L, seq)
+                    countOf[key] = (countOf[key] ?: 0L) + 1
                 }
             }
-            if (openTurns.isEmpty()) return@runCatching
+            if (openTurn.isEmpty()) return@runCatching
+
+            val now = timestampFormat.format(Instant.now())
             appendLine(
                 dir,
-                "${timestampFormat.format(Instant.now())}  -      -    -    -  LIFECYCLE  " +
-                        "上轮有 ${openTurns.size} 个回合未收尾（${openTurns.entries.joinToString(" ") { "${it.key}/${it.value}" }}）" +
-                        "——进程在回合中途消失，这些回合的收尾事实已不可考\n"
+                "$now  -      -    -    -  LIFECYCLE  " +
+                        "上轮有 ${openTurn.size} 个回合未收尾（${openTurn.entries.joinToString(" ") { "${it.key}/${it.value}" }}）" +
+                        "——${reason ?: "死因不可知"}\n"
             )
+            // 补齐收尾事实：为每个中断的回合桶追加一条终止记录，让它自己合上。
+            // 为什么要补：「开了没收尾」之前只在 LIFECYCLE 层留一行旁白，那个回合的链上
+            // 没有任何终止节点——按 (会话,回合) 倒查时看到的是昊然而止的桶，
+            // 分不清「进程死了」还是「记录被截断」。补上后沿链走到末尾就能看到死因。
+            // 用 appendLine 直写并显式带 seq，**不走 record()**：那些回合的计数器属于
+            // 已消失的进程，本进程里没有对应条目，走 record 只会被当成「回合已收尾」丢弃。
+            // 序号接在桶内最大值之后，避免与既有序号撞车（同刚修好的跳进程重号）。
+            // 局限：该行为写在「今天」的文件，跳天时与原桶不在同一文件，按 s=/t 过滤仍能找到。
+            for ((scope, turn) in openTurn) {
+                val key = "$scope/$turn"
+                val last = maxSeqOf[key] ?: continue
+                appendLine(
+                    dir,
+                    "$now  s=$scope $turn #${last + 1} ←#$last  TURN  " +
+                            "轮次中断/进程消失（已记 ${countOf[key] ?: 0} 条，无收尾）——${reason ?: "死因不可知"}\n"
+                )
+            }
         }.onFailure { Log.e(TAG, "清点上轮未收尾回合失败", it) }
     }
 
