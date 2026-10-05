@@ -28,7 +28,7 @@ class BrowserTool @Inject constructor(
         const val DEFAULT_WAIT_TIMEOUT_MS = 10_000L
         const val DEFAULT_BACKBONE_DEPTH = 15
         const val DEFAULT_SCREENSHOT_DIR = "~/workspace/.aicode/browser-screenshots"
-        val READ_ONLY_ACTIONS = setOf("getText", "getHtml", "getBackbone", "screenshot", "console", "wait", "listTabs")
+        val READ_ONLY_ACTIONS = setOf("getText", "getHtml", "getBackbone", "console", "wait", "listTabs")
     }
 
     override val name = "browser"
@@ -98,8 +98,13 @@ class BrowserTool @Inject constructor(
 
     override fun effectiveCapabilities(args: Map<String, JsonElement>): Set<ToolCapability> {
         val action = args["action"]?.jsonPrimitive?.contentOrNull?.trim()
-        return if (action in READ_ONLY_ACTIONS) setOf(ToolCapability.NETWORK_READ)
-        else setOf(ToolCapability.NETWORK_READ, ToolCapability.NETWORK_WRITE)
+        return when {
+            // screenshot 会把截图写入 path（默认工作区内），属写操作：标 WRITE_WORKSPACE 后
+            // PLAN 模式会被 isDangerousTool 拦下，不再绕过只读沙盒。
+            action == "screenshot" -> setOf(ToolCapability.NETWORK_READ, ToolCapability.WRITE_WORKSPACE)
+            action in READ_ONLY_ACTIONS -> setOf(ToolCapability.NETWORK_READ)
+            else -> setOf(ToolCapability.NETWORK_READ, ToolCapability.NETWORK_WRITE)
+        }
     }
 
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {

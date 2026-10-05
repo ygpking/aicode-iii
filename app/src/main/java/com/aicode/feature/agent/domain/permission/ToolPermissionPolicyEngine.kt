@@ -62,11 +62,12 @@ class ToolPermissionPolicyEngine @Inject constructor(
         private val TASK_AUTO_ACTIONS = setOf("read", "list", "send")
 
         /**
-         * 浏览器工具：navigate/click/fill/select/evaluate/dialog/back/forward/reload/newTab/closeTab/selectTab 为写操作（PLAN 拦截），
-         * getText/getHtml/getBackbone/screenshot/console/wait/listTabs 为只读（PLAN 放行）。
+         * 浏览器工具：navigate/click/fill/select/evaluate/dialog/back/forward/reload/newTab/closeTab/selectTab
+         * 与 screenshot 为写操作（PLAN 拦截，screenshot 会写盘）；
+         * getText/getHtml/getBackbone/console/wait/listTabs 为只读（PLAN 放行）。
          */
         const val BROWSER_TOOL = "browser"
-        private val BROWSER_READ_ONLY_ACTIONS = setOf("getText", "getHtml", "getBackbone", "screenshot", "console", "wait", "listTabs")
+        private val BROWSER_READ_ONLY_ACTIONS = setOf("getText", "getHtml", "getBackbone", "console", "wait", "listTabs")
 
         /**
          * 提权参数：非 AUTO 模式下，命令因内置安全防护（灾难性 rm）被拒时，

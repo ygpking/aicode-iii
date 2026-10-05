@@ -83,6 +83,29 @@ class ToolPermissionPolicyEngineTest {
         assertEquals(ToolPermissionPolicyEngine.Verdict.ASK, r.verdict)
     }
 
+    @Test
+    fun planMode_deniesBrowserScreenshot() = runTest {
+        val e = engine()
+        // screenshot 会写盘：effectiveCapabilities 带 WRITE_WORKSPACE → PLAN 下判为危险 → DENY
+        val r = e.evaluate(
+            tool(ToolCapability.NETWORK_READ, ToolCapability.WRITE_WORKSPACE), "browser",
+            mapOf("action" to JsonPrimitive("screenshot")), AgentMode.PLAN
+        )
+        assertEquals(ToolPermissionPolicyEngine.Verdict.DENY, r.verdict)
+        assertNotNull(r.denyReason)
+    }
+
+    @Test
+    fun planMode_readOnlyBrowserActionNotDenied() = runTest {
+        val e = engine()
+        // 只读动作不带写能力，PLAN 下不应被沙盒 DENY
+        val r = e.evaluate(
+            tool(ToolCapability.NETWORK_READ), "browser",
+            mapOf("action" to JsonPrimitive("getText")), AgentMode.PLAN
+        )
+        assertTrue(r.verdict != ToolPermissionPolicyEngine.Verdict.DENY)
+    }
+
     // ── AUTO 模式：放行但保留灾难性 rm 防护 ──────────────────────────
 
     @Test

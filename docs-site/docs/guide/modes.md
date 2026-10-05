@@ -20,6 +20,8 @@
 
 方案讨论清楚后切回 BUILD 再动手。
 
+> 注意：浏览器 `screenshot` 会把截图写入 `path`（默认 `~/workspace/.aicode/browser-screenshots/`），它算写操作，因此在 PLAN 模式下同样会被拦截。
+
 ## AUTO（自动模式）
 
 权限全放行。所有工具调用（写文件、执行命令、终端操作）自动批准，不弹任何授权窗。
