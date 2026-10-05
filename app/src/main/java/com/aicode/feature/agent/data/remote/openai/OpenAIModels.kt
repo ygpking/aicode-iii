@@ -23,8 +23,19 @@ data class OpenAIChatMessage(
     /** DeepSeek 思考模式要求将上轮 assistant 消息的 reasoning_content 原样回传，否则 400。 */
     val reasoning_content: String? = null,
     /** 部分第三方兼容服务（如 mimo）用顶层 reasoning 而非 reasoning_content 传思考内容。 */
-    val reasoning: String? = null
+    val reasoning: String? = null,
+    /** 生图模型的响应扩展：部分兼容服务在 assistant message 里返回 `images` 数组。 */
+    val images: List<OpenAIImagePart>? = null
 )
+
+/** Chat Completions 生图扩展里的单个图片项（流式 `delta.images` 与非流式 `message.images` 同形）。 */
+data class OpenAIImagePart(
+    val type: String? = null,
+    val image_url: OpenAIImageUrl? = null,
+    val index: Int? = null
+)
+
+data class OpenAIImageUrl(val url: String? = null)
 
 data class OpenAIToolDefinition(
     val type: String = "function",

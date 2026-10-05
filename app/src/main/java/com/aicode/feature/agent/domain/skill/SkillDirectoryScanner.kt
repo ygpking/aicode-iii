@@ -19,9 +19,10 @@ object SkillDirectoryScanner {
 
     /**
      * 扫描 [root] 目录下所有合法技能，按名称排序。
-     * 目录不存在时返回空列表。
+     * 目录不存在时返回空列表；递归列举失败（IO 错误、远程工作区未连接等）时
+     * 同样降级为空列表并记日志，不向上抛——技能扫描失败不该让调用方崩溃。
      */
-    fun scan(provider: FileAccessProvider, root: String): List<Skill> {
+    fun scan(provider: FileAccessProvider, root: String): List<Skill> = runCatching {
         val dirs = provider.listFilesRecursive(root, MAX_DEPTH)
             .filter { relative ->
                 val name = relative.substringAfterLast('/')
@@ -31,12 +32,15 @@ object SkillDirectoryScanner {
             .distinct()
 
         val base = root.trimEnd('/')
-        return dirs.mapNotNull { relative ->
+        dirs.mapNotNull { relative ->
             val dirPath = if (relative.isEmpty()) base else "$base/$relative"
             // 单个坏技能只跳过自己，绝不连带整表：否则一个畸形 SKILL.md 会让全部技能消失。
             runCatching { SkillParser.parse(provider, dirPath) }
                 .onFailure { FileLogger.w(TAG, "解析技能失败，已跳过: $dirPath", it) }
                 .getOrNull()
         }.sortedBy { it.name.lowercase() }
+    }.getOrElse { e ->
+        FileLogger.w(TAG, "扫描技能目录失败: $root", e)
+        emptyList()
     }
 }
