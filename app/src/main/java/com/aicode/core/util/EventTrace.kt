@@ -115,6 +115,9 @@ object EventTrace {
     /** 高水位是否已回读。首次 [beginTurn] 前必须为 true，否则会发放重复的回合号。 */
     private val turnFloorLoaded = AtomicBoolean(false)
 
+    /** [ensureTurnFloor] 的双检锁对象。不拿 [turnFloorLoaded] 当锁：那是状态不是锁。 */
+    private val floorLock = Any()
+
     /**
      * 回合内「业务键 → 已分配 seq」的绑定，用于表达**真实因果**。
      *
@@ -153,9 +156,10 @@ object EventTrace {
             // 最后才写本次 START——否则 START 会混进被扫描区间，把上轮残局掩盖掉。
             reportPreviousExit(dir)
             reportStaleTurns(dir)
-            // 高水位回读同理必须在写本次 START **之前**：它扫的区间也是「自最后一个 START 起」，
-            // 而本次 START 一旦落盘就成了新的「最后一个 START」，区间被截断到本进程，
-            // 上个进程的回合号再也读不到（那会让修复静默失效）。
+            // 高水位回读放在这里的唯一理由是「尽早就绪」：它扫全部历史文件、不依赖 START 位置，
+            // 与写 START 无先后约束；但它是后台线程，而首个回合在主线程，两者无法排序。
+            // 在这里做，可让「后台先完成」成为常态，把主线程兜底（见 [ensureTurnFloor] 的代价说明）
+            // 压到极罕见的情形。
             ensureTurnFloor()
             appendLine(
                 dir,
@@ -264,11 +268,15 @@ object EventTrace {
     /**
      * 回读上个进程写下的轨迹，恢复各会话的回合号高水位。
      *
-     * 扫描区间与 [reportStaleTurns] 完全相同（自最后一个 `PROCESS START` 起），差别只在于
-     * 这里要的是**最大**回合号而非未收尾的回合。不合并成一个函数：一个要求「有未收尾的回合」，
-     * 一个要求「读到了高水位」——硬合并会让「有数据但无未收尾回合」这种常见情形走进不该走的分支。
+     * 回溯**全部**历史轨迹文件取各会话的最大回合号。
      *
-     * 取不到（无历史文件 / 无 START）时高水位保持为空，等同于当前行为（从 t1 起），不报错：
+     * 与 [reportStaleTurns] 的差异：那个只要「上个进程留下的残局」，故停在最后一个
+     * `PROCESS START`；这里要的是「历史上哪些回合号已被占用」，故不设停止条件——
+     * 更早进程用过的号同样不能重用，只看上个进程反而会漏掉上上个进程而撞车。
+     * 不合并成一个函数：一个要求「有未收尾的回合」，一个要求「读到了高水位」，
+     * 硬合并会让「有数据但无未收尾回合」这种常见情形走进不该走的分支。
+     *
+     * 取不到（无历史文件）时高水位保持为空，等同于修复前的行为（从 t1 起），不报错：
      * 首次安装本就没有「上轮」，不算异常。
      */
     private fun loadTurnFloor(dir: File) {
@@ -291,12 +299,19 @@ object EventTrace {
         }
     }
 
-    /** 确保回合号高水位已回读；未 [init] 或已读过时直接返回。 */
+    /**
+     * 确保回合号高水位已回读；未 [init] 或已读过时直接返回。
+     *
+     * **代价**：生产路径下回读由 [init] 的后台线程完成；本方法是兜底——若首个 [beginTurn]
+     * 早于它执行（进程刚起、秒级内就有任务自动继续），会在调用线程上一次性扫描轨迹目录。
+     * 实测规模 6 份文件 5.31MB（[cleanupOldLogs] 只留 [MAX_AGE_DAYS] 天，有上限）。
+     * 选择阻塞而非「未就绪就先从 t1 发」：后者会让整个修复静默失效，而重号没有报错。
+     */
     private fun ensureTurnFloor() {
         if (turnFloorLoaded.get()) return
         val dir = logDir ?: return
         // 双检锁：并发首回合可能同时到达，重复回读只是白做功，不产生错误数据。
-        synchronized(turnFloorLoaded) {
+        synchronized(floorLock) {
             if (turnFloorLoaded.get()) return
             runCatching { loadTurnFloor(dir) }
                 .onFailure { Log.e(TAG, "恢复回合号高水位失败", it) }
