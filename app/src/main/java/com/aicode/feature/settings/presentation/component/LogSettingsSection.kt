@@ -54,7 +54,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
@@ -64,6 +63,7 @@ import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.LogLevelColors
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.util.LogLevel
 import com.aicode.feature.settings.presentation.LogViewerUiState
 import compose.icons.FeatherIcons
@@ -425,7 +425,7 @@ private fun LogLine(
         Text(
             text = entry.displayText(),
             style = MaterialTheme.typography.bodySmall.copy(
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 fontSize = 11.sp,
                 lineHeight = 16.sp
             ),

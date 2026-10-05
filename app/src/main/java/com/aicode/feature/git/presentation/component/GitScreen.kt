@@ -51,7 +51,6 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -62,6 +61,7 @@ import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.GitStatusColors
 import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.ui.dialogTextFieldColors
 import com.aicode.core.ui.FloatingTabBar
 import com.aicode.core.ui.FloatingTabItem
@@ -345,7 +345,7 @@ internal fun StatusMetric(label: String, count: Int, color: Color, modifier: Mod
                 text = count.toString(),
                 style = MaterialTheme.typography.titleMedium,
                 color = color,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 maxLines = 1
             )
             Text(
@@ -408,7 +408,7 @@ internal fun StatusChip(text: String) {
             Text(
                 text = text.take(2),
                 style = MaterialTheme.typography.labelSmall,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 color = fg
             )
         }
@@ -643,7 +643,7 @@ private fun CommitDialog(
                             Text(
                                 text = type,
                                 style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
+                                fontFamily = CodeFontFamily,
                                 fontWeight = if (isCurrentType) FontWeight.SemiBold else FontWeight.Normal,
                                 color = chipFg,
                                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)

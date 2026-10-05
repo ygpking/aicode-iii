@@ -56,7 +56,6 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -65,6 +64,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.feature.agent.presentation.component.MarkdownContent
 import com.aicode.feature.editor.data.EditorSettings
 import com.aicode.feature.editor.domain.TextMateSetup
@@ -376,7 +376,7 @@ private fun FileTitleBar(fileName: String, dirty: Boolean, line: Int, column: In
         Text(
             text = fileName,
             style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f)
@@ -384,7 +384,7 @@ private fun FileTitleBar(fileName: String, dirty: Boolean, line: Int, column: In
         Text(
             text = "$line:$column",
             style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(start = Spacing.sm)
         )
@@ -619,7 +619,7 @@ private fun EditorSymbolBar(
                     Text(
                         text = symbol,
                         style = MaterialTheme.typography.titleMedium,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = CodeFontFamily
                     )
                 }
             }

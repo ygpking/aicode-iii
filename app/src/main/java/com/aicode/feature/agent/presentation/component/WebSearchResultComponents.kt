@@ -26,12 +26,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.CodeFontFamily
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ChevronDown
 import compose.icons.feathericons.ChevronUp
@@ -210,7 +210,7 @@ private fun WebSearchResultItem(index: Int, item: ParsedWebSearchItem) {
                 Text(
                     text = index.toString().padStart(2, '0'),
                     color = MaterialTheme.colorScheme.primary,
-                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = FontFamily.Monospace),
+                    style = MaterialTheme.typography.labelMedium.copy(fontFamily = CodeFontFamily),
                     fontWeight = FontWeight.SemiBold
                 )
                 Spacer(Modifier.width(Spacing.sm))
@@ -237,7 +237,7 @@ private fun WebSearchResultItem(index: Int, item: ParsedWebSearchItem) {
                     Text(
                         text = item.url.toDisplayUrl(),
                         color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = CodeFontFamily),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

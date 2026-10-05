@@ -56,7 +56,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -66,6 +65,7 @@ import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.GitLanePalette
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.feature.git.domain.model.GitFileChange
 import com.aicode.feature.git.domain.model.GitGraph
 import com.aicode.feature.git.domain.model.GitGraphRef
@@ -349,7 +349,7 @@ private fun GraphCommitRow(
                                 Text(
                                     text = commit.shortHash,
                                     style = MaterialTheme.typography.labelSmall,
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = CodeFontFamily,
                                     color = nodeColor,
                                     modifier = Modifier.padding(horizontal = Spacing.sm, vertical = 2.dp),
                                     maxLines = 1
@@ -661,7 +661,7 @@ private fun CommitFileRow(file: GitFileChange, indent: Dp, onClick: () -> Unit =
                 Text(
                     text = fileName,
                     style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = CodeFontFamily,
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -670,7 +670,7 @@ private fun CommitFileRow(file: GitFileChange, indent: Dp, onClick: () -> Unit =
                     Text(
                         text = directory,
                         style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = CodeFontFamily,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -868,7 +868,7 @@ private fun CommitDetailSheet(
                 Text(
                     text = commit.hash,
                     style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = CodeFontFamily,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,

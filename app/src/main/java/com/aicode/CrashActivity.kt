@@ -46,13 +46,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aicode.core.theme.AIEditorTheme
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.AlertCircle
 import compose.icons.feathericons.Copy
@@ -395,7 +395,7 @@ private fun CrashScreen(
                             .fillMaxSize()
                             .verticalScroll(rememberScrollState()),
                         style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = CodeFontFamily,
                             fontSize = 11.5.sp,
                             lineHeight = 16.sp
                         ),

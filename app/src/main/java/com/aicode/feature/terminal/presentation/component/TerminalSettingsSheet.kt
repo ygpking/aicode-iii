@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.sp
 import com.aicode.R
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.feature.terminal.data.repository.TerminalSettings
 import com.aicode.feature.terminal.domain.font.TerminalFontManager
 import com.aicode.feature.terminal.domain.model.TerminalThemePreset
@@ -184,7 +185,7 @@ fun TerminalSettingsSheet(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = CodeFontFamily
                 )
             }
             Slider(
@@ -335,13 +336,13 @@ private fun TerminalFontSection(
 /** 把字体路径解析成预览用 FontFamily，路径无效时回落系统等宽字体。 */
 @Composable
 private fun rememberPreviewFontFamily(path: String): FontFamily = remember(path) {
-    if (path.isBlank()) return@remember FontFamily.Monospace
+    if (path.isBlank()) return@remember CodeFontFamily
     if (path == TerminalFontManager.BUILTIN_PATH) {
         return@remember FontFamily(Font(R.font.jetbrains_mono_nl))
     }
     val file = File(path)
-    if (!file.isFile) return@remember FontFamily.Monospace
-    runCatching { FontFamily(Font(file)) }.getOrDefault(FontFamily.Monospace)
+    if (!file.isFile) return@remember CodeFontFamily
+    runCatching { FontFamily(Font(file)) }.getOrDefault(CodeFontFamily)
 }
 
 /** 终端实时预览小窗。 */

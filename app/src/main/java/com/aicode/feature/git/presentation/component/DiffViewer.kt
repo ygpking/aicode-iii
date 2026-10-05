@@ -39,13 +39,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.util.LineDiff
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowLeft
@@ -119,7 +119,7 @@ fun DiffViewerScreen(
                             Text(
                                 text = path,
                                 style = MaterialTheme.typography.labelSmall,
-                                fontFamily = FontFamily.Monospace,
+                                fontFamily = CodeFontFamily,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis
@@ -186,7 +186,7 @@ private fun DiffContent(diffData: DiffData, padding: androidx.compose.foundation
     // 横向滚动只有一个实例（外层 Box），LazyColumn 宽度取最宽行的实测宽度，整列同步滚动。
     val hScroll = rememberScrollState()
     val textMeasurer = rememberTextMeasurer()
-    val contentStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+    val contentStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = CodeFontFamily)
     val density = LocalDensity.current
     val contentWidth = remember(diffData, textMeasurer) {
         val maxTextPx = diffData.lines.maxOfOrNull { textMeasurer.measure(it.text, contentStyle).size.width } ?: 0
@@ -234,7 +234,7 @@ private fun DiffStatsBar(added: Int, removed: Int) {
             Text(
                 text = "+$added",
                 style = MaterialTheme.typography.labelMedium,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 color = MaterialTheme.semanticColors.diffAdd,
                 fontWeight = FontWeight.SemiBold
             )
@@ -242,7 +242,7 @@ private fun DiffStatsBar(added: Int, removed: Int) {
             Text(
                 text = "-$removed",
                 style = MaterialTheme.typography.labelMedium,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 color = MaterialTheme.semanticColors.diffRemove,
                 fontWeight = FontWeight.SemiBold
             )
@@ -271,7 +271,7 @@ private fun DiffLineRow(row: DiffRow, gutterWidth: androidx.compose.ui.unit.Dp) 
         Text(
             text = row.oldLineNum?.toString() ?: "",
             style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             color = gutterTextColor,
             textAlign = androidx.compose.ui.text.style.TextAlign.End,
             softWrap = false,
@@ -291,7 +291,7 @@ private fun DiffLineRow(row: DiffRow, gutterWidth: androidx.compose.ui.unit.Dp) 
         Text(
             text = row.newLineNum?.toString() ?: "",
             style = MaterialTheme.typography.labelSmall,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             color = gutterTextColor,
             textAlign = androidx.compose.ui.text.style.TextAlign.End,
             softWrap = false,
@@ -305,7 +305,7 @@ private fun DiffLineRow(row: DiffRow, gutterWidth: androidx.compose.ui.unit.Dp) 
         Text(
             text = prefix,
             style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             color = prefixColor,
             fontWeight = FontWeight.Bold,
             modifier = Modifier
@@ -316,7 +316,7 @@ private fun DiffLineRow(row: DiffRow, gutterWidth: androidx.compose.ui.unit.Dp) 
             Text(
                 text = row.highlighted,
                 style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 softWrap = false,
                 modifier = Modifier
                     .padding(end = Spacing.lg, top = 2.dp, bottom = 2.dp)
@@ -325,7 +325,7 @@ private fun DiffLineRow(row: DiffRow, gutterWidth: androidx.compose.ui.unit.Dp) 
             Text(
                 text = row.text,
                 style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 softWrap = false,
                 modifier = Modifier
                     .padding(end = Spacing.lg, top = 2.dp, bottom = 2.dp)

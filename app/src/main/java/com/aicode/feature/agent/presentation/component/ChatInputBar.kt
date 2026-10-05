@@ -86,6 +86,7 @@ import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.ui.rememberImeBottomInset
 import com.aicode.feature.onboarding.domain.OnboardingStep
 import com.aicode.feature.onboarding.presentation.onboardingTarget
@@ -892,7 +893,7 @@ internal fun ToolPermissionPanel(
                                     Text(
                                         text = request.details,
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                                            fontFamily = CodeFontFamily
                                         ),
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

@@ -23,14 +23,12 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.Font
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.aicode.R
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.mikepenz.markdown.compose.LazyMarkdownSuccess
 import com.mikepenz.markdown.compose.LocalMarkdownColors
 import com.mikepenz.markdown.compose.LocalMarkdownDimens
@@ -60,10 +58,6 @@ import dev.snipme.highlights.model.SyntaxLanguage
 import dev.snipme.highlights.model.SyntaxThemes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-
-// 代码块与行内代码共用字体。系统等宽（FontFamily.Monospace）缺下标字形且不回落，
-// 内置 JetBrains Mono NL 经资源加载可走系统 fallback，能显示 ₀-₉ 等下标/上标字符。
-private val CodeFontFamily = FontFamily(Font(R.font.jetbrains_mono_nl))
 
 internal class MarkdownRenderCache(
     // 容量需能装下一个较长会话的可见消息，否则滚动时反复 miss、反复重新解析 Markdown

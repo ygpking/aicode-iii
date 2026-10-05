@@ -51,7 +51,6 @@ import androidx.compose.ui.input.pointer.PointerInputScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -60,6 +59,7 @@ import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import compose.icons.FeatherIcons
@@ -201,7 +201,7 @@ internal fun ToolMessageBody(
                     Spacer(Modifier.width(Spacing.xs))
                     // 路径段（可省略）+ 文件名段（永远完整，优先级最高）：等宽字，与代码卡头部一致
                     val monoLabel = MaterialTheme.typography.labelSmall.copy(
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = CodeFontFamily
                     )
                     val pathDir = filePath.substringBeforeLast('/')
                     if (pathDir.isNotEmpty()) {
@@ -235,7 +235,7 @@ internal fun ToolMessageBody(
                             text = argHint,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.labelSmall.copy(
-                                fontFamily = FontFamily.Monospace
+                                fontFamily = CodeFontFamily
                             ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -621,7 +621,7 @@ internal fun ToolSection(label: String, content: String) {
                 text = visibleLines.joinToString("\n"),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 style = MaterialTheme.typography.bodySmall.copy(
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = CodeFontFamily
                 )
             )
         }
@@ -671,7 +671,7 @@ internal fun DiffView(diff: String, startLine: Int) {
     val visibleLines = if (collapsible && !expanded) lines.take(DIFF_COLLAPSE_THRESHOLD) else lines
 
     val mono = MaterialTheme.typography.bodySmall.copy(
-        fontFamily = FontFamily.Monospace
+        fontFamily = CodeFontFamily
     )
     val removeCount = lines.count { it.startsWith("-") }
     val addCount = lines.count { it.startsWith("+") }

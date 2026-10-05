@@ -57,7 +57,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -66,6 +65,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.aicode.R
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.ui.rememberImeBottomInset
 import com.aicode.feature.agent.domain.container.ContainerInitState
 import com.aicode.feature.terminal.data.repository.TerminalSettings
@@ -328,7 +328,7 @@ private fun TabChip(
         Text(
             text = tab.title,
             color = fg,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             fontSize = 13.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
         )
@@ -456,7 +456,7 @@ private fun StatusView(
         Text(
             text = message,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             fontSize = 13.sp
         )
         if (actionLabel != null && onAction != null) {
@@ -596,7 +596,7 @@ private fun KeyChip(
         Text(
             text = label,
             color = fg,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             fontSize = 12.5.sp,
             fontWeight = if (active) FontWeight.Bold else FontWeight.Medium,
             modifier = Modifier.padding(horizontal = 10.dp)

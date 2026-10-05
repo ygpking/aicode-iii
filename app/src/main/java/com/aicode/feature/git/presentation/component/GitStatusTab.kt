@@ -35,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import com.aicode.core.ui.AdaptiveModalBottomSheet
 import com.aicode.core.ui.AppSwitch
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -51,7 +52,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -636,7 +636,7 @@ private fun StatusOverview(status: GitStatus?, clean: Boolean) {
                     Text(
                         text = status?.branch ?: stringResource(R.string.git_no_branch),
                         style = MaterialTheme.typography.titleMedium,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = CodeFontFamily,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -699,7 +699,7 @@ private fun SyncPill(ahead: Int, behind: Int) {
                 }
             },
             style = MaterialTheme.typography.labelMedium,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs)
         )
@@ -772,7 +772,7 @@ private fun FileRow(
             Text(
                 text = fileName,
                 style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 color = MaterialTheme.colorScheme.onSurface,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -781,7 +781,7 @@ private fun FileRow(
                 Text(
                     text = directory,
                     style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = CodeFontFamily,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -872,7 +872,7 @@ private fun UntrackedDirRow(
         Text(
             text = path,
             style = MaterialTheme.typography.bodyMedium,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = CodeFontFamily,
             color = MaterialTheme.colorScheme.onSurface,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -949,7 +949,7 @@ private fun FileActionSheet(menu: FileMenu, onDismiss: () -> Unit) {
             Text(
                 text = menu.path,
                 style = MaterialTheme.typography.titleSmall,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
@@ -1175,7 +1175,7 @@ private fun StashItemRow(
                 Text(
                     text = stash.index,
                     style = MaterialTheme.typography.labelSmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = CodeFontFamily,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f)
                 )

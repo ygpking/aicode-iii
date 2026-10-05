@@ -43,13 +43,13 @@ import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aicode.R
 import com.aicode.core.theme.Radius
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.ui.SwipeToDeleteRow
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
@@ -449,7 +449,7 @@ internal fun ModelTestDetailBottomSheet(
                             Text(
                                 text = result.requestUrl,
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = CodeFontFamily,
                                     fontSize = 11.sp
                                 ),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -476,7 +476,7 @@ internal fun ModelTestDetailBottomSheet(
                                     Text(
                                         text = "$k: $v",
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            fontFamily = FontFamily.Monospace,
+                                            fontFamily = CodeFontFamily,
                                             fontSize = 11.sp
                                         ),
                                         color = MaterialTheme.colorScheme.onSurface
@@ -502,7 +502,7 @@ internal fun ModelTestDetailBottomSheet(
                             Text(
                                 text = result.requestBody,
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = CodeFontFamily,
                                     fontSize = 11.sp
                                 ),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -530,7 +530,7 @@ internal fun ModelTestDetailBottomSheet(
                                     Text(
                                         text = "$k: $v",
                                         style = MaterialTheme.typography.bodySmall.copy(
-                                            fontFamily = FontFamily.Monospace,
+                                            fontFamily = CodeFontFamily,
                                             fontSize = 11.sp
                                         ),
                                         color = MaterialTheme.colorScheme.onSurface
@@ -556,7 +556,7 @@ internal fun ModelTestDetailBottomSheet(
                             Text(
                                 text = result.responseBody,
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = CodeFontFamily,
                                     fontSize = 11.sp
                                 ),
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -581,7 +581,7 @@ internal fun ModelTestDetailBottomSheet(
                             Text(
                                 text = result.errorDetail,
                                 style = MaterialTheme.typography.bodySmall.copy(
-                                    fontFamily = FontFamily.Monospace,
+                                    fontFamily = CodeFontFamily,
                                     fontSize = 11.sp
                                 ),
                                 color = MaterialTheme.colorScheme.onErrorContainer,

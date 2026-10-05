@@ -40,6 +40,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.rememberModalBottomSheetState
 import com.aicode.core.ui.AppTextField
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.ui.dialogTextFieldColors
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -53,7 +54,6 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -562,7 +562,7 @@ private fun BranchesOverview(
                     Text(
                         text = currentBranch,
                         style = MaterialTheme.typography.titleMedium,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = CodeFontFamily,
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
@@ -730,7 +730,7 @@ private fun RefRow(
                 Text(
                     text = name,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = CodeFontFamily,
                     fontWeight = if (isCurrent) FontWeight.SemiBold else FontWeight.Normal,
                     color = contentColor,
                     maxLines = 1,
@@ -777,7 +777,7 @@ private fun RefActionSheet(
             Text(
                 text = refName,
                 style = MaterialTheme.typography.titleSmall,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = CodeFontFamily,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,

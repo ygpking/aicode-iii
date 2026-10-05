@@ -49,7 +49,6 @@ import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -58,6 +57,7 @@ import com.aicode.R
 import com.aicode.core.theme.Brand
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.core.ui.ContentWidth
 import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.hasVisibleContent
@@ -670,7 +670,7 @@ private fun CompactionFailureCard(message: AgentUIMessage) {
                     Text(
                         text = reason,
                         color = MaterialTheme.colorScheme.onSurface,
-                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+                        style = MaterialTheme.typography.bodySmall.copy(fontFamily = CodeFontFamily)
                     )
                 }
             }

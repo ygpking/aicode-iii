@@ -1,5 +1,6 @@
 package com.aicode.feature.settings.presentation.component
 
+import com.aicode.core.ui.CodeFontFamily
 import com.aicode.feature.onboarding.domain.OnboardingStep
 import com.aicode.feature.onboarding.presentation.onboardingTarget
 import com.aicode.feature.settings.domain.model.ONBOARDING_FALLBACK_MODEL
@@ -94,7 +95,6 @@ import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -2342,7 +2342,7 @@ private fun RawOutputBottomSheet(
                     Text(
                         text = rawOutput,
                         style = MaterialTheme.typography.bodySmall.copy(
-                            fontFamily = FontFamily.Monospace,
+                            fontFamily = CodeFontFamily,
                             fontSize = 12.sp,
                             lineHeight = 18.sp
                         ),
