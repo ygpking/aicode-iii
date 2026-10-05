@@ -534,7 +534,8 @@ class SystemPromptProvider @Inject constructor(
             50 to "50-safety.md",
             60 to "60-tools-and-paths.md",
             62 to "62-工具执行与等待纪律.md",
-            70 to "70-skills-and-mcp.md"
+            70 to "70-skills-and-mcp.md",
+            80 to "80-self-diagnosis.md"
         )
 
         // 片段里可用的运行期变量，渲染时替换为真实内容
