@@ -6,6 +6,8 @@ import com.aicode.feature.agent.data.remote.openai.Choice
 import com.aicode.feature.agent.data.remote.openai.OpenAIApi
 import com.aicode.feature.agent.data.remote.openai.OpenAIChatMessage
 import com.aicode.feature.agent.data.remote.openai.OpenAIFunctionCall
+import com.aicode.feature.agent.data.remote.openai.OpenAIImagePart
+import com.aicode.feature.agent.data.remote.openai.OpenAIImageUrl
 import com.aicode.feature.agent.data.remote.openai.OpenAIToolCall
 import com.aicode.feature.agent.data.remote.openai.PromptTokensDetails
 import com.aicode.feature.agent.data.remote.openai.Usage
@@ -47,6 +49,7 @@ class OpenAIAdapterTest {
         toolCalls: List<OpenAIToolCall>? = null,
         finishReason: String? = "stop",
         reasoningContent: String? = null,
+        images: List<OpenAIImagePart>? = null,
         usage: Usage = Usage(10, 5, 15, PromptTokensDetails(cached_tokens = 3))
     ): ChatCompletionResponse = ChatCompletionResponse(
         id = "id1",
@@ -60,7 +63,8 @@ class OpenAIAdapterTest {
                     role = "assistant",
                     content = content,
                     tool_calls = toolCalls,
-                    reasoning_content = reasoningContent
+                    reasoning_content = reasoningContent,
+                    images = images
                 ),
                 delta = null,
                 finish_reason = finishReason
@@ -71,6 +75,27 @@ class OpenAIAdapterTest {
 
     private fun toolCall(id: String, name: String, arguments: String): OpenAIToolCall =
         OpenAIToolCall(id = id, function = OpenAIFunctionCall(name = name, arguments = arguments))
+
+    /** 非流式 message.images → AIResponse.images（data URL 解出 mime 与 base64）。 */
+    @Test
+    fun complete_mapsImagesFromMessage() = runTest {
+        val api = api()
+        coEvery { api.createChatCompletion(any(), any(), any(), any()) } returns response(
+            content = null,
+            images = listOf(
+                OpenAIImagePart(
+                    type = "image_url",
+                    image_url = OpenAIImageUrl(url = "data:image/jpeg;base64,QUJD")
+                )
+            )
+        )
+
+        val result = adapter(api).complete("", emptyList())
+
+        assertEquals(1, result.images.size)
+        assertEquals("image/jpeg", result.images.single().mimeType)
+        assertEquals("QUJD", result.images.single().base64Data)
+    }
 
     // ── Chat Completions 非流式：请求构造 ──────────────────────────────
 
@@ -480,5 +505,49 @@ class OpenAIAdapterTest {
 
         val text = chunks.filterIsInstance<AIStreamChunk.TextDelta>().joinToString("") { it.text }
         assertEquals("前后", text)
+    }
+
+    /** 流式 delta.images（生图扩展）：图片整块到达，累积后交 Final。 */
+    @Test
+    fun streamChat_accumulatesImagesFromDelta() = runTest {
+        val api = api()
+        coEvery { api.streamChatCompletion(any(), any(), any(), any()) } returns sseBody(
+            "data: {\"choices\":[{\"delta\":{\"images\":[{\"type\":\"image_url\",\"image_url\":{\"url\":\"data:image/png;base64,iVBORw0KGgo=\"},\"index\":0}],\"role\":\"assistant\"},\"finish_reason\":null}]}",
+            "data: [DONE]"
+        )
+
+        val chunks = adapter(api).completeStream("", emptyList()).toList()
+
+        val final = chunks.filterIsInstance<AIStreamChunk.Final>().single()
+        assertEquals(1, final.response.images.size)
+        assertEquals("image/png", final.response.images.single().mimeType)
+        assertEquals("iVBORw0KGgo=", final.response.images.single().base64Data)
+    }
+
+    /**
+     * 流式超限：必须终止整条流且不发出 Final，不得被当作「单行解析失败」跳过。
+     *
+     * 已收到内容后抛出的本地错误，[RetryPolicy] 会统一包成 [StreamChunkHandlingException]
+     * 以杜绝整请求重发（重发会重复内容、污染上下文），故这里断言的是该包装类型。
+     */
+    @Test
+    fun streamChat_budgetExceeded_abortsWithoutFinal() = runTest {
+        val api = api()
+        val content = "x".repeat(MAX_STREAM_CHARS / 2 + 1)
+        coEvery { api.streamChatCompletion(any(), any(), any(), any()) } returns sseBody(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"$content\"}}]}",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"$content\"}}]}",
+            "data: [DONE]"
+        )
+        val chunks = mutableListOf<AIStreamChunk>()
+        try {
+            adapter(api).apply { maxNetworkRetries = 0 }
+                .completeStream("", emptyList()).toList(chunks)
+            org.junit.Assert.fail("Expected response_too_large")
+        } catch (e: StreamChunkHandlingException) {
+            assertTrue(e.cause is StreamApiException)
+            assertEquals("response_too_large", (e.cause as StreamApiException).code)
+            assertTrue(chunks.none { it is AIStreamChunk.Final })
+        }
     }
 }
