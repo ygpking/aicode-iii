@@ -172,6 +172,14 @@ class ToolPermissionPolicyEngineTest {
         assertEquals(ToolPermissionPolicyEngine.Verdict.ALLOW, r.verdict)
     }
 
+    @Test
+    fun planMode_allowsDiagnosticsReadTool() = runTest {
+        // diagnostics 只读自查：READ_AGENT_CONFIG 不在危险能力名单内，PLAN 下命中白名单分支放行
+        val e = engine()
+        val r = e.evaluate(tool(ToolCapability.READ_AGENT_CONFIG), "diagnostics", emptyMap(), AgentMode.PLAN)
+        assertEquals(ToolPermissionPolicyEngine.Verdict.ALLOW, r.verdict)
+    }
+
     // ── task 只读动作放行，whole DENY 仍生效 ─────────────────────────
 
     @Test
