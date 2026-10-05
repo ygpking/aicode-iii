@@ -70,6 +70,7 @@ import com.aicode.feature.workspace.domain.FileAccessProvider
 import com.aicode.feature.workspace.domain.FileEntry
 import com.aicode.feature.workspace.domain.WorkspacePathMapper
 import com.aicode.feature.workspace.domain.isValidFileEntryName
+import com.aicode.feature.virtualscreen.domain.VirtualScreenController
 import com.aicode.feature.agent.domain.workflow.CrashRecoveryPlanner
 import com.aicode.feature.agent.domain.workflow.DurableTaskRepository
 import com.aicode.feature.agent.domain.workflow.RecoveryVerdict
@@ -163,6 +164,7 @@ class AIAgentViewModel @Inject constructor(
     val fileAccess: FileAccessProvider,
     private val fileChangeHub: FileChangeHub,
     private val lifecycleSupervisor: RuntimeLifecycleSupervisor,
+    private val virtualScreenController: VirtualScreenController,
     @param:ApplicationContext private val context: Context
 ) : ViewModel(), SlashCommandContext {
 
@@ -1739,6 +1741,19 @@ class AIAgentViewModel @Inject constructor(
                 setAgentState(sessionId, AgentUIState.Idle)
             }
             if (currentState !is AgentUIState.Loading && currentState !is AgentUIState.Streaming) {
+                // 用完即关：本轮结束回收本会话的虚拟屏，不让公开虚拟屏常驻。
+                //
+                // 位置有两重讲究：
+                // 1. 放在 UI 状态清理（上面 setAgentState(Idle)）**之后**——关屏要经 Shizuku
+                //    往返，压在前面会让界面迟迟不回 Idle。
+                // 2. 放在 processNextInQueue **之前**——否则下一轮同会话的新任务可能已开好屏，
+                //    被这一行误关。
+                //
+                // NonCancellable 是必需的：取消路径下协程已处于取消态，`mutex.withLock`
+                // 这类挂起点会直接抛，关屏指令根本发不出去。
+                withContext(NonCancellable) {
+                    releaseVirtualScreen(sessionId)
+                }
                 processNextInQueue(sessionId)
             }
             // 放在队列处理之后：flushPendingNotifications / processNextInQueue 会同步注册接替的 job，
@@ -2141,10 +2156,16 @@ class AIAgentViewModel @Inject constructor(
                 // （AIAgentViewModel 里 begin 在 persist 之前），故消息 timestamp >= 任务 createdAt。
                 // 取第一条而非最后一条：崩溃后用户可能又发过新消息，那些属于新任务；
                 // 本任务的原文必是入账后的首条用户消息（getMessagesBySessionOnce 按 timestamp ASC）。
+                //
+                // 查不到账本记录时必须放弃：若把 since 退化成 0，下面的 firstOrNull 会取到
+                // **会话的第一条用户消息**——那是完全不相干的旧请求，重发出去比不重发更糟。
                 val task = durableTaskRepository.getById(verdict.taskId)
-                val since = task?.createdAt ?: 0L
+                if (task == null) {
+                    FileLogger.w(TAG, "恢复任务 ${verdict.taskId} 在账本中不存在，放弃重发")
+                    return@runCatchingCancellable null
+                }
                 agentMessageDao.getMessagesBySessionOnce(verdict.sessionId)
-                    .firstOrNull { it.role == MessageRole.USER.name && it.timestamp >= since }
+                    .firstOrNull { it.role == MessageRole.USER.name && it.timestamp >= task.createdAt }
                     ?.content
             }.getOrNull()?.trim().orEmpty()
 
@@ -2358,6 +2379,27 @@ class AIAgentViewModel @Inject constructor(
             val running = _runningTools.value[sessionId]?.size ?: 0
             "$todoPart runningTools=$running"
         }.getOrElse { "读取失败: ${it.message?.take(80)}" }
+    }
+
+    /**
+     * 回合结束回收本会话的虚拟屏（「用完即关」）。
+     *
+     * 为什么要自动回收：屏的生命周期原本只靠 AI 自己记得调 `close`，而回合中断、
+     * 用户取消、模型漏调任一发生，屏就永久留在系统里——实测残留过 1 天 15 小时。
+     * 而虚拟屏带 `FLAG_PUBLIC`（所有应用可见），残留期间会被银行类风控识别为
+     * 「屏幕被共享」而拒绝服务。
+     *
+     * 不做额外超时：`VirtualScreenHostManager.send` 已对每次指令设了
+     * `COMMAND_TIMEOUT_MS`，且底层 `service.exec` 是阻塞式 Binder 调用——
+     * 外层再包 `withTimeoutOrNull` 既拦不住它，又容易被误读成真的有时限保护。
+     * 失败只记一行日志：下次 [VirtualScreenController.open] 开屏前还会再收一次孤儿屏。
+     */
+    private suspend fun releaseVirtualScreen(sessionId: String) {
+        val closed = runCatchingCancellable { virtualScreenController.close(sessionId) }
+            .getOrDefault(false)
+        if (!closed) {
+            FileLogger.w(TAG, "回合结束回收虚拟屏未成功（sid=$sessionId），开屏前会再收一次")
+        }
     }
 
     /** 重命名会话标题。仅更新 title，不改 updatedAt，列表顺序保持不变。 */

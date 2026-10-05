@@ -49,6 +49,13 @@ class VirtualScreenController @Inject constructor(
          * （`KEYGUARD_DIALOG`）盖住虚拟屏，无障碍只能读到 8 个锁屏节点，投进去的 App 完全不可用。
          * 加上后，锁屏状态下仍能读到 110 个真实节点并正常 click/swipe。
          * 两个都是 `@hide` 常量，只能硬编码；需 `ADD_ALWAYS_UNLOCKED_DISPLAY`（实测 shell 持有）。
+         *
+         * **首个 `PUBLIC`（0x1）同样去不得**：无障碍靠 `WindowsForAccessibilityObserver` 逐显示器
+         * 建观察器，而系统只为**公共**虚拟屏建。实测同一 daemon 同轮建两块屏，去掉 0x1 的那块
+         * （`FLAG_PRIVATE`）在 `dumpsys accessibility` 里既无 `Enabled features of Display[N]`、也无
+         * observer，`getWindowsOnAllDisplays()` 取不到任何窗口，`dump`/`click`/`input`/`swipe` 全废。
+         * **代价**：公共屏对全部应用可见，银行/支付类 App 的风控会据此判「屏幕被共享」而拒绝服务。
+         * 缓解方向是**缩短屏的存在时间**（见 `open` 与回合结束的回收），不是去掉这个 flag。
          */
         const val DEFAULT_FLAGS = 0x1 or 0x8 or 0x100 or 0x800 or 0x1000
 
@@ -157,6 +164,11 @@ class VirtualScreenController @Inject constructor(
 
         EventTrace.recordFor(scope, "VD", "open 请求 pkg=$packageName ${width}x$height@$dpi")
 
+        // 按需建屏：开屏前先回收上一轮遗留的孤儿屏（进程被杀时 release 不会执行）。
+        // 不回收的话，每次中断都留一块公开虚拟屏在系统里累积。
+        val orphaned = reclaimOrphansLocked()
+        if (orphaned > 0) EventTrace.recordFor(scope, "VD", "开屏前回收孤儿屏 $orphaned 个")
+
         val openResp = hostManager.command("OPEN $width $height $dpi $DEFAULT_FLAGS", TAG_OPENED)
         val displayId = openResp?.removePrefix(TAG_OPENED)?.trim()?.toIntOrNull()
         if (displayId == null) {
@@ -235,19 +247,29 @@ class VirtualScreenController @Inject constructor(
      * 会把兄弟会话正在用的屏当孤儿回收掉。
      */
     suspend fun reclaimOrphans(scope: String?): Int = mutationMutex.withLock {
-        val resp = hostManager.command("LIST", TAG_LIST) ?: return@withLock 0
+        val reclaimed = reclaimOrphansLocked()
+        if (reclaimed > 0) EventTrace.recordFor(scope, "VD", "回收孤儿屏 $reclaimed 个")
+        reclaimed
+    }
+
+    /**
+     * [reclaimOrphans] 的无锁实现。
+     *
+     * 拆出来是因为 [open] 已持有 [mutationMutex]，而 Mutex 不可重入——
+     * 在持锁时直接调公开版会死锁。
+     */
+    private suspend fun reclaimOrphansLocked(): Int {
+        val resp = hostManager.command("LIST", TAG_LIST) ?: return 0
         val known = sessions.values.map { it.displayId }.toSet()
         val ids = resp.removePrefix(TAG_LIST).trim()
             .split(' ')
             .mapNotNull { it.trim().toIntOrNull() }
             .filter { it !in known }
-        if (ids.isEmpty()) return@withLock 0
         var reclaimed = 0
         for (id in ids) {
             if (hostManager.command("CLOSE $id", TAG_CLOSED) != null) reclaimed++
         }
-        EventTrace.recordFor(scope, "VD", "回收孤儿屏 $reclaimed 个（${ids.joinToString()}）")
-        reclaimed
+        return reclaimed
     }
 
     @Volatile

@@ -15,6 +15,7 @@
 - `terminal`：会自行结束且需等结果的命令用 `notify=true`（结束后系统主动通知，不要轮询）；常驻服务用 `notify=false`，配合 `read`/`send`/`key`/`close`；启动新会话前先 `read` 查看并复用已有标签。它也能驱动交互式程序（编辑器、问答、REPL、ssh 等）：`start` 后停在提示处，用 `send` 逐行输入，`key` 发控制键。
 - `Bash` 与 `terminal` 支持 `elevate: true`：命令因内置安全防护（灾难性删除等）被拒且确有必要时，加 `elevate` 重试会弹窗请用户一次性授权；仅非 PLAN 模式有效。
 - 以 adb shell（uid 2000）身份操作宿主 Android 系统用 `Shizuku`（需用户已授权，每次调用都会弹窗确认）。
+- 要「实际点开 App 看真实界面」用 `virtualScreen`（虚拟屏）。它是系统级**公共**显示器，存在期间银行、支付、证券类 App 的风控会判「屏幕被共享」而拒绝服务——操作这类 App 前先告知用户，并尽快 `close`；屏在本轮结束时也会自动回收。
 - 网络：时效性问题用 `websearch`，抓取网页用 `webfetch`，页面自动化用 `browser`（多标签、可后台运行）。图像生成用 `generateImage`。
 - 交互与流程：需要用户决策时用 `askUserQuestion`（仅当回答会改变下一步行动）；进出 PLAN 模式用 `planMode`（`action="enter"` 进入，`action="exit"` 退出并自动恢复到进入前的模式）；任务清单用 `todo`；长期记忆用 `memory`（`action=prune, stale_days=N` 清理陈旧记忆，默认只预览、需显式 `dry_run=false` 才真删，`pinned` 记忆永不被动）。
 

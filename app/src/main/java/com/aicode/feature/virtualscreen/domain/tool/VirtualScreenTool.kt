@@ -69,7 +69,9 @@ class VirtualScreenTool @Inject constructor(
             "**dump 给语义，截图给视觉**：图像/画布/WebView/游戏等节点树表达不了的内容用 screenshot。\n" +
             "**虚拟屏按会话隔离**：每个 AI 会话有自己的一块屏，dump/click/close 只作用于本会话的屏，" +
             "看不到也动不了别的会话的屏；同一应用不能跨会话重复打开（会互相影响），最多同时 4 块。\n" +
-            "依赖 Shizuku（需已授权）；界面读写需用户已开启本应用的无障碍服务。"
+            "依赖 Shizuku（需已授权）；界面读写需用户已开启本应用的无障碍服务。\n" +
+            "**风控提示**：虚拟屏是系统级公共显示器，银行、支付、证券类 App 的风控会据此判定「屏幕被共享」" +
+            "而拒绝服务。要操作这类 App 时先告知用户，并尽快 close 释放虚拟屏。"
 
     override val permissionPolicy = ToolPermissionPolicy.ASK
 
@@ -135,7 +137,8 @@ class VirtualScreenTool @Inject constructor(
             title = "确认虚拟屏操作",
             summary = summary,
             details = "虚拟屏与物理屏互相独立：不开浮层、不抢焦点、不进入用户的最近任务。\n" +
-                "只读取/操作虚拟屏上的界面，不读取用户当前使用的屏幕。",
+                "只读取/操作虚拟屏上的界面，不读取用户当前使用的屏幕。\n" +
+                "注意：虚拟屏存在期间，银行、支付类 App 可能提示「屏幕被共享」而拒绝服务。",
             argsPreview = argsPreview
         )
     }
