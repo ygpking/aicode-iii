@@ -9,7 +9,9 @@ import java.io.File
  * [File]——文件不存在返回空结果而非抛异常，因为首次启动 / 日志等级为 NONE 时
  * 本来就可能没有文件。
  *
- * 目录名与筛选前缀必须与三份日志的落盘实现保持一致：
+     * `kind=ai` 只暴露当前会话的文件（见 [sessionLogFiles]），不让模型翻阅他人会话。
+     *
+     * 目录名与筛选前缀必须与三份日志的落盘实现保持一致：
  * [com.aicode.core.util.FileLogger]（`logs/log-<日期>.txt`）、
  * [com.aicode.core.util.EventTrace]（`traces/trace-<日期>.log`）、
  * [com.aicode.core.util.AILogger]（`ai-logs/session-<id>.log`）。
@@ -47,6 +49,21 @@ internal object DiagnosticsReader {
         root.listFiles { f ->
             f.isFile && (f.name.startsWith("log-") || f.name.startsWith("trace-") || f.name.startsWith("session-"))
         }?.sortedBy { it.name } ?: emptyList()
+
+    /**
+     * 只属于 [sessionId] 这个会话的模型交互日志，**当前文件在前、轮转归档在后**。
+     *
+     * 会话 id 的净化规则必须与 [com.aicode.core.util.AILogger] 落盘时一致（非 `[A-Za-z0-9_-]`
+     * 一律换成 `_`），否则会漏匹配。返回顺序即优先级：调用方取 `firstOrNull()` 才是正在写的
+     * 那份日志——按名字升序时归档 `session-x.log.1` 排在当前 `session-x.log` 之后，直接取末尾会读到归档。
+     */
+    fun sessionLogFiles(root: File, sessionId: String): List<File> {
+        val safeId = sessionId.replace(Regex("[^A-Za-z0-9_-]"), "_")
+        val all = listFiles(root)
+        val current = all.firstOrNull { it.name == "session-$safeId.log" }
+        val rotated = all.firstOrNull { it.name == "session-$safeId.log.1" }
+        return listOfNotNull(current, rotated)
+    }
 
     /**
      * 读取一页：以文件末尾 [offsetFromEnd] 行为基准，向前取 [lines] 行。

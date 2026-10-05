@@ -47,8 +47,9 @@ import javax.inject.Inject
  * `capabilities == setOf(READ_AGENT_CONFIG)` 的白名单分支 → 所有模式（含 PLAN）自动放行，
  * 且不会被 `isDangerousTool` 判为危险（该集合不在危险能力名单内）。
  *
- * 会话边界：`kind=ai` 只读**当前会话**的模型交互原文，不提供 `session_id` 参数——
- * 与 [BrowseHistoryTool] 同一口径，不让模型翻阅其它会话。
+ * 会话边界：`kind=ai` 只读**当前会话**的模型交互原文，且 `sources`/`list` 也**只列当前会话的文件**
+ * （含其轮转归档，不暴露其它会话的文件名）；不提供 `session_id` 参数，缺 sessionId 时直接报错而不
+ * 回退到别的会话。与 [BrowseHistoryTool] 同一口径，不让模型翻阅其它会话。
  */
 class DiagnosticsTool @Inject constructor(
     @param:ApplicationContext private val context: Context
@@ -136,24 +137,38 @@ class DiagnosticsTool @Inject constructor(
         val root = DiagnosticsReader.resolveRoot(base, kind)
             ?: return ToolResult.Error("未知的 kind: $kind（可选 app/trace/ai）", "INVALID_KIND")
 
+        if (kind == "ai" && context.sessionId.isNullOrBlank()) {
+            return ToolResult.Error(
+                "读取模型交互原文失败：当前会话没有 sessionId，无法定位到对应日志。" +
+                    "本工具只能读当前会话，不支持指定其他会话。可改用 kind=trace 或 kind=app。",
+                "MISSING_SESSION"
+            )
+        }
+
         return when (action) {
             "sources" -> sources(base, context)
-            "list" -> list(root, kind)
+            "list" -> list(root, kind, context)
             "read", "tail" -> read(root, kind, args, context)
             "search" -> search(root, kind, args, context)
             else -> ToolResult.Error("未知的 action: $action（可选 sources/list/read/tail/search）", "INVALID_ACTION")
         }
     }
 
-    /** 选文件：app/trace 按 date（缺省最新）；ai 按当前会话 id（缺省最新）。 */
+    /** 某 kind 在**当前可见范围内**的日志文件。`ai` 只含当前会话（含其轮转归档）。 */
+    private fun visibleFiles(root: File, kind: String, context: AgentContext): List<File> {
+        if (kind != "ai") return DiagnosticsReader.listFiles(root)
+        val sid = context.sessionId?.takeIf { it.isNotBlank() } ?: return emptyList()
+        return DiagnosticsReader.sessionLogFiles(root, sid)
+    }
+
+    /** 选文件：app/trace 按 date（缺省最新）；ai 只认当前会话（缺省会话语境时报错，不跨会话兜底）。 */
     private fun fileFor(kind: String, root: File, args: Map<String, JsonElement>, context: AgentContext): File? {
+        if (kind == "ai") {
+            val sid = context.sessionId?.takeIf { it.isNotBlank() } ?: return null
+            return DiagnosticsReader.sessionLogFiles(root, sid).firstOrNull()
+        }
         val files = DiagnosticsReader.listFiles(root)
         if (files.isEmpty()) return null
-        if (kind == "ai") {
-            val sid = context.sessionId?.takeIf { it.isNotBlank() }
-                ?: return files.last()
-            return files.lastOrNull { it.name.contains(sid) } ?: files.last()
-        }
         return DiagnosticsReader.pickFile(files, args["date"]?.jsonPrimitive?.contentOrNull?.trim())
     }
 
@@ -162,7 +177,7 @@ class DiagnosticsTool @Inject constructor(
         val note = mutableListOf<String>()
         for (kind in listOf("app", "trace", "ai")) {
             val root = DiagnosticsReader.resolveRoot(base, kind) ?: continue
-            val files = DiagnosticsReader.listFiles(root)
+            val files = visibleFiles(root, kind, context)
             result[kind] = JsonObject(
                 mapOf(
                     "dir" to JsonPrimitive(root.absolutePath),
@@ -182,14 +197,14 @@ class DiagnosticsTool @Inject constructor(
             if (files.isEmpty()) note += "$kind 暂无日志文件"
         }
         result["currentSession"] = JsonPrimitive(context.sessionId?.let { "session-$it.log" } ?: "-")
-        note += "读取即脱敏（密钥→[REDACTED_*]）；轨迹可按 s=<session前8位> 与 tN 定位本次对话，←#seq 是因果链"
+        note += "kind=ai 仅列当前会话的文件（含轮转归档）；读取即脱敏（密钥→[REDACTED_*]）；轨迹可按 s=<session前8位> 与 tN 定位本次对话，←#seq 是因果链"
         result["note"] = JsonPrimitive(note.joinToString("；"))
         FileLogger.v(TAG, "diagnostics sources：session=${context.sessionId}")
         return ToolResult.Success(JsonObject(result))
     }
 
-    private fun list(root: File, kind: String): ToolResult {
-        val files = DiagnosticsReader.listFiles(root)
+    private fun list(root: File, kind: String, context: AgentContext): ToolResult {
+        val files = visibleFiles(root, kind, context)
         val arr = JsonArray(
             files.map { f ->
                 JsonObject(

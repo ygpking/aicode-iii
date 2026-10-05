@@ -121,6 +121,38 @@ class DiagnosticsReaderTest {
         assertTrue(DiagnosticsReader.search(f, "zzz-not-there")!!.isEmpty())
     }
 
+    // ── sessionLogFiles（会话隔离） ────────────────────────────────
+
+    @Test
+    fun sessionLogFiles_onlyCurrentSession_withRotatedAfterCurrent() {
+        val dir = Files.createTempDirectory("diag-sess").toFile()
+        File(dir, "session-aaa.log").writeText("mine")
+        File(dir, "session-aaa.log.1").writeText("mine-rotated")
+        File(dir, "session-bbb.log").writeText("other")
+        File(dir, "session-ccc.log").writeText("other2")
+
+        val names = DiagnosticsReader.sessionLogFiles(dir, "aaa").map { it.name }
+        // 只含本会话；当前文件在前，轮转归档在后（取 first 才是正在写的）。
+        assertEquals(listOf("session-aaa.log", "session-aaa.log.1"), names)
+    }
+
+    @Test
+    fun sessionLogFiles_normalizesIdLikeAILogger() {
+        val dir = Files.createTempDirectory("diag-sess2").toFile()
+        File(dir, "session-a_b_c.log").writeText("x")
+
+        // AILogger 落盘时把非 [A-Za-z0-9_-] 一律换成 "_"，故 `a:b/c` 对应 `a_b_c`。
+        assertEquals(listOf("session-a_b_c.log"), DiagnosticsReader.sessionLogFiles(dir, "a:b/c").map { it.name })
+    }
+
+    @Test
+    fun sessionLogFiles_unknownSessionIsEmpty() {
+        val dir = Files.createTempDirectory("diag-sess3").toFile()
+        File(dir, "session-aaa.log").writeText("mine")
+
+        assertTrue(DiagnosticsReader.sessionLogFiles(dir, "zzz").isEmpty())
+    }
+
     // ── pickFile ─────────────────────────────────────────────────────
 
     @Test
