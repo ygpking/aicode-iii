@@ -953,7 +953,8 @@ internal fun ToolPermissionPanel(
 internal fun RecoverableTaskBanner(
     tasks: List<RecoveryVerdict.Recoverable>,
     onContinue: (RecoveryVerdict.Recoverable) -> Unit,
-    onDismiss: (RecoveryVerdict.Recoverable) -> Unit
+    onDismiss: (RecoveryVerdict.Recoverable) -> Unit,
+    onDismissAll: () -> Unit
 ) {
     val first = tasks.firstOrNull()
     AnimatedVisibility(
@@ -1027,6 +1028,13 @@ internal fun RecoverableTaskBanner(
                     }
                     Spacer(Modifier.height(Spacing.sm))
                     Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                        // 多任务时才给「全部忽略」：单条时它与「忽略」等价，多一个按钮反而碍眼。
+                        if (tasks.size > 1) {
+                            TextButton(onClick = onDismissAll) {
+                                Text(stringResource(R.string.chat_recoverable_dismiss_all))
+                            }
+                            Spacer(Modifier.width(Spacing.xs))
+                        }
                         TextButton(onClick = { onDismiss(task) }) {
                             Text(stringResource(R.string.chat_recoverable_dismiss))
                         }

@@ -2213,6 +2213,19 @@ class AIAgentViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 一次清空全部待恢复提示（含账本收尾）。
+     *
+     * 提示条一次只展示一条，存量堆积到几十条时逐条点不现实。
+     */
+    fun dismissAllRecoverableTasks() {
+        _recoverableTasks.value = emptyList()
+        viewModelScope.launch {
+            runCatchingCancellable { durableTaskRepository.dismissAll() }
+                .onFailure { FileLogger.w(TAG, "批量忽略恢复任务失败: ${it.message}") }
+        }
+    }
+
     fun deleteSessions(ids: Set<String>) = viewModelScope.launch {
         if (ids.isEmpty()) return@launch
         val allDeletedIds = mutableSetOf<String>()

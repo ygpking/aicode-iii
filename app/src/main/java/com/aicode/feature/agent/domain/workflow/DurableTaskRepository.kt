@@ -96,6 +96,20 @@ class DurableTaskRepository @Inject constructor(
     }
 
     /**
+     * 一次性收尾全部待恢复任务。
+     *
+     * 存量记录可能已堆积到几十上百条（每条都需用户单独处理），而提示条一次只展示一条，
+     * 逐条点掉不现实。
+     */
+    suspend fun dismissAll() {
+        val pending = guarded {
+            dao.getByStates(listOf(TaskState.RECOVERABLE.name))
+        }.getOrNull() ?: return
+        pending.forEach { transition(it.id, TaskEvent.CANCEL) }
+        prune()
+    }
+
+    /**
      * 冷启动恢复扫描：把非终态任务按 [CrashRecoveryPlanner] 判定。
      * - 可恢复 → 经状态机置 RECOVERABLE 并返回给调用方提示用户；
      * - 不可判定/白名单外 → 保守置 FAILED（fail-closed，不复活）。

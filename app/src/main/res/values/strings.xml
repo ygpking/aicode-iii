@@ -627,6 +627,7 @@
     <string name="chat_recoverable_desc">应用上次异常退出时，有任务尚未完成。可继续（重新发起该请求）或忽略。</string>
     <string name="chat_recoverable_continue">继续</string>
     <string name="chat_recoverable_dismiss">忽略</string>
+    <string name="chat_recoverable_dismiss_all">全部忽略</string>
     <string name="chat_recoverable_session">会话：%1$s</string>
     <string name="chat_recoverable_session_subagent">子代理任务 ・ 会话：%1$s</string>
     <string name="slash_command_compress_desc">手动触发当前会话的上下文压缩</string>

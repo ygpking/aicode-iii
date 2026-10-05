@@ -627,6 +627,7 @@
     <string name="chat_recoverable_desc">A task was still running when the app last exited unexpectedly. You can continue (resend the request) or dismiss.</string>
     <string name="chat_recoverable_continue">Continue</string>
     <string name="chat_recoverable_dismiss">Dismiss</string>
+    <string name="chat_recoverable_dismiss_all">Dismiss all</string>
     <string name="chat_recoverable_session">Session: %1$s</string>
     <string name="chat_recoverable_session_subagent">Subagent task · Session: %1$s</string>
     <string name="slash_command_compress_desc">Manually compact this session context</string>

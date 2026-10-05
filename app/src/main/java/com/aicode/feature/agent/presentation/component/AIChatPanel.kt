@@ -1325,7 +1325,8 @@ fun AIChatPanel(
             RecoverableTaskBanner(
                 tasks = recoverableTasks,
                 onContinue = { viewModel.resumeRecoverableTask(it) },
-                onDismiss = { viewModel.dismissRecoverableTask(it.taskId) }
+                onDismiss = { viewModel.dismissRecoverableTask(it.taskId) },
+                onDismissAll = { viewModel.dismissAllRecoverableTasks() }
             )
 
             // 退场动画期间 uploadingCount 已归零，直接读会淡出一个「正在上传 0 个文件」，
