@@ -168,6 +168,7 @@ class LocalFileAccess @Inject constructor(
         val source = resolve(path)
         val target = resolve(newPath)
         if (!source.exists()) throw NoSuchFileException(source)
+        rejectSelfDescendant(source, target, newPath)
         if (target.exists()) {
             if (!overwrite) throw FileAlreadyExistsException(target)
             target.deleteRecursively()
@@ -184,6 +185,7 @@ class LocalFileAccess @Inject constructor(
         val source = resolve(path)
         val target = resolve(newPath)
         if (!source.exists()) throw NoSuchFileException(source)
+        rejectSelfDescendant(source, target, newPath)
         if (target.exists()) {
             if (!overwrite) throw FileAlreadyExistsException(target)
             target.deleteRecursively()
@@ -206,6 +208,20 @@ class LocalFileAccess @Inject constructor(
 
     override fun mkdirs(path: String) {
         resolve(path).mkdirs()
+    }
+
+    /**
+     * 目标等于源、或位于目录源内部时，[File.copyRecursively] 会边遍历边写入自己：
+     * 实测 20 秒内建出 200+ 层嵌套目录直至超时（不报错，只是永远跑不完）。
+     * 删除目标那步更早，会把源本身删掉。故必须在动手前拒绝。
+     */
+    private fun rejectSelfDescendant(source: File, target: File, newPath: String) {
+        if (!source.isDirectory) return
+        val src = source.canonicalFile.toPath()
+        val dst = target.canonicalFile.toPath()
+        if (dst.startsWith(src)) {
+            throw IOException("destination is the source or its descendant: $newPath")
+        }
     }
 
     override fun parentPath(path: String): String? {

@@ -11,6 +11,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.IOException
 import kotlin.io.FileAlreadyExistsException
 import kotlin.io.NoSuchFileException
 
@@ -272,6 +273,49 @@ class LocalFileAccessTest {
     fun mkdirs_createsNestedDirectories() {
         newAccess().mkdirs("a/b/c")
         assertTrue(File(tmp.root, "a/b/c").isDirectory)
+    }
+
+    // ---------- copy / move 拒绝自嵌套 ----------
+
+    @Test
+    fun copy_directoryIntoItself_throws() {
+        val access = newAccess()
+        access.mkdirs("src/sub")
+        access.writeFile("src/a.txt", "x", overwrite = true)
+        assertThrows(IOException::class.java) {
+            access.copy("src", "src/sub/inner", overwrite = false)
+        }
+        assertTrue(File(tmp.root, "src/a.txt").exists())
+    }
+
+    @Test
+    fun copy_directoryToSamePath_throws() {
+        val access = newAccess()
+        access.mkdirs("src")
+        assertThrows(IOException::class.java) {
+            access.copy("src", "src", overwrite = true)
+        }
+    }
+
+    @Test
+    fun move_directoryIntoItself_throws() {
+        val access = newAccess()
+        access.mkdirs("src/sub")
+        access.writeFile("src/a.txt", "x", overwrite = true)
+        assertThrows(IOException::class.java) {
+            access.move("src", "src/sub/inner", overwrite = false)
+        }
+        assertTrue(File(tmp.root, "src/a.txt").exists())
+    }
+
+    @Test
+    fun copy_siblingDirectoryWithSharedPrefix_isAllowed() {
+        val access = newAccess()
+        access.mkdirs("src")
+        access.writeFile("src/a.txt", "x", overwrite = true)
+        // "src2" 与 "src" 共享前缀但不是其子路径，不得被误拦。
+        access.copy("src", "src2", overwrite = false)
+        assertEquals("x", access.readFile("src2/a.txt"))
     }
 
     // ---------- 路径回显 ----------

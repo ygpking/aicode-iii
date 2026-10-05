@@ -348,6 +348,10 @@ class AnthropicAdapter @Inject constructor(
                             }
                         } catch (e: CancellationException) {
                             throw e
+                        } catch (e: StreamApiException) {
+                            // 服务端 error 事件必须终止整条流：被下面的 Exception 分支吞掉后，
+                            // 流会带着残缺内容正常收尾，调用方拿到成功结果，真实原因不可见。
+                            throw e
                         } catch (e: Exception) {
                             coroutineContext.ensureActive()
                             // 该行 SSE 解析失败，跳过；不影响已累积文本与后续行。
