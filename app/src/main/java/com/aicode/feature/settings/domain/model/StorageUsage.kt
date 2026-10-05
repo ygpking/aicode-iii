@@ -51,12 +51,17 @@ object StorageDetailKey {
 /** 可清理项：都是能自动重建或仅影响历史回看的临时数据，不含用户内容。 */
 enum class CleanupKind(
     @param:StringRes val labelRes: Int,
-    @param:StringRes val descRes: Int
+    @param:StringRes val descRes: Int,
+    /** 该项是否参与「一键清理」。含用户内容的项排除在外，只能单项显式清理。 */
+    val includedInCleanAll: Boolean = true
 ) {
     Caches(R.string.storage_clean_caches, R.string.storage_clean_caches_desc),
     Logs(R.string.storage_clean_logs, R.string.storage_clean_logs_desc),
     ToolOutput(R.string.storage_clean_tool_output, R.string.storage_clean_tool_output_desc),
-    VisionSessions(R.string.storage_clean_vision, R.string.storage_clean_vision_desc)
+    VisionSessions(R.string.storage_clean_vision, R.string.storage_clean_vision_desc),
+    // 检查点是用户回溯代码的凭据，删了就找不回；放进「一键清理」会让用户在清缓存时
+    // 顺手弄丢回滚点，故只能单项显式清理。
+    Checkpoints(R.string.storage_clean_checkpoints, R.string.storage_clean_checkpoints_desc, includedInCleanAll = false)
 }
 
 /** 所在存储卷的容量信息（App 私有目录所在卷）。 */

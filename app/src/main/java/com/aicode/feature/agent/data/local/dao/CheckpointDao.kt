@@ -39,6 +39,10 @@ interface CheckpointDao {
     @Query("DELETE FROM checkpoint_file_snapshots WHERE checkpointId IN (SELECT id FROM session_checkpoints WHERE sessionId = :sessionId)")
     suspend fun deleteFileSnapshotsForSession(sessionId: String)
 
-    @Query("DELETE FROM session_checkpoints WHERE createdAt < :cutoffTimestamp")
-    suspend fun deleteCheckpointsBefore(cutoffTimestamp: Long)
+    /** 清空全部：先 [deleteAllFileSnapshots] 再 [deleteAllCheckpoints]，反过来会留下孤儿快照行。 */
+    @Query("DELETE FROM checkpoint_file_snapshots")
+    suspend fun deleteAllFileSnapshots()
+
+    @Query("DELETE FROM session_checkpoints")
+    suspend fun deleteAllCheckpoints()
 }

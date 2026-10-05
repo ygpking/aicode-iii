@@ -161,6 +161,30 @@ class CheckpointManager @Inject constructor(
         }
     }
 
+    /**
+     * 清空全部会话的 Checkpoint 快照与记录。
+     *
+     * 供存储清理页的「检查点」项调用。**不做按时间自动清理**：撤销回滚是按
+     * `(sessionId, userMessageId)` 定位[CheckpointEntity]的（见
+     * [com.aicode.feature.agent.presentation.AIAgentViewModel.executeRewindOption]），
+     * 按时间静默删掉旧检查点会让「消息还在、回滚点没了」——用户点撤销时代码还原静默不生效。
+     * 所以只提供用户显式触发的整体清理。
+     *
+     * 释放的字节数由调用方在清理前自行统计（本类不依赖上层的目录统计工具）。
+     */
+    suspend fun clearAllCheckpoints() = withContext(Dispatchers.IO) {
+        activeCheckpointIds.clear()
+        // 先删快照再删检查点：快照的会话级删除语句按 checkpointId 子查询定位检查点，
+        // 反过来会让子查询落空、留下孤儿快照行。
+        checkpointDao.deleteAllFileSnapshots()
+        checkpointDao.deleteAllCheckpoints()
+        val root = baseCheckpointDir
+        if (root.exists()) {
+            root.deleteRecursively()
+        }
+        FileLogger.i(TAG, "清空全部检查点")
+    }
+
     private companion object {
         const val TAG = "CheckpointManager"
     }

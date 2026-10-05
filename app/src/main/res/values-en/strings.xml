@@ -134,9 +134,9 @@
     <string name="storage_freed">Freed %1$s</string>
     <string name="storage_clean">Clean</string>
     <string name="storage_clean_all">Clean all</string>
-    <string name="storage_clean_all_desc">Cleans every item above; chat history, containers and workspaces are untouched</string>
+    <string name="storage_clean_all_desc">Cleans every item above except checkpoints; chat history, containers and workspaces are untouched</string>
     <string name="storage_clean_confirm_title">Confirm cleanup</string>
-    <string name="storage_clean_confirm_all">Caches, logs, tool output and vision session cache will be deleted (about %1$s). Chat history, containers and workspaces are not affected.</string>
+    <string name="storage_clean_confirm_all">Caches, logs, tool output and vision session cache will be deleted (about %1$s). Chat history, containers, workspaces and checkpoints are not affected.</string>
     <string name="storage_clean_confirm_single">“%1$s” will be deleted (about %2$s). This cannot be undone.</string>
     <string name="storage_category_chat">Chat history</string>
     <string name="storage_category_container">Containers</string>
@@ -156,6 +156,8 @@
     <string name="storage_clean_tool_output_desc">Saved copies of oversized tool output; output paths in older messages stop resolving</string>
     <string name="storage_clean_vision">Vision session cache</string>
     <string name="storage_clean_vision_desc">History for image follow-up questions; old sessions can no longer be continued</string>
+    <string name="storage_clean_checkpoints">Checkpoint snapshots</string>
+    <string name="storage_clean_checkpoints_desc">File backups used to restore code on rewind; deleting them prevents older rewinds from restoring code (conversation rollback still works). Not included in clean all</string>
     <string name="storage_untitled_session">Untitled session</string>
     <string name="storage_chat_messages">%1$d messages</string>
     <string name="storage_workspace_attachments">incl. attachments %1$s</string>

@@ -10,6 +10,7 @@ import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.data.local.database.AgentDatabase
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.agent.domain.container.ContainerProfile
+import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.domain.tool.ToolOutputStore
 import com.aicode.feature.agent.domain.tool.file.VisionSessionStore
 import com.aicode.feature.settings.data.repository.ContainerSettingsRepository
@@ -52,6 +53,7 @@ class StorageUsageScanner @Inject constructor(
     private val containerSettingsRepository: ContainerSettingsRepository,
     private val toolOutputStore: ToolOutputStore,
     private val visionSessionStore: VisionSessionStore,
+    private val checkpointManager: CheckpointManager,
     private val agentMessageDao: AgentMessageDao
 ) {
 
@@ -91,6 +93,7 @@ class StorageUsageScanner @Inject constructor(
             CleanupKind.Logs -> FileLogger.clearLogs() + AILogger.clearLogs() + EventTrace.clearTraceFiles()
             CleanupKind.ToolOutput -> clearDirContents(toolOutputStore.outputDir)
             CleanupKind.VisionSessions -> clearDirContents(visionSessionStore.sessionDir)
+            CleanupKind.Checkpoints -> checkpointSize().also { checkpointManager.clearAllCheckpoints() }
         }
         FileLogger.i(TAG, "清理完成 kind=$kind 释放 ${formatStorageSize(freed)}（$freed 字节）")
         freed
@@ -209,7 +212,11 @@ class StorageUsageScanner @Inject constructor(
     }
 
     private fun checkpointsEntry(cancelled: () -> Boolean): StorageEntry =
-        StorageEntry(StorageCategory.Checkpoints, dirSize(File(context.filesDir, CHECKPOINTS_DIR), cancelled))
+        StorageEntry(StorageCategory.Checkpoints, checkpointSize(cancelled))
+
+    /** 检查点快照目录占用；清理前统计所得字节数即释放量。 */
+    private fun checkpointSize(cancelled: () -> Boolean = { false }): Long =
+        dirSize(File(context.filesDir, CHECKPOINTS_DIR), cancelled)
 
     /**
      * 日志：直接问三个记录层要文件清单，而不是猜目录——它们优先写外部私有目录，

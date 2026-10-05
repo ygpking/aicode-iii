@@ -25,6 +25,9 @@ interface DurableTaskDao {
     @Query("DELETE FROM durable_tasks WHERE updatedAt < :cutoffTimestamp")
     suspend fun deleteOlderThan(cutoffTimestamp: Long): Int
 
+    @Query("DELETE FROM durable_tasks WHERE sessionId = :sessionId")
+    suspend fun deleteBySession(sessionId: String)
+
     @Query("DELETE FROM durable_tasks WHERE id = :id")
     suspend fun deleteById(id: String)
 

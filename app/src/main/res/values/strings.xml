@@ -134,9 +134,9 @@
     <string name="storage_freed">已释放 %1$s</string>
     <string name="storage_clean">清理</string>
     <string name="storage_clean_all">一键清理</string>
-    <string name="storage_clean_all_desc">清理以上全部项，不动聊天记录、容器与工作区</string>
+    <string name="storage_clean_all_desc">清理以上除检查点外的全部项，不动聊天记录、容器与工作区</string>
     <string name="storage_clean_confirm_title">确认清理</string>
-    <string name="storage_clean_confirm_all">将清理缓存、日志、工具输出与识图会话缓存，共约 %1$s。聊天记录、容器与工作区不受影响。</string>
+    <string name="storage_clean_confirm_all">将清理缓存、日志、工具输出与识图会话缓存，共约 %1$s。聊天记录、容器、工作区与检查点不受影响。</string>
     <string name="storage_clean_confirm_single">将删除「%1$s」，约 %2$s。此操作不可恢复。</string>
     <string name="storage_category_chat">聊天记录</string>
     <string name="storage_category_container">容器</string>
@@ -156,6 +156,8 @@
     <string name="storage_clean_tool_output_desc">AI 超长工具输出保存到磁盘的副本，删除后旧消息里的输出路径不再可读</string>
     <string name="storage_clean_vision">识图会话缓存</string>
     <string name="storage_clean_vision_desc">识图追问的历史，删除后无法继续追问旧图片</string>
+    <string name="storage_clean_checkpoints">检查点快照</string>
+    <string name="storage_clean_checkpoints_desc">回滚代码时用来还原文件的备份，删除后旧的「撤销」将无法还原代码（对话仍可回退）。不随一键清理删除</string>
     <string name="storage_untitled_session">未命名会话</string>
     <string name="storage_chat_messages">%1$d 条消息</string>
     <string name="storage_workspace_attachments">含附件 %1$s</string>

@@ -86,6 +86,18 @@ class DurableTaskRepository @Inject constructor(
     }
 
     /**
+     * 会话被删除时清掉它名下的全部账本记录（含已终态的历史）。
+     *
+     * 不清的话，崩溃残留（仍处非终态）的记录会和会话一起变成「孤儿」：下次冷启动
+     * [scanForRecovery] 照样扫到它并判为可恢复，但会话已不存在——提示条上的会话名是空的，
+     * 点「继续」会切到一个不存在的会话，重发也会落进不存在会话的消息表。
+     */
+    suspend fun clearSession(sessionId: String) {
+        guarded { dao.deleteBySession(sessionId) }
+            .onFailure { FileLogger.w(TAG, "清理会话 $sessionId 的 durable 任务失败: ${it.message}") }
+    }
+
+    /**
      * 用户点「忽略」：把待恢复任务置终态，使其不再出现在冷启动恢复提示中。
      *
      * 必须落库：只从内存列表移除的话，下一次冷启动 [scanForRecovery] 会重新扫到同一行，

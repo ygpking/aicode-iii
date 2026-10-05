@@ -38,6 +38,10 @@ class DurableTaskRecoveryLifecycleTest {
             return stale.size
         }
 
+        override suspend fun deleteBySession(sessionId: String) {
+            rows.values.filter { it.sessionId == sessionId }.map { it.id }.forEach { rows.remove(it) }
+        }
+
         override suspend fun deleteById(id: String) {
             rows.remove(id)
         }
