@@ -230,7 +230,9 @@ class ModelApiService @Inject constructor(
                     if (useResponseApi) {
                         u to """{"model":${model.jsonStr()},"input":[{"role":"user","content":"hi"}]}"""
                     } else {
-                        u to """{"model":${model.jsonStr()},"max_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
+                        // max_completion_tokens：gpt-5 / o 系推理模型拒绝 max_tokens（400 unknown parameter），
+                        // 旧名仅旧模型接受；探测请求用新名对两者都兼容。
+                        u to """{"model":${model.jsonStr()},"max_completion_tokens":1,"messages":[{"role":"user","content":"hi"}]}"""
                     }
                 }
             }
