@@ -31,13 +31,37 @@ class TaskStateMachineTest {
     }
 
     @Test
-    fun crashOnlyFromRunning() {
+    fun crashDetectedFromInProgressStates() {
         assertEquals(
             TransitionResult.Moved(TaskState.RUNNING, TaskState.RECOVERABLE),
             TaskStateMachine.transition(TaskState.RUNNING, TaskEvent.CRASH_DETECTED),
         )
-        // 从 PENDING 不能因崩溃进入 RECOVERABLE
+        // 崩溃恢复白名单（CrashRecoveryPlanner.IN_PROGRESS_STATES）里的每个非终态都必须能转入
+        // RECOVERABLE，否则冷启动扫描出来的任务会静默卡在原状态、每次重启被反复扫到。
+        assertEquals(
+            TransitionResult.Moved(TaskState.WAITING_APPROVAL, TaskState.RECOVERABLE),
+            TaskStateMachine.transition(TaskState.WAITING_APPROVAL, TaskEvent.CRASH_DETECTED),
+        )
+        assertEquals(
+            TransitionResult.Moved(TaskState.PAUSED, TaskState.RECOVERABLE),
+            TaskStateMachine.transition(TaskState.PAUSED, TaskEvent.CRASH_DETECTED),
+        )
+        // 已是 RECOVERABLE 的任务每次冷启动都会被重新扫到，需幂等自转而不是刷「非法转移」。
+        assertEquals(
+            TransitionResult.Moved(TaskState.RECOVERABLE, TaskState.RECOVERABLE),
+            TaskStateMachine.transition(TaskState.RECOVERABLE, TaskEvent.CRASH_DETECTED),
+        )
+        // 从 PENDING 不能因崩溃进入 RECOVERABLE（已建账但未开始，无进展可恢复）
         assertTrue(TaskStateMachine.transition(TaskState.PENDING, TaskEvent.CRASH_DETECTED) is TransitionResult.Rejected)
+    }
+
+    @Test
+    fun pendingCanBeFailedByRecoveryScan() {
+        // 冷启动扫描把白名单外的非终态（如 PENDING）判失败收尾，需此转移能落地。
+        assertEquals(
+            TransitionResult.Moved(TaskState.PENDING, TaskState.FAILED),
+            TaskStateMachine.transition(TaskState.PENDING, TaskEvent.FAIL),
+        )
     }
 
     @Test
@@ -56,8 +80,10 @@ class TaskStateMachineTest {
     fun terminalStatesRejectEverything() {
         for (terminal in listOf(TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED, TaskState.EXHAUSTED)) {
             assertTrue(TaskStateMachine.isTerminal(terminal))
-            val result = TaskStateMachine.transition(terminal, TaskEvent.START)
-            assertTrue("终态 $terminal 不应接受事件", result is TransitionResult.Rejected)
+            for (event in listOf(TaskEvent.START, TaskEvent.CRASH_DETECTED)) {
+                val result = TaskStateMachine.transition(terminal, event)
+                assertTrue("终态 $terminal 不应接受事件 $event", result is TransitionResult.Rejected)
+            }
         }
     }
 

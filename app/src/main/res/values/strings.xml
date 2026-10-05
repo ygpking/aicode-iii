@@ -623,6 +623,10 @@
     <string name="chat_retrying">正在重试 %1$s/%2$s</string>
     <string name="chat_key_switched">已切换到第 %1$d/%2$d 个 Key</string>
     <string name="chat_error_title">请求失败</string>
+    <string name="chat_recoverable_title">上次的任务被中断</string>
+    <string name="chat_recoverable_desc">应用上次异常退出时，有任务尚未完成。可继续（重新发起该请求）或忽略。</string>
+    <string name="chat_recoverable_continue">继续</string>
+    <string name="chat_recoverable_dismiss">忽略</string>
     <string name="slash_command_compress_desc">手动触发当前会话的上下文压缩</string>
     <string name="slash_command_init_desc">分析当前工作区代码库，生成或改进项目规则 AGENTS.md</string>
     <string name="slash_command_usage_desc">查看今日与累计的调用次数、token 用量与预估费用</string>

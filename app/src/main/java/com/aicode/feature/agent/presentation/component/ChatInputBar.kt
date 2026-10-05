@@ -37,6 +37,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -96,6 +97,7 @@ import com.aicode.feature.agent.domain.model.TodoItem
 import com.aicode.feature.agent.domain.permission.PermissionChoice
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
 import com.aicode.feature.agent.domain.tool.mode.PlanApprovalRequest
+import com.aicode.feature.agent.domain.workflow.RecoveryVerdict
 import com.aicode.feature.agent.presentation.AgentUIState
 import com.aicode.feature.agent.presentation.QueuedRequest
 import com.aicode.feature.settings.domain.model.AIProviderConfig
@@ -105,6 +107,7 @@ import com.aicode.feature.settings.domain.model.ProviderDashboardState
 import com.aicode.feature.workspace.presentation.WorkspaceViewModel
 import com.aicode.feature.workspace.presentation.component.WorkspaceIconButton
 import compose.icons.FeatherIcons
+import compose.icons.feathericons.RefreshCw
 import compose.icons.feathericons.AlertCircle
 import compose.icons.feathericons.ArrowUp
 import compose.icons.feathericons.Check
@@ -932,6 +935,88 @@ internal fun ToolPermissionPanel(
                             modifier = Modifier.weight(1f),
                             tone = AgentActionTone.Success
                         )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 崩溃恢复提示条：冷启动扫描出可续任务时显示。
+ *
+ * 扫描结果原本只写进 FileLogger 就丢弃（详见 docs/流程设计问题-崩溃恢复接线断裂.md 问题 1），
+ * 用户重启后看不到任何恢复入口。此组件是那条断掉的接线。
+ */
+@Composable
+internal fun RecoverableTaskBanner(
+    tasks: List<RecoveryVerdict.Recoverable>,
+    onContinue: (RecoveryVerdict.Recoverable) -> Unit,
+    onDismiss: (RecoveryVerdict.Recoverable) -> Unit
+) {
+    val first = tasks.firstOrNull()
+    AnimatedVisibility(
+        visible = first != null,
+        enter = fadeIn() + expandVertically(),
+        exit = fadeOut() + shrinkVertically()
+    ) {
+        first?.let { task ->
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = Spacing.lg, vertical = Spacing.xs),
+                color = MaterialTheme.colorScheme.surface,
+                shape = RoundedCornerShape(Radius.md),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(Spacing.md)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            FeatherIcons.RefreshCw,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(Spacing.sm))
+                        Text(
+                            text = stringResource(R.string.chat_recoverable_title),
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.weight(1f)
+                        )
+                        if (tasks.size > 1) {
+                            Text(
+                                text = "+${tasks.size - 1}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(Spacing.xs))
+                    Text(
+                        text = stringResource(R.string.chat_recoverable_desc),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    if (task.promptSnippet.isNotBlank()) {
+                        Spacer(Modifier.height(Spacing.xs))
+                        Text(
+                            text = task.promptSnippet,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Spacer(Modifier.height(Spacing.sm))
+                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = { onDismiss(task) }) {
+                            Text(stringResource(R.string.chat_recoverable_dismiss))
+                        }
+                        Spacer(Modifier.width(Spacing.xs))
+                        TextButton(onClick = { onContinue(task) }) {
+                            Text(stringResource(R.string.chat_recoverable_continue))
+                        }
                     }
                 }
             }

@@ -623,6 +623,10 @@
     <string name="chat_retrying">Retrying %1$s/%2$s</string>
     <string name="chat_key_switched">Switched to key %1$d of %2$d</string>
     <string name="chat_error_title">Request failed</string>
+    <string name="chat_recoverable_title">A previous task was interrupted</string>
+    <string name="chat_recoverable_desc">A task was still running when the app last exited unexpectedly. You can continue (resend the request) or dismiss.</string>
+    <string name="chat_recoverable_continue">Continue</string>
+    <string name="chat_recoverable_dismiss">Dismiss</string>
     <string name="slash_command_compress_desc">Manually compact this session context</string>
     <string name="slash_command_init_desc">Analyze the workspace codebase and generate or improve the AGENTS.md project rules</string>
     <string name="slash_command_usage_desc">View today and all-time call count, token usage and estimated cost</string>

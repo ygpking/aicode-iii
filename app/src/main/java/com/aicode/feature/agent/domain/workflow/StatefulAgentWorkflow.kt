@@ -1479,7 +1479,15 @@ class StatefulAgentWorkflow @Inject constructor(
     ): String? {
         if (batchResults.isEmpty()) return null
 
+        // 软提示跨来源去重：ToolLoopSentinel 与 FailureCircuitBreaker 判的都是「你在原地打转」，
+        // 同一轮完全可能同时触发；注入两条意思相近的纠偏提示会稀释注意力。只保留首条。
+        var softNoticeInjected = false
         fun appendNotice(text: String) {
+            if (softNoticeInjected) {
+                FileLogger.i(TAG, "循环治理软收敛：本轮已注入纠偏提示，跳过重复提示")
+                return
+            }
+            softNoticeInjected = true
             val last = batchResults[batchResults.lastIndex]
             batchResults[batchResults.lastIndex] = last.copy(result = last.result + "\n\n[系统提示] " + text)
         }

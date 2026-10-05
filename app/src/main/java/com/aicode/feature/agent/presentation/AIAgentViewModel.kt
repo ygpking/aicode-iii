@@ -202,6 +202,13 @@ class AIAgentViewModel @Inject constructor(
     private val _agentStates = MutableStateFlow<Map<String, AgentUIState>>(emptyMap())
     val agentStates: StateFlow<Map<String, AgentUIState>> = _agentStates.asStateFlow()
 
+    /**
+     * 冷启动扫描出的「可继续」任务。UI 据此展示恢复入口，用户点选后调 [resumeRecoverableTask]。
+     * 扫描结果原本只写进 FileLogger 就丢弃，用户重启后看不到任何恢复入口。
+     */
+    private val _recoverableTasks = MutableStateFlow<List<RecoveryVerdict.Recoverable>>(emptyList())
+    val recoverableTasks: StateFlow<List<RecoveryVerdict.Recoverable>> = _recoverableTasks.asStateFlow()
+
     val agentState: StateFlow<AgentUIState> = _currentSessionId
         .flatMapLatest { id ->
             if (id == null) flowOf(AgentUIState.Idle)
@@ -988,6 +995,7 @@ class AIAgentViewModel @Inject constructor(
             runCatchingCancellable { durableTaskRepository.scanForRecovery() }
                 .onSuccess { verdicts ->
                     val recoverable = verdicts.filterIsInstance<RecoveryVerdict.Recoverable>()
+                    _recoverableTasks.value = recoverable
                     if (recoverable.isNotEmpty()) {
                         FileLogger.i(TAG, "冷启动发现 ${recoverable.size} 个可恢复的长任务（未自动重跑，等待用户继续）")
                     }
@@ -2110,6 +2118,47 @@ class AIAgentViewModel @Inject constructor(
     fun selectSession(id: String) {
         if (_currentSessionId.value == id) return
         _currentSessionId.value = id
+    }
+
+    /**
+     * 用户点「继续」：切到该任务所属会话并重发当时那条请求。
+     *
+     * 「继续」= 重跑那一轮，不是从断点续跑：crash 时工具执行到哪一步无法可靠还原
+     * （授权上下文也未持久化，见问题 3），重发请求让模型重走一遍比假装接续更诚实。
+     *
+     * 请求原文从会话消息里回取，**不用 [RecoveryVerdict.Recoverable.promptSnippet]**：
+     * 后者是 `take(80)` 的入账摘要，只用于展示，拿它重发等于发出一个被截断的请求。
+     * 重发后该任务不再是「待恢复」，故从列表移除；新的一轮会由 [DurableTaskRepository.begin]
+     * 另建账本条目。
+     */
+    fun resumeRecoverableTask(verdict: RecoveryVerdict.Recoverable) {
+        _recoverableTasks.value = _recoverableTasks.value.filterNot { it.taskId == verdict.taskId }
+        selectSession(verdict.sessionId)
+        viewModelScope.launch {
+            val request = runCatchingCancellable {
+                // 取该任务开始后的第一条用户消息。
+                // 判据用 >= 而非 <=：[DurableTaskRepository.begin] 先于用户消息落库执行
+                // （AIAgentViewModel 里 begin 在 persist 之前），故消息 timestamp >= 任务 createdAt。
+                // 取第一条而非最后一条：崩溃后用户可能又发过新消息，那些属于新任务；
+                // 本任务的原文必是入账后的首条用户消息（getMessagesBySessionOnce 按 timestamp ASC）。
+                val task = durableTaskRepository.getById(verdict.taskId)
+                val since = task?.createdAt ?: 0L
+                agentMessageDao.getMessagesBySessionOnce(verdict.sessionId)
+                    .firstOrNull { it.role == MessageRole.USER.name && it.timestamp >= since }
+                    ?.content
+            }.getOrNull()?.trim().orEmpty()
+
+            if (request.isEmpty()) {
+                FileLogger.w(TAG, "恢复任务 ${verdict.taskId} 取不到请求原文，放弃重发")
+                return@launch
+            }
+            enqueueAgentRequest(request = request, targetSessionId = verdict.sessionId)
+        }
+    }
+
+    /** 用户点「忽略」：只从提示列表移除，不动任务状态（保持 RECOVERABLE，下次冷启动仍可见）。 */
+    fun dismissRecoverableTask(taskId: String) {
+        _recoverableTasks.value = _recoverableTasks.value.filterNot { it.taskId == taskId }
     }
 
     fun deleteSessions(ids: Set<String>) = viewModelScope.launch {

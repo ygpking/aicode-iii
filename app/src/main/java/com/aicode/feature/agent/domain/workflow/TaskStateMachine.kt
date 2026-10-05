@@ -47,8 +47,15 @@ sealed interface TransitionResult {
  * durable 任务状态机（纯函数、无状态）。
  *
  * 穷尽转移表 + CAS 语义：未在表中的 (状态, 事件) 组合返回 [TransitionResult.Rejected]，不抛异常。
- * 崩溃恢复关键不变量：只有 [TaskState.RUNNING] 可因 [TaskEvent.CRASH_DETECTED] 进入
+ * 崩溃恢复关键不变量：非终态任务只能因 [TaskEvent.CRASH_DETECTED] 进入
  * [TaskState.RECOVERABLE]——已结束的任务不会因进程被杀而「复活」。
+ *
+ * 保留设计（当前无生产者，勿误读为运行路径）：[TaskEvent.START]、
+ * [TaskEvent.REQUEST_APPROVAL]、[TaskEvent.APPROVAL_GRANTED]、[TaskEvent.APPROVAL_DENIED]、
+ * [TaskEvent.PAUSE]、[TaskEvent.RESUME]、[TaskEvent.EXHAUST_RETRIES] 对应的转移已定义但尚无
+ * 发射点（历史原因见 `docs/流程设计问题-崩溃恢复接线断裂.md`）；[TaskEvent.CRASH_DETECTED]
+ * 由 DurableTaskRepository 冷启动扫描发射；[TaskEvent.SUCCEED]/[TaskEvent.FAIL]/[TaskEvent.CANCEL]
+ * 由 AIAgentViewModel 在本轮结束时发射。
  */
 object TaskStateMachine {
 
@@ -65,6 +72,8 @@ object TaskStateMachine {
     private val TABLE: Map<TaskState, Map<TaskEvent, TaskState>> = mapOf(
         TaskState.PENDING to mapOf(
             TaskEvent.START to TaskState.RUNNING,
+            // 崩溃扫描时 PENDING（已建账但尚未开始）不在可恢复白名单，判失败收尾。
+            TaskEvent.FAIL to TaskState.FAILED,
         ),
         TaskState.RUNNING to mapOf(
             TaskEvent.REQUEST_APPROVAL to TaskState.WAITING_APPROVAL,
@@ -78,15 +87,20 @@ object TaskStateMachine {
             TaskEvent.APPROVAL_GRANTED to TaskState.RUNNING,
             TaskEvent.APPROVAL_DENIED to TaskState.FAILED,
             TaskEvent.PAUSE to TaskState.PAUSED,
+            TaskEvent.CRASH_DETECTED to TaskState.RECOVERABLE,
         ),
         TaskState.PAUSED to mapOf(
             TaskEvent.RESUME to TaskState.RUNNING,
             TaskEvent.CANCEL to TaskState.CANCELLED,
+            TaskEvent.CRASH_DETECTED to TaskState.RECOVERABLE,
         ),
         TaskState.RECOVERABLE to mapOf(
             TaskEvent.START to TaskState.RUNNING,
             TaskEvent.EXHAUST_RETRIES to TaskState.EXHAUSTED,
             TaskEvent.CANCEL to TaskState.CANCELLED,
+            // 幂等自转移：崩溃恢复白名单里的状态每次冷启动都会被重新扫到，
+            // 缺此条会走 Rejected 分支刷出「非法转移」告警（状态本身不变，但日志被污染）。
+            TaskEvent.CRASH_DETECTED to TaskState.RECOVERABLE,
         ),
     )
 

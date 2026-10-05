@@ -415,6 +415,7 @@ fun AIChatPanel(
     modifier: Modifier = Modifier
 ) {
     val agentState by viewModel.agentState.collectAsStateWithLifecycle()
+    val recoverableTasks by viewModel.recoverableTasks.collectAsStateWithLifecycle()
     val messagesState by viewModel.messagesState.collectAsStateWithLifecycle()
     val messages = messagesState.messages
     val pendingScroll by viewModel.pendingScrollMessage.collectAsStateWithLifecycle()
@@ -1319,6 +1320,13 @@ fun AIChatPanel(
             Box(modifier = Modifier.fillMaxWidth().graphicsLayer { alpha = floatingPanelAlpha }) {
                 StatusBanner(state = agentState)
             }
+
+            // 崩溃恢复提示条：冷启动扫描出的可续任务在此露出。原先扫描结果只进日志被丢弃。
+            RecoverableTaskBanner(
+                tasks = recoverableTasks,
+                onContinue = { viewModel.resumeRecoverableTask(it) },
+                onDismiss = { viewModel.dismissRecoverableTask(it.taskId) }
+            )
 
             // 退场动画期间 uploadingCount 已归零，直接读会淡出一个「正在上传 0 个文件」，
             // 与 StatusBanner 同样用非空记忆值兜住退场。

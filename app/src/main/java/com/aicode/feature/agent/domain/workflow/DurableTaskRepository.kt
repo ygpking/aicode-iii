@@ -49,6 +49,10 @@ class DurableTaskRepository @Inject constructor(
         return id
     }
 
+    /** 按 id 读一条任务；供恢复入口回取任务入账时刻。 */
+    suspend fun getById(taskId: String): DurableTaskEntity? =
+        guarded { dao.getById(taskId) }.getOrNull()
+
     /** 更新任务的轮次（每轮 LLM 完成后）。 */
     suspend fun updateRound(taskId: String, round: Int) {
         val current = guarded { dao.getById(taskId) }.getOrNull() ?: return
@@ -78,8 +82,13 @@ class DurableTaskRepository @Inject constructor(
 
     /**
      * 冷启动恢复扫描：把非终态任务按 [CrashRecoveryPlanner] 判定。
-     * - 可恢复 → 置 RECOVERABLE 并返回给调用方提示用户；
+     * - 可恢复 → 经状态机置 RECOVERABLE 并返回给调用方提示用户；
      * - 不可判定/白名单外 → 保守置 FAILED（fail-closed，不复活）。
+     *
+     * 此处一律走 [transition]，不直接写 state 字符串：状态机是状态的唯一入口，
+     * 绕过它会让「谁能迁到 RECOVERABLE」这条不变量只存在于注释里。
+     * 扫描后再串一次 [prune]：历史实现对冷启动置位的记录从不清理，
+     * 用户不处理的 RECOVERABLE 会长期堆积（原先只有 finish 路径会 prune）。
      */
     suspend fun scanForRecovery(): List<RecoveryVerdict> {
         val nonTerminal = guarded {
@@ -97,16 +106,23 @@ class DurableTaskRepository @Inject constructor(
             )
             verdicts += verdict
             when (verdict) {
-                is RecoveryVerdict.Recoverable -> guarded {
-                    dao.upsert(task.copy(state = TaskState.RECOVERABLE.name, updatedAt = System.currentTimeMillis()))
-                }
-                is RecoveryVerdict.FailClosed -> guarded {
+                is RecoveryVerdict.Recoverable -> transition(task.id, TaskEvent.CRASH_DETECTED)
+                is RecoveryVerdict.FailClosed -> {
                     FileLogger.w(TAG, "任务 ${task.id} 保守置失败：${verdict.reason}")
-                    dao.upsert(task.copy(state = TaskState.FAILED.name, updatedAt = System.currentTimeMillis()))
+                    // 状态字符串本身无法解析时 transition 会静默 return，这类记录将永远
+                    // 滞在非终态、每次冷启动被反复扫到。故解析失败时直接写 FAILED 强收尾。
+                    if (TaskStateMachine.parse(task.state) == null) {
+                        guarded {
+                            dao.upsert(task.copy(state = TaskState.FAILED.name, updatedAt = System.currentTimeMillis()))
+                        }
+                    } else {
+                        transition(task.id, TaskEvent.FAIL)
+                    }
                 }
                 RecoveryVerdict.Skip -> Unit
             }
         }
+        prune()
         return verdicts
     }
 
