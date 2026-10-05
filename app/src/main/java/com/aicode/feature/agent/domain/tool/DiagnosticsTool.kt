@@ -30,6 +30,18 @@ import javax.inject.Inject
  *    **没有**密钥脱敏；若原样喂回模型，`echo $KEY`、`.env` dump 之类的密钥就会泄露给模型。
  *    因此这里必须再走一遍 [ToolOutputScrubber]。
  *
+ * 另有一条**不写在参数上但同样硬**的约束：读到的正文必须包不可信信封。
+ * 日志里存的不是平台自己的话：`ai-logs/`（`kind=ai` 的目标）**就是模型交互原文**——
+ * 含当时工具返回的完整内容，包括 `webfetch` 抓回的网页正文、MCP 服务器输出；
+ * `logs/` 也记有外部请求行（实测单日 12 行 webfetch/websearch）。这些都是**第三方可控文本**，
+ * 原样喂回模型就是一条绕开工具层的提示词注入路径：模型读自己上次的会话时，
+ * 当时网页里的「忽略以上指令」会被当成可信内容再读一遍。
+ *
+ * 为何本工具需自己包、而不能指望 [com.aicode.feature.agent.domain.tool.ToolOutputStore]：
+ * 那道信封只对 [UntrustedEnvelope] 名单内的外部工具生效，`diagnostics` 不在其中
+ * （它本身是本地读取工具，但**读的内容**来自外部）。故在返回前自行包一层，
+ * 与 [RetrieveToolResultTool] 重新读回外部工具落盘内容时的做法一致。
+ *
  * 能力标注 [ToolCapability.READ_AGENT_CONFIG]：命中
  * [com.aicode.feature.agent.domain.permission.ToolPermissionPolicyEngine] 中
  * `capabilities == setOf(READ_AGENT_CONFIG)` 的白名单分支 → 所有模式（含 PLAN）自动放行，
@@ -46,6 +58,13 @@ class DiagnosticsTool @Inject constructor(
         const val TAG = "DiagnosticsTool"
         const val DEFAULT_LINES = 200
         const val MAX_LINES = 1_000
+
+        /**
+         * 不可信信封的 source 标签。不从 [UntrustedEnvelope.sourceFor] 取——那个函数只认
+         * 固定的外部工具名白名单，而这里要表达的是「本工具读回的日志正文属于外部来源」，
+         * 二者不是同一回事（工具名不在名单内，但读到的内容确实来自外部）。
+         */
+        const val SOURCE_DIAGNOSTICS = "diagnostics"
     }
 
     override val name = "diagnostics"
@@ -206,11 +225,14 @@ class DiagnosticsTool @Inject constructor(
         val text = if (levelFilter.isNullOrBlank()) scrubbed else {
             scrubbed.lineSequence().filter { it.contains(" $levelFilter ") }.joinToString("\n")
         }
+        // 先脱敏、再包信封：顺序不可换。信封会对 `<`/`&` 做转义，若先包后脱敏，
+        // 密钥正则将面对已转义的文本（如 `&lt;`），既可能漏判也会污染替换结果。
+        val wrapped = UntrustedEnvelope.wrap(SOURCE_DIAGNOSTICS, text)
 
         val resultMap = mutableMapOf<String, JsonElement>(
             "file" to JsonPrimitive(file.name),
             "kind" to JsonPrimitive(kind),
-            "content" to JsonPrimitive(text),
+            "content" to JsonPrimitive(wrapped),
             "total_lines" to JsonPrimitive(page.totalLines),
             "start_line" to JsonPrimitive(page.startLine),
             "end_line" to JsonPrimitive(page.endLine),
@@ -233,7 +255,10 @@ class DiagnosticsTool @Inject constructor(
             ?: return ToolResult.Error("暂无日志文件可搜索", "NO_LOG_FILE")
         val hits = DiagnosticsReader.search(file, query)
             ?: return ToolResult.Error("搜索日志失败（文件不可读）", "SEARCH_FAILED")
-        val body = ToolOutputScrubber.scrub(hits.joinToString("\n"))
+        val body = UntrustedEnvelope.wrap(
+            SOURCE_DIAGNOSTICS,
+            ToolOutputScrubber.scrub(hits.joinToString("\n"))
+        )
         return ToolResult.Success(
             JsonObject(
                 mapOf(
