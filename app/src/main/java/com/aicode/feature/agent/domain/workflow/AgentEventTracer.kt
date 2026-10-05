@@ -42,6 +42,18 @@ internal object AgentEventTracer {
     }
 
     /**
+     * 从工具结果的 transport JSON 里抽 `status.code`（如 `TOOL_TIMEOUT`）。
+     *
+     * 动机：失败行此前只有 120 字中文摘要，无法按类聚合、无法稳定区分「重试中的失败」与
+     * 「确定性失败」；AI 与人都只能靠中文子串匹配。code 本就是结构化字段，落进轨迹后即可按类统计。
+     * 只在失败时调用；成功结果里若出现同名键不受影响。
+     */
+    private val ERROR_CODE_IN_JSON = Regex("\"code\"\\s*:\\s*\"([A-Z][A-Z0-9_]{1,60})\"")
+
+    private fun errorCode(text: String): String? =
+        ERROR_CODE_IN_JSON.find(text)?.groupValues?.get(1)
+
+    /**
      * 记录一次事件。
      *
      * @param turnId 本回合 id；为 null 时不记录（调用方未开启轨迹）。
@@ -97,6 +109,9 @@ internal object AgentEventTracer {
             // 成功时结果可能是文件正文（readFile），正文里出现 "path" 键会记下无关路径、污染证据；
             // 而成功场景的路径已由 tool_started 从参数给出，此处不必再抽。
             if (event.isError) pathEvidence(event.result)?.let { append(" path=$it") }
+            // 失败时带上错误码：让轨迹可**按 code 聚合**（把 TOOL_TIMEOUT 与 MISSING_COMMAND 分开统计），
+            // 不再只能读中文摘要。来自 ToolResult 的 transport JSON。
+            if (event.isError) errorCode(event.result)?.let { append(" code=$it") }
             // 失败时带上结果开头：原本只有「失败 + 字数」，要查为何失败得另翻 AILogger；
             // 摘要一行即可自证，无需再去别处找。
             if (event.isError) append(" 原因摘要=${event.result.take(120).replace('\n', ' ')}")
