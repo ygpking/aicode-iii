@@ -283,29 +283,33 @@ object EventTrace {
         val files = dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }
             ?.sortedBy { it.name } ?: return
         if (files.isEmpty()) return
-        // 从最新文件往前逐份回读，全部扫完——**不因遇到 `PROCESS START` 而停**。
-        // 与 [reportStaleTurns] 的差异就在这：那个只看「上个进程留下的残局」，故必须停在最后
-        // 一个 START；而这里要的是「历史上哪些回合号已被占用」，更早的进程用过的号同样不能重用，
-        // 只看上个进程反而会漏掉上上个进程用过的号而撞车。高水位偏大只是跳几个号，偏小则直接
-        // 让「s+tN+#seq」重新重号，两者代价不对称。
-        // 文件数量本身有上限（[cleanupOldLogs] 只留 [MAX_AGE_DAYS] 天），不会无限增长。
+        // 顺序对结果无影响（取的是最大值），只求稳定。
         for (file in files) {
-            val part = runCatching { file.readLines() }.getOrNull() ?: continue
-            for (line in part) {
-                val m = TURN_BUCKET_RE.find(line) ?: continue
-                val n = m.groupValues[2].toLongOrNull() ?: continue
-                turnFloor.merge(m.groupValues[1], n) { a, b -> maxOf(a, b) }
-            }
+            // 逐行流式读，不用 readLines()：后者把整份文件读进内存，而这里**扫全部历史文件**，
+            // 理论上限为 [MAX_FILE_BYTES]×(1+[MAX_ROTATIONS])×[MAX_AGE_DAYS] ≈ 112MB，
+            // 经 readLines 建 List 还会放大数倍。本方法可能在调用线程上兜底执行（见 [ensureTurnFloor]），
+            // 一次大分配就是一次卡顿甚至 ANR 的风险；而每行只需要一个正则匹配，无需持全文。
+            runCatching {
+                file.bufferedReader().useLines { seq ->
+                    for (line in seq) {
+                        val m = TURN_BUCKET_RE.find(line) ?: continue
+                        val n = m.groupValues[2].toLongOrNull() ?: continue
+                        turnFloor.merge(m.groupValues[1], n) { a, b -> maxOf(a, b) }
+                    }
+                }
+            }.onFailure { Log.e(TAG, "回读高水位失败: ${file.name}", it) }
         }
     }
 
     /**
      * 确保回合号高水位已回读；未 [init] 或已读过时直接返回。
      *
-     * **代价**：生产路径下回读由 [init] 的后台线程完成；本方法是兜底——若首个 [beginTurn]
-     * 早于它执行（进程刚起、秒级内就有任务自动继续），会在调用线程上一次性扫描轨迹目录。
-     * 实测规模 6 份文件 5.31MB（[cleanupOldLogs] 只留 [MAX_AGE_DAYS] 天，有上限）。
-     * 选择阻塞而非「未就绪就先从 t1 发」：后者会让整个修复静默失效，而重号没有报错。
+     * **代价与为何可接受**：正常路径下回读由 [init] 的后台线程完成，而 [beginTurn] 发生在
+     * 用户首次发消息时（距进程启动至少数秒），后台早已就绪。只有极罕见的情形（进程刚起、
+     * 秒级内就有任务自动继续）才会落到调用方线程兜底，那时会一次性地扫描轨迹目录
+     * （按行流式读，不整体载入内存；实测 6 份文件 5.31MB）。
+     * 选择阻塞而非「没就绪就先从 t1 发」：后者会让整个修复静默失效，而重号没有任何报错，
+     * 事后无从发现。
      */
     private fun ensureTurnFloor() {
         if (turnFloorLoaded.get()) return
