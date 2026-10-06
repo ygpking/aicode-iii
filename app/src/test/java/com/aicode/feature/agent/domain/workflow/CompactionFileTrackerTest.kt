@@ -83,8 +83,91 @@ class CompactionFileTrackerTest {
     }
 
     @Test
+    fun keepsRelativeAndBareNamesFromToolCalls() {
+        // 工具调用里的相对路径与裸文件名同样是合法路径（它们不过 isPathLike 那道滤网，直接从参数入表）。
+        val ops = CompactionFileTracker.extract(
+            listOf(
+                assistant(call("readFile", "app/src/main/Main.kt")),
+                assistant(call("editFile", "build.gradle.kts"))
+            )
+        )
+        assertEquals(listOf("app/src/main/Main.kt"), ops.read)
+        assertEquals(listOf("build.gradle.kts"), ops.modified)
+    }
+
+    @Test
+    fun ignoresBlockLikeTextInsideSummaryBody() {
+        // 真实污染样本：摘要正文叙述清单机制时自带标签字样，旧实现会把中间整段正文当路径收下
+        // （实测该块涨到 12235 字符而真实路径 0 条）。
+        val polluted = AgentMessage.AssistantMessage(
+            content = "正文开始\n<read-files>\n` 块使清单跨轮累积（正则）。KDoc 自陈局限：\n</read-files>\n" +
+                "正文继续\n\n<read-files>\n~/workspace/real-read.kt\n</read-files>\n\n" +
+                "<modified-files>\n~/workspace/real-mod.kt\n</modified-files>"
+        )
+        val ops = CompactionFileTracker.extract(listOf(polluted))
+
+        assertEquals(listOf("~/workspace/real-read.kt"), ops.read)
+        assertEquals(listOf("~/workspace/real-mod.kt"), ops.modified)
+    }
+
+    @Test
+    fun keepsCjkAndSpacedRealPaths() {
+        // 中文文件名与含空格的路径都是真实路径，不得当脏行过滤掉（实测 304 条里 24 条含中文）。
+        val ops = CompactionFileTracker.extract(
+            listOf(
+                AgentMessage.AssistantMessage(
+                    content = "摘要\n\n<modified-files>\n~/workspace/docs/缺陷排查-按功能.md\n" +
+                        "~/workspace/.aicode/attachments/新建文本文档 (7).txt\n</modified-files>"
+                )
+            )
+        )
+        assertEquals(
+            listOf("~/workspace/docs/缺陷排查-按功能.md", "~/workspace/.aicode/attachments/新建文本文档 (7).txt"),
+            ops.modified
+        )
+    }
+
+    @Test
+    fun appendStripsOnlyTrailingBlocks() {
+        // 正文里的标签字样不得被当成块删掉——只剥尾部的真块。
+        val summary = "叙述：块格式是 `\n<read-files>\n~/x.kt\n</read-files>`\n\n正文结尾\n\n" +
+            "<modified-files>\n~/workspace/old.kt\n</modified-files>"
+        val result = CompactionFileTracker.append(
+            summary,
+            CompactionFileTracker.FileOps(modified = listOf("~/workspace/new.kt"))
+        )
+
+        assertTrue("正文中的标签字样应保留，实际=$result", result.contains("叙述：块格式是"))
+        assertTrue("正文结尾应保留，实际=$result", result.contains("正文结尾"))
+        assertTrue("旧清单应被替换，实际=$result", !result.contains("old.kt"))
+        assertTrue("新清单应写入，实际=$result", result.contains("~/workspace/new.kt"))
+        assertEquals("真块应只有一个", 1, Regex("</modified-files>").findAll(result).count())
+    }
+
+    @Test
     fun appendIsNoOpWhenEmpty() {
         assertEquals("摘要正文", CompactionFileTracker.append("摘要正文", CompactionFileTracker.FileOps()))
+    }
+
+    @Test
+    fun appendKeepsOnlyRecentWithinCharBudget() {
+        // 清单跨轮只增不减，若全量回写会让摘要被历史路径撑爆（实测单块 56000 字符）。
+        val paths = (1..200).map { "~/workspace/app/src/main/java/com/aicode/feature/agent/domain/workflow/Padding$it.kt" }
+        val result = CompactionFileTracker.append("摘要", CompactionFileTracker.FileOps(modified = paths))
+        val block = Regex("(?s)<modified-files>(.*?)</modified-files>").find(result)!!.groupValues[1]
+        val kept = block.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+
+        assertTrue("清单总长应控制在预算量级，实际=${block.length}", block.length <= 2_100)
+        assertTrue("应丢弃最旧的路径，实际保留=${kept.size}", kept.size < paths.size)
+        assertEquals("保留的应是最近的", paths.takeLast(kept.size), kept)
+    }
+
+    @Test
+    fun oversizedSinglePathStillKept() {
+        // 单条路径就超预算时不能返回空清单——留一条总比什么都没有更有用。
+        val long = "~/workspace/" + "d".repeat(3_000) + ".kt"
+        val result = CompactionFileTracker.append("摘要", CompactionFileTracker.FileOps(modified = listOf(long)))
+        assertTrue(result.contains(long))
     }
 
     @Test

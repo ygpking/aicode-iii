@@ -515,8 +515,26 @@ class ContextCompactor @Inject constructor(
  */
 internal object CompactionFileTracker {
 
-    private val READ_BLOCK = Regex("(?s)<read-files>(.*?)</read-files>")
-    private val MODIFIED_BLOCK = Regex("(?s)<modified-files>(.*?)</modified-files>")
+    /**
+     * 单个清单块的字符预算。清单跨轮累积且只增不减，数百条历史路径会在每次压缩后
+     * 常驻上下文——实测单块可达 56000 字符（约 18000 token），而其价值只在「最近摸过哪些文件」。
+     * 2000 字符约合 24 条路径（本机实测路径长度中位数 84 字符）。
+     */
+    private const val BLOCK_CHAR_BUDGET = 2_000
+
+    /** 块区末尾的闭合标签：从摘要尾部反向剥块，只认真正写在末尾的清单。 */
+    private val BLOCK_CLOSE = Regex("</(read-files|modified-files)>\\s*$")
+
+    private const val TAG_READ = "read-files"
+    private const val TAG_MODIFIED = "modified-files"
+
+    /**
+     * 路径长度上限：本机实测 304 条真实路径最长 113 字符，超此上限的是正文整行。
+     */
+    private const val MAX_PATH_CHARS = 512
+
+    /** 裸文件名形态（无目录分隔符时的兜底判据），如 `AgentMessage.kt`。 */
+    private val EXTENSION_TAIL = Regex("\\.[A-Za-z0-9]{1,8}$")
 
     private val READ_TOOLS = setOf("readFile")
     private val MODIFY_TOOLS = setOf("writeFile", "editFile")
@@ -542,30 +560,106 @@ internal object CompactionFileTracker {
                     in MODIFY_TOOLS -> modified.add(path)
                 }
             }
-            READ_BLOCK.findAll(message.content).forEach { read.addAll(parseBlock(it.groupValues[1])) }
-            MODIFIED_BLOCK.findAll(message.content).forEach { modified.addAll(parseBlock(it.groupValues[1])) }
+            val blocks = parseTrailingBlocks(message.content)
+            read.addAll(blocks.first)
+            modified.addAll(blocks.second)
         }
         read.removeAll(modified)
         return FileOps(read.toList(), modified.toList())
     }
 
+    /**
+     * 只从消息**尾部**剥出清单块，要求标签各自独占行首。
+     *
+     * 不能用无锚点的 `findAll`：摘要里叙述清单机制时会自带 `<read-files>` 字样，
+     * 恰好凑成一对标签就会把中间整段正文当路径收下（实测该块涨到 12235 字符而真实路径为 0）；
+     * [append] 又把收下的脏行原样写回，故脏行逐轮自我累积。
+     */
+    private fun parseTrailingBlocks(content: String): Pair<List<String>, List<String>> {
+        val found = mutableListOf<Pair<String, List<String>>>()
+        var body = content.trimEnd()
+        while (true) {
+            val close = BLOCK_CLOSE.find(body) ?: break
+            val tag = close.groupValues[1]
+            val openIndex = body.lastIndexOf("\n<$tag>", close.range.first)
+            if (openIndex < 0) break
+            val lines = body.substring(openIndex + tag.length + 3, close.range.first)
+                .lineSequence().map { it.trim() }.filter { it.isPathLike() }.toList()
+            found.add(tag to lines)
+            body = body.substring(0, openIndex + 1)
+        }
+        // 剥块是从尾部往头部走的，反过来才是文件里原有的先后顺序。
+        val ordered = found.asReversed()
+        return ordered.filter { it.first == TAG_READ }.flatMap { it.second } to
+            ordered.filter { it.first == TAG_MODIFIED }.flatMap { it.second }
+    }
+
     fun append(summary: String, ops: FileOps): String {
         if (ops.isEmpty) return summary
         return buildString {
-            append(summary.trimEnd())
-            if (ops.read.isNotEmpty()) {
-                append("\n\n<read-files>\n")
-                ops.read.forEach { append(it).append('\n') }
-                append("</read-files>")
-            }
-            if (ops.modified.isNotEmpty()) {
-                append("\n\n<modified-files>\n")
-                ops.modified.forEach { append(it).append('\n') }
-                append("</modified-files>")
-            }
+            appendSummaryBody(summary)
+            appendBlocks(ops)
         }
     }
 
-    private fun parseBlock(body: String): List<String> =
-        body.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+    /**
+     * 先把摘要尾部已有的清单块剥干净再重新追加。
+     *
+     * 不复用旧的全文 `findAll` 匹配：摘要里叙述清单机制时会自带标签字样，
+     * 无锚点的匹配会从第一个 `<read-files>` 一直吃到下一个 `</read-files>`，把中间正文整段切掉。
+     * 本函数只在尾部连续剥标签，遇到非块内容立即停，且要求标签前是行首（前一个字符为换行）。
+     */
+    private fun StringBuilder.appendSummaryBody(summary: String) {
+        var body = summary
+        while (true) {
+            val close = BLOCK_CLOSE.find(body) ?: break
+            val tag = close.groupValues[1]
+            val openIndex = body.lastIndexOf("\n<$tag>", close.range.first)
+            // 标签未行首开头，说明是正文里提到「<read-files>」而非真块，不动。
+            if (openIndex < 0) break
+            body = body.substring(0, openIndex + 1)
+        }
+        append(body.trimEnd())
+    }
+
+    private fun StringBuilder.appendBlocks(ops: FileOps) {
+        // 只写最近的若干条：截断发生在这里（唯一写入点），下一轮 extract 读回的就是已收窄的清单，
+        // 故存量超长清单在第一次压缩后即收敛，无需单独清理历史摘要。
+        appendBlock(TAG_READ, ops.read.takeRecentWithin(BLOCK_CHAR_BUDGET))
+        appendBlock(TAG_MODIFIED, ops.modified.takeRecentWithin(BLOCK_CHAR_BUDGET))
+    }
+
+    private fun StringBuilder.appendBlock(tag: String, paths: List<String>) {
+        if (paths.isEmpty()) return
+        append("\n\n<").append(tag).append(">\n")
+        paths.forEach { append(it).append('\n') }
+        append("</").append(tag).append('>')
+    }
+
+    /**
+     * 从尾部（最近）往前保留路径至累计字符数不超 [budget]，返回值仍按原顺序（旧→新）。
+     * [extract] 的遍历顺序是消息从旧到新，故列表尾部即最近。
+     */
+    private fun List<String>.takeRecentWithin(budget: Int): List<String> {
+        var used = 0
+        var count = 0
+        for (path in asReversed()) {
+            val cost = path.length + 1
+            if (used + cost > budget) break
+            used += cost
+            count++
+        }
+        // 单条路径就超预算时也要留一条：空清单比一条超长路径更糟（下游无从知道碰过什么）。
+        if (count == 0 && isNotEmpty()) count = 1
+        return takeLast(count)
+    }
+
+    private fun String.isPathLike(): Boolean {
+        if (isEmpty() || length > MAX_PATH_CHARS) return false
+        // 排除 Markdown 行内代码/表格/粗体与中文标点（正文行特征）。
+        // 不排空格与中文汉字：实测 304 条真实路径里有 1 条含空格、24 条含中文，不能当脏行信号。
+        if (any { it in "<>`|*\"'：，。（）、；！？「」" }) return false
+        // 像路径：带目录分隔符（含相对路径）或以扩展名结尾（裸文件名）。
+        return '/' in this || EXTENSION_TAIL.containsMatchIn(this)
+    }
 }
