@@ -694,7 +694,7 @@ private fun CompactionFailureCard(message: AgentUIMessage) {
  */
 @Composable
 private fun ToolPrefaceRow(text: String) {
-    var expanded by remember { mutableStateOf(false) }
+    var expanded by rememberSaveable(text) { mutableStateOf(false) }
     // 折叠行取**最后**一个非空行与思考气泡一致：过渡说明是紧接着工具调用的，末行才是当前进展。
     // 取首行会与流式气泡（滚到末尾）显示的不是同一句，工具一开始就看着内容跳回开头。
     val previewLine = text.lineSequence().lastOrNull { it.isNotBlank() }?.trim().orEmpty()

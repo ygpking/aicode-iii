@@ -62,6 +62,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.core.content.res.ResourcesCompat
 import com.aicode.R
 import com.aicode.core.theme.Spacing
 import com.aicode.core.ui.CodeFontFamily
@@ -441,7 +442,9 @@ private fun EditorSurface(
                     ViewGroup.LayoutParams.MATCH_PARENT
                 )
                 isEditable = true
-                typefaceText = Typeface.MONOSPACE
+                // 不用 Typeface.MONOSPACE：系统等宽链无下标字形（同 c2dc704/019b4bf 的根因），
+                // 与 core/ui/AppFonts 的 CodeFontFamily 同源，取内置 JetBrains Mono NL。
+                typefaceText = ResourcesCompat.getFont(ctx, R.font.jetbrains_mono_nl) ?: Typeface.MONOSPACE
                 setTextSize(settings.fontSizeSp.toFloat())
                 setWordwrap(settings.wordWrap)
                 // 关闭光标移动动画：切换行/列时当前行高亮原位消失、目标位出现，不逐行滑动。

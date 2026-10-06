@@ -19,6 +19,9 @@ internal data class ResponsesOutput(
     val thinkingBlocksJson: String? = null
 )
 
+/** 单次响应内图片 base64 累计字节上限：超过后不再追加新图（内存防护，正常回复远达不到）。 */
+private const val MAX_IMAGES_BASE64_BYTES = 32_000_000L
+
 /** Responses 的 token 用量。 */
 internal data class ResponsesUsage(
     val inputTokens: Int = 0,
@@ -39,6 +42,7 @@ internal fun parseResponsesOutput(output: JsonArray?): ResponsesOutput {
     val reasoning = StringBuilder()
     val toolCalls = mutableListOf<ToolCall>()
     val images = mutableListOf<AgentImage>()
+    var imagesBase64Bytes = 0L
     var thinkingBlocksSnapshot: String? = null
     output.forEach { element ->
         // 上游字段类型偶有出入，单个 item 解析失败不应废掉整个响应
@@ -65,7 +69,12 @@ internal fun parseResponsesOutput(output: JsonArray?): ResponsesOutput {
                 // 服务端生图：图片整块在 item 的 result（base64）里到达，无流式增量。
                 ResponsesItem.IMAGE_GENERATION_CALL -> {
                     item.str("result")?.takeIf { it.isNotEmpty() }?.let { result ->
-                        images.add(AgentImage(mimeType = mimeForImageFormat(item.str("output_format")), base64Data = result))
+                        // base64 常驻内存（4K 图约 10MB，见 GeminiInteractionsPayload），
+                        // 总量封顶防多图回复把移动端堆顶穿；超限的新图不再追加，旧图保留。
+                        if (imagesBase64Bytes + result.length <= MAX_IMAGES_BASE64_BYTES) {
+                            imagesBase64Bytes += result.length
+                            images.add(AgentImage(mimeType = mimeForImageFormat(item.str("output_format")), base64Data = result))
+                        }
                     }
                 }
 
