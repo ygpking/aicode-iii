@@ -155,11 +155,16 @@ class CompactionFileTrackerTest {
         val paths = (1..200).map { "~/workspace/app/src/main/java/com/aicode/feature/agent/domain/workflow/Padding$it.kt" }
         val result = CompactionFileTracker.append("摘要", CompactionFileTracker.FileOps(modified = paths))
         val block = Regex("(?s)<modified-files>(.*?)</modified-files>").find(result)!!.groupValues[1]
-        val kept = block.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.toList()
+        // 新行为：截断时附「(更早的 N 条因清单预算被省略)」提示行，不算路径；
+        // 该行含中文标点，读取侧 isPathLike 会拒收，不污染下一轮解析。
+        val kept = block.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }
+            .filterNot { it.startsWith("(更早的") }.toList()
+        val omitted = block.lineSequence().map { it.trim() }.firstOrNull { it.startsWith("(更早的") }
 
         assertTrue("清单总长应控制在预算量级，实际=${block.length}", block.length <= 2_100)
         assertTrue("应丢弃最旧的路径，实际保留=${kept.size}", kept.size < paths.size)
         assertEquals("保留的应是最近的", paths.takeLast(kept.size), kept)
+        assertTrue("应附省略提示且条数正确，实际=$omitted", omitted?.contains("更早的 ${paths.size - kept.size} 条") == true)
     }
 
     @Test
