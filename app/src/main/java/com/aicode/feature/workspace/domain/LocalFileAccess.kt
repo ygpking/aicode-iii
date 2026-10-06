@@ -216,7 +216,9 @@ class LocalFileAccess @Inject constructor(
      * 删除目标那步更早，会把源本身删掉。故必须在动手前拒绝。
      */
     private fun rejectSelfDescendant(source: File, target: File, newPath: String) {
-        if (!source.isDirectory) return
+        // 不按 source.isDirectory 提前放行：同参 copy/move（target==source）在下方
+        // overwrite 分支会先 deleteRecursively 把源删掉，随后复制必败 → 文件丢失。
+        // Path.startsWith 对相等路径也返回 true，同参与子路径一并拦。
         val src = source.canonicalFile.toPath()
         val dst = target.canonicalFile.toPath()
         if (dst.startsWith(src)) {

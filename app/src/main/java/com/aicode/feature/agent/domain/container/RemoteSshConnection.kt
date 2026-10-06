@@ -143,8 +143,13 @@ class RemoteSshConnection @Inject constructor(
     }
 
     /** 建立一条 SSH transport 并完成认证与保活（exec 与 SFTP 各建一条）。 */
-    private fun newSshClient(config: RemoteConnectionConfig): SSHClient = SSHClient().apply {
+    private fun newSshClient(config: RemoteConnectionConfig, socketTimeoutMs: Int = 0): SSHClient = SSHClient().apply {
         addHostKeyVerifier(hostKeyVerifier)
+        // 连接阶段无超时会在网络黑洞下永久挂死；15s 覆盖跨区公网握手。
+        connectTimeout = 15_000
+        // soTimeout 只对 SFTP 通道设：传输中 30s 无任何字节视为链路死，释放全局 sftpMutex；
+        // exec/终端通道不设——交互场景合法空闲可远超 30s，soTimeout 会误杀会话。
+        if (socketTimeoutMs > 0) timeout = socketTimeoutMs
         connect(config.host, config.port)
         when (val auth = config.auth) {
             is RemoteAuth.Password -> authPassword(config.username, auth.password)
@@ -206,7 +211,7 @@ class RemoteSshConnection @Inject constructor(
             ?.let { return@withLock it }
         closeSftpInternal()
         val client = try {
-            withContext(Dispatchers.IO) { newSshClient(cfg) }
+            withContext(Dispatchers.IO) { newSshClient(cfg, socketTimeoutMs = 30_000) }
         } catch (e: Exception) {
             FileLogger.w(TAG, "SFTP 通道建立失败: ${cfg.host}:${cfg.port} as ${cfg.username}", e)
             throw e
