@@ -226,9 +226,13 @@ class MessagePersistenceUseCase @Inject constructor(
             .filter { !it.isCompacted }
 
         // 刚从压缩块恢复（块归属非空且未折叠）：供压缩器把恢复段优先进 tail 保护区。
-        // 本地属性而非实体字段：isCompacted=0 且 compactionBlockId!=null 本身就是「已恢复」的完整判据。
+        // marker/summary 落库时也带 compactionBlockId 且未折叠，不排除的话恢复锚点会提前到旧
+        // marker，tail 保护区提前收窄。
         val restoredIds = entities.asSequence()
-            .filter { !it.isCompacted && !it.compactionBlockId.isNullOrBlank() }
+            .filter {
+                !it.isCompacted && !it.compactionBlockId.isNullOrBlank() &&
+                    !it.isContextSummary && !it.isCompactionMarker
+            }
             .mapTo(HashSet()) { it.id }
         fun AgentMessageEntity.isRestored(): Boolean = id in restoredIds
 

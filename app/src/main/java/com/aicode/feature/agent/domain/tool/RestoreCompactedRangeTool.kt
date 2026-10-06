@@ -92,13 +92,14 @@ class RestoreCompactedRangeTool @Inject constructor(
             )
         }
 
-        val target = blocks.firstOrNull { it.blockId == blockId }
-            ?: return ToolResult.Error(
+        if (blocks.none { it.blockId == blockId }) {
+            return ToolResult.Error(
                 "恢复失败：当前会话不存在压缩块 $blockId。" +
                     (if (blocks.isEmpty()) "本会话还没有可恢复的压缩块。"
                      else "可用的块：${blocks.joinToString { it.blockId.take(8) }}…，请先不带参数列出。"),
                 "BLOCK_NOT_FOUND"
             )
+        }
 
         val restored = sessionHistoryRepository.restoreBlock(sessionId, blockId)
         if (restored == null) {
@@ -106,14 +107,19 @@ class RestoreCompactedRangeTool @Inject constructor(
         }
         FileLogger.i(TAG, "恢复压缩块 会话=$sessionId 块=$blockId 回灌 $restored 条原文")
         EventTrace.snapshot(sessionId, "COMPACTION", "恢复压缩块 ${blockId.take(8)}：回灌 $restored 条原文")
+        // note 必须按 restored（恢复前该块仍持有的折叠行数）报告：后续压缩可能接管了旧块部分
+        // 原文（assignCompactionBlock 覆盖式归属），此时 compactedCount 快照数与实际回灌不符。
+        val note = if (restored == 0) {
+            "实际回灌 0 条：该块原文可能已被后续压缩接管、或此前已恢复过。" +
+                "可先不带参数重新列块确认。"
+        } else {
+            "已恢复：原文回到上下文回放，本块的旧摘要已退场。实际回灌 $restored 条原文，下轮请求生效。"
+        }
         return ToolResult.Success(
             JsonObject(
                 mapOf(
                     "restored_messages" to JsonPrimitive(restored),
-                    "note" to JsonPrimitive(
-                        "已恢复：原文回到上下文回放，本块的旧摘要已退场。" +
-                            "回灌约 ${target.compactedCount} 条消息的完整内容，下轮请求生效。"
-                    )
+                    "note" to JsonPrimitive(note)
                 )
             )
         )

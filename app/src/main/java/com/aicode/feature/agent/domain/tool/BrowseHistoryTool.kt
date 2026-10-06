@@ -17,7 +17,10 @@ import kotlinx.serialization.json.longOrNull
 import javax.inject.Inject
 
 /**
- * 翻阅本会话的完整历史，**包含已被上下文压缩折叠的消息**。
+ * 检索本会话的历史（含已被上下文压缩折叠的消息），返回**截断预览**而非原文。
+ *
+ * 定位用：判断某事是否发生过、大概在哪、涉及哪些文件。要引用原文（报错原文、代码片段、
+ * 精确数值、措辞）时它给不出，须用 [RestoreCompactedRangeTool]。
  *
  * 存在的理由：压缩把早期消息标记 `isCompacted=true` 后不再回放，但原文仍在库里。
  * 此前没有入口能读回它们——跨会话搜索 [com.aicode.feature.agent.data.local.dao.AgentMessageDao.searchInWorkspace]
@@ -171,7 +174,7 @@ class BrowseHistoryTool @Inject constructor(
 
         val notes = mutableListOf<String>()
         if (hasMore) notes += "还有更早的匹配消息；用 next_before_timestamp 作为 before_timestamp 继续翻。"
-        if (charBudgetHit) notes += "本页因总字符上限（${SessionHistoryPager.MAX_TOTAL_CHARS}）提前结束，减小 limit 可拿到更完整的单条内容。"
+        if (charBudgetHit) notes += "本页因总字符上限（${SessionHistoryPager.MAX_TOTAL_CHARS}）提前结束；单条正文也被截断，要引用原文请改用 restoreCompactedRange。"
         if (total > messages.size && !hasMore) notes += "部分消息因条数上限未展示。"
         if (messages.any { it.compacted }) notes += "标记 compacted=true 的消息已被上下文压缩折叠，当前上下文里看不到它们。"
         if (notes.isNotEmpty()) map["note"] = JsonPrimitive(notes.joinToString(" "))

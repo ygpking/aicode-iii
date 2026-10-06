@@ -2202,7 +2202,14 @@ class AIAgentViewModel @Inject constructor(
             // 先置终态再重发：新的一轮会由 begin 另建条目，旧条目若仍悬在 RECOVERABLE，
             // 下次冷启动会把同一件事再提示一遍。getById 已在上面校验过条目存在。
             durableTaskRepository.dismiss(verdict.taskId)
-            enqueueAgentRequest(request = request, targetSessionId = verdict.sessionId)
+            // 恢复的会话可能不属于当前工作区（孤儿会话跨工作区残留），projectRoot 必须取会话自己的：
+            // 传空串会丢系统提示词里的工作区段与项目记忆，文件相对路径失根（同 spawn 子会话的取法）。
+            val wsPath = sessionUseCase.getSessionById(verdict.sessionId)?.workspacePath.orEmpty()
+            enqueueAgentRequest(
+                request = request,
+                projectRoot = wsPath,
+                targetSessionId = verdict.sessionId
+            )
         }
     }
 

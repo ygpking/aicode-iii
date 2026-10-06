@@ -625,16 +625,27 @@ internal object CompactionFileTracker {
     private fun StringBuilder.appendBlocks(ops: FileOps) {
         // 只写最近的若干条：截断发生在这里（唯一写入点），下一轮 extract 读回的就是已收窄的清单，
         // 故存量超长清单在第一次压缩后即收敛，无需单独清理历史摘要。
-        appendBlock(TAG_READ, ops.read.takeRecentWithin(BLOCK_CHAR_BUDGET))
-        appendBlock(TAG_MODIFIED, ops.modified.takeRecentWithin(BLOCK_CHAR_BUDGET))
+        appendBlock(TAG_READ, ops.read)
+        appendBlock(TAG_MODIFIED, ops.modified)
     }
 
     private fun StringBuilder.appendBlock(tag: String, paths: List<String>) {
         if (paths.isEmpty()) return
+        val kept = paths.takeRecentWithin(BLOCK_CHAR_BUDGET)
         append("\n\n<").append(tag).append(">\n")
-        paths.forEach { append(it).append('\n') }
+        // 写入侧必须与读取侧 isPathLike 同构：裸文件名（Dockerfile）与「文件名:行号」（Foo.kt:42）
+        // 不带 / 也不以扩展名结尾，下一轮剥回会被拒收、逐轮自清。加 ./ 前缀使其可读回。
+        kept.forEach { append(it.roundtripPath()).append('\n') }
+        if (kept.size < paths.size) {
+            // 省略提示行含中文标点，读取侧 isPathLike 会拒掉它，不会污染下一轮清单解析；
+            // 不加的话接手方无法分辨「清单完整」与「更早路径已被逐轮挤出」。
+            append("(更早的 ${paths.size - kept.size} 条因清单预算被省略)\n")
+        }
         append("</").append(tag).append('>')
     }
+
+    private fun String.roundtripPath(): String =
+        if (isEmpty() || '/' in this || EXTENSION_TAIL.containsMatchIn(this)) this else "./$this"
 
     /**
      * 从尾部（最近）往前保留路径至累计字符数不超 [budget]，返回值仍按原顺序（旧→新）。

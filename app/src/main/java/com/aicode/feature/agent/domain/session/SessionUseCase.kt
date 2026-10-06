@@ -4,8 +4,10 @@ import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
 import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.entity.ChatSessionEntity
+import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.model.ReasoningEffort
+import com.aicode.feature.agent.domain.workflow.DurableTaskRepository
 import com.aicode.feature.agent.presentation.MessageRole
 import java.util.UUID
 import javax.inject.Inject
@@ -15,7 +17,9 @@ import com.aicode.core.util.runCatchingCancellable
 @Singleton
 class SessionUseCase @Inject constructor(
     private val chatSessionDao: ChatSessionDao,
-    private val agentMessageDao: AgentMessageDao
+    private val agentMessageDao: AgentMessageDao,
+    private val durableTaskRepository: DurableTaskRepository,
+    private val checkpointManager: CheckpointManager
 ) {
     companion object {
         private const val TAG = "SessionUseCase"
@@ -81,6 +85,14 @@ class SessionUseCase @Inject constructor(
         }
         agentMessageDao.deleteBySession(id)
         chatSessionDao.delete(id)
+        // 清理是删除的唯一出口：账本/检查点漏清会让冷启动扫出孤儿恢复提示、快照文件泄漏。
+        // UI 层另有幂等清理，重复调用无害。清理自身失败不阻断删除主流程。
+        deleted.forEach { sid ->
+            runCatchingCancellable { durableTaskRepository.clearSession(sid) }
+                .onFailure { FileLogger.e(TAG, "清理会话 $sid 的 durable 账本失败", it) }
+            runCatchingCancellable { checkpointManager.clearSessionCheckpoints(sid) }
+                .onFailure { FileLogger.e(TAG, "清理会话 $sid 的检查点失败", it) }
+        }
         return deleted
     }
 
@@ -88,8 +100,9 @@ class SessionUseCase @Inject constructor(
     suspend fun deleteSessionsByWorkspace(workspacePath: String): Int {
         val sessions = chatSessionDao.getAllSessionsByWorkspaceOnce(workspacePath)
         if (sessions.isEmpty()) return 0
-        sessions.forEach { session -> agentMessageDao.deleteBySession(session.id) }
-        chatSessionDao.deleteByWorkspace(workspacePath)
+        // 逐个走 deleteSession：账本/检查点清理与级联删子会话都在那一个出口里，
+        // 避免新增删除入口时再漏清理（1700c86 补 UI 层时漏掉的就是这类旁路）。
+        sessions.forEach { session -> deleteSession(session.id) }
         return sessions.size
     }
 
