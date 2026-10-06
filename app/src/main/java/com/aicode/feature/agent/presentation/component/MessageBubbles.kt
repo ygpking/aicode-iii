@@ -351,6 +351,10 @@ internal fun AgentMessageItem(
                                     }
                                 }
                             }
+                        } else if (message.isToolPreface && !chunked) {
+                            // 过渡说明（随工具调用发出的那句）：折叠为一行，点开看全文。
+                            // 只改观感，不碰喂给模型的历史（见 AgentUIMessage.isToolPreface）。
+                            ToolPrefaceRow(text = message.content)
                         } else {
                             // 助手正文：不套容器，直接铺在页面底色上（文档流）。分块之间只留一个段落间距，
                             // 整条消息看起来仍是连续的一段正文。
@@ -671,6 +675,59 @@ private fun CompactionFailureCard(message: AgentUIMessage) {
                         text = reason,
                         color = MaterialTheme.colorScheme.onSurface,
                         style = MaterialTheme.typography.bodySmall.copy(fontFamily = CodeFontFamily)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 随工具调用发出的「过渡说明」：收起来只占一行，点开看全文。
+ *
+ * 模型每调一次工具就写一句（实测占总输出九成以上），直接铺开会把真正的结论冲出屏幕。
+ * 只影响观感：历史回放仍按原文本发给模型，不会因此丢失中间推理。
+ */
+@Composable
+private fun ToolPrefaceRow(text: String) {
+    var expanded by remember { mutableStateOf(false) }
+    val preview = text.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 28.dp)
+                .clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = preview,
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
+            Icon(
+                if (expanded) FeatherIcons.ChevronUp else FeatherIcons.ChevronDown,
+                contentDescription = if (expanded) stringResource(R.string.common_collapse_action) else stringResource(R.string.common_expand),
+                tint = Brand.IconGray,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(Spacing.xs))
+            SelectionContainer {
+                CompositionLocalProvider(
+                    LocalTextSelectionColors provides TextSelectionColors(
+                        handleColor = MaterialTheme.colorScheme.primary,
+                        backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+                    )
+                ) {
+                    Text(
+                        text = text,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp)
                     )
                 }
             }

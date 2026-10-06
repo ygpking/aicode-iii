@@ -50,7 +50,7 @@ class DiagnosticsReaderTest {
     @Test
     fun readWindow_emptyFileReturnsEmptyPage() {
         val f = tempFile("trace-x.log", "")
-        val page = DiagnosticsReader.readWindow(f, offsetFromEnd = 0, lines = 10)!!
+        val page = DiagnosticsReader.readWindow(listOf(f), offsetFromEnd = 0, lines = 10)!!
         assertEquals("", page.content)
         assertEquals(0, page.totalLines)
         assertTrue(!page.hasMore)
@@ -59,7 +59,7 @@ class DiagnosticsReaderTest {
     @Test
     fun readWindow_takesTailWithMoreFlag() {
         val f = tempFile("trace-x.log", numbered(10))
-        val page = DiagnosticsReader.readWindow(f, offsetFromEnd = 0, lines = 3)!!
+        val page = DiagnosticsReader.readWindow(listOf(f), offsetFromEnd = 0, lines = 3)!!
 
         assertEquals("line-8\nline-9\nline-10", page.content)
         assertEquals(10, page.totalLines)
@@ -71,7 +71,7 @@ class DiagnosticsReaderTest {
     @Test
     fun readWindow_offsetFromEndPagesBackwards() {
         val f = tempFile("trace-x.log", numbered(10))
-        val page = DiagnosticsReader.readWindow(f, offsetFromEnd = 2, lines = 3)!!
+        val page = DiagnosticsReader.readWindow(listOf(f), offsetFromEnd = 2, lines = 3)!!
 
         assertEquals("line-6\nline-7\nline-8", page.content)
         assertEquals(6, page.startLine)
@@ -82,7 +82,7 @@ class DiagnosticsReaderTest {
     @Test
     fun readWindow_linesLargerThanFileReturnsAll() {
         val f = tempFile("trace-x.log", numbered(3))
-        val page = DiagnosticsReader.readWindow(f, offsetFromEnd = 0, lines = 100)!!
+        val page = DiagnosticsReader.readWindow(listOf(f), offsetFromEnd = 0, lines = 100)!!
 
         assertEquals("line-1\nline-2\nline-3", page.content)
         assertEquals(1, page.startLine)
@@ -92,39 +92,102 @@ class DiagnosticsReaderTest {
 
     @Test
     fun readWindow_missingFileReturnsNull() {
-        assertNull(DiagnosticsReader.readWindow(File("/tmp/does-not-exist-diag.log"), 0, 5))
+        assertNull(DiagnosticsReader.readWindow(listOf(File("/tmp/does-not-exist-diag.log")), 0, 5))
+        assertNull(DiagnosticsReader.readWindow(emptyList(), 0, 5))
     }
 
     @Test
     fun readWindow_truncatesOverlongLine() {
         val long = "x".repeat(DiagnosticsReader.MAX_LINE_CHARS + 500)
         val f = tempFile("log-x.txt", long)
-        val page = DiagnosticsReader.readWindow(f, 0, 5)!!
+        val page = DiagnosticsReader.readWindow(listOf(f), 0, 5)!!
         assertEquals(DiagnosticsReader.MAX_LINE_CHARS, page.content.length)
+    }
+
+    @Test
+    fun readWindow_mergesRotatedAndCurrentAsOneStream() {
+        val dir = Files.createTempDirectory("diag-rot").toFile()
+        val rotated = File(dir, "session-aaa.log.1").apply { writeText("old-1\nold-2") }
+        val current = File(dir, "session-aaa.log").apply { writeText("new-1\nnew-2") }
+
+        // 归档在前、当前在后，行号在整个流内连续；尾巴取到的是当前文件的内容。
+        val tail = DiagnosticsReader.readWindow(listOf(rotated, current), 0, 2)!!
+        assertEquals("new-1\nnew-2", tail.content)
+        assertEquals(4, tail.totalLines)
+        assertEquals(3, tail.startLine)
+
+        // 把 offset 推到跨越文件边界，能读到归档里的内容（这正是原来丢失的那段）。
+        val across = DiagnosticsReader.readWindow(listOf(rotated, current), 1, 2)!!
+        assertEquals("old-2\nnew-1", across.content)
+        assertEquals(2, across.startLine)
+        assertEquals(3, across.endLine)
     }
 
     // ── search ───────────────────────────────────────────────────────
 
     @Test
-    fun search_isCaseInsensitiveWithContext() {
-        val f = tempFile("trace-x.log", "alpha\nBeta\nGAMMA\nbeta again")
-        val hits = DiagnosticsReader.search(f, "beta")!!
-        // 两处命中，各带上下各一行；命中行以 ">" 标注。
-        assertTrue(hits.any { it.startsWith("> 2: Beta") })
-        assertTrue(hits.any { it.startsWith("> 4: beta again") })
-        assertTrue(hits.any { it.startsWith("  1: alpha") })
+    fun search_dedupesByContentAndReportsAllLineNumbers() {
+        // 同一内容在流里出现两次（行 2 与行 4），只应给一条并列出两个行号。
+        val f = tempFile("trace-x.log", "alpha\nBeta\nGAMMA\nBeta")
+        val hits = DiagnosticsReader.search(listOf(f), "beta")!!
+
+        assertEquals(1, hits.size)
+        assertEquals("Beta", hits[0].text)
+        assertEquals(listOf(2, 4), hits[0].lineNumbers)
+        assertEquals(2, hits[0].totalCount)
+        assertEquals("[x2] 行号 2,4: Beta", hits[0].render())
+    }
+
+    @Test
+    fun search_stripsLeadingTimestampBeforeComparing() {
+        // logs/ 与 traces/ 每行带时间戳；同一逻辑内容不该因时刻不同被当成两条。
+        val f = tempFile("log-x.txt", "2026-10-06 09:00:01.1 DEBUG [T] same\n2026-10-06 09:05:02.9 DEBUG [T] same")
+        val hits = DiagnosticsReader.search(listOf(f), "same")!!
+        assertEquals(1, hits.size)
+        assertEquals(2, hits[0].totalCount)
+    }
+
+    @Test
+    fun search_capsRecordedLineNumbersButKeepsTotal() {
+        val cap = DiagnosticsReader.MAX_HIT_LINE_NUMBERS
+        val f = tempFile("trace-cap.log", (1..cap + 5).joinToString("\n") { "dup target" })
+        val hits = DiagnosticsReader.search(listOf(f), "target")!!
+
+        assertEquals(1, hits.size)
+        assertEquals(cap + 5, hits[0].totalCount)
+        assertEquals(cap, hits[0].lineNumbers.size)
+        assertTrue(hits[0].render().contains("共${cap + 5}处"))
     }
 
     @Test
     fun search_noMatchReturnsEmptyList() {
         val f = tempFile("trace-x.log", numbered(5))
-        assertTrue(DiagnosticsReader.search(f, "zzz-not-there")!!.isEmpty())
+        assertTrue(DiagnosticsReader.search(listOf(f), "zzz-not-there")!!.isEmpty())
+    }
+
+    @Test
+    fun search_spansRotatedAndCurrentWithContinuousLineNumbers() {
+        val dir = Files.createTempDirectory("diag-rot-search").toFile()
+        val rotated = File(dir, "session-aaa.log.1").apply { writeText("old target\nold-2") }
+        val current = File(dir, "session-aaa.log").apply { writeText("new-1\nnew target") }
+
+        val hits = DiagnosticsReader.search(listOf(rotated, current), "target")!!
+        // 归档里的命中是第 1 行，当前文件里的命中接着数第 4 行——行号跨文件连续。
+        assertEquals(2, hits.size)
+        assertEquals(listOf(1), hits[0].lineNumbers)
+        assertEquals(listOf(4), hits[1].lineNumbers)
+    }
+
+    @Test
+    fun search_reportsMissingFileAsNull() {
+        assertNull(DiagnosticsReader.search(listOf(File("/tmp/does-not-exist-diag.log")), "x"))
+        assertNull(DiagnosticsReader.search(emptyList(), "x"))
     }
 
     // ── sessionLogFiles（会话隔离） ────────────────────────────────
 
     @Test
-    fun sessionLogFiles_onlyCurrentSession_withRotatedAfterCurrent() {
+    fun sessionLogFiles_onlyCurrentSession_rotatedFirstForStreamOrder() {
         val dir = Files.createTempDirectory("diag-sess").toFile()
         File(dir, "session-aaa.log").writeText("mine")
         File(dir, "session-aaa.log.1").writeText("mine-rotated")
@@ -132,8 +195,9 @@ class DiagnosticsReaderTest {
         File(dir, "session-ccc.log").writeText("other2")
 
         val names = DiagnosticsReader.sessionLogFiles(dir, "aaa").map { it.name }
-        // 只含本会话；当前文件在前，轮转归档在后（取 first 才是正在写的）。
-        assertEquals(listOf("session-aaa.log", "session-aaa.log.1"), names)
+        // 只含本会话。顺序即读取顺序：轮转归档是先前写下的，故在前；当前文件在最后
+        // （`pickFile` 取 `files.last()` 即正在写的那份）。
+        assertEquals(listOf("session-aaa.log.1", "session-aaa.log"), names)
     }
 
     @Test

@@ -115,6 +115,10 @@ data class AgentUIMessage(
     val toolName: String? = null,
     // 仅 TOOL 消息：本次调用传入的参数（JSON 文本），渲染「执行的指令」用。
     val toolArgs: String? = null,
+    // 仅 ASSISTANT 消息：本条正文是随工具调用一起发出的「过渡说明」（非最终答复）。
+    // 模型每调一次工具就写一句，实测占总输出九成以上；界面折叠为一行，避免淹没真结论。
+    // 只影响观感：喂给模型的历史内容不变（见 MessagePersistenceUseCase 的回放路径）。
+    val isToolPreface: Boolean = false,
     val isError: Boolean = false,
     // 仅 ASSISTANT 消息：本轮模型的思考过程，渲染为可折叠「思考过程」气泡；无则为 null。
     val reasoning: String? = null,

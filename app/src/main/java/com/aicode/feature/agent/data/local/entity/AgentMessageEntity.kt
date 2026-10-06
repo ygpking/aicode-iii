@@ -61,6 +61,8 @@ data class AgentMessageEntity(
             timestamp = timestamp,
             toolName = toolName,
             toolArgs = toolArgs,
+            // 随工具调用发出的过渡说明：本条声明了 tool_calls 即算（与回放路径同一判据）。
+            isToolPreface = roleEnum == MessageRole.ASSISTANT && toolCallsJson != null,
             isError = isError,
             reasoning = reasoning,
             attachments = decodeAttachments(attachmentsJson),

@@ -24,8 +24,17 @@ internal object DiagnosticsReader {
     /** 单次返回的总字符上限，防止一页把上下文撑爆。 */
     const val MAX_PAGE_CHARS = 48_000
 
-    /** search 命中的最大条数。 */
+    /** search 返回的**不同内容**条数上限（不是命中行数：重复内容合并成一条）。 */
     const val MAX_SEARCH_HITS = 200
+
+    /** 单条命中最多记录多少个行号，超出只计入总数，防止全文命中同一内容时输出爆炸。 */
+    const val MAX_HIT_LINE_NUMBERS = 20
+
+    /** 行首时间戳：`logs/` 与 `traces/` 每行都带，去重时须剥掉才认得出同一逻辑内容。 */
+    private val LEADING_TIMESTAMP = Regex("""^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}[.,]?\d{0,3}\s*""")
+
+    /** 环形缓冲保留的最大行数：兼顾「往回翻很久」与内存上限。 */
+    const val MAX_RING_LINES = 100_000
 
     data class Page(
         val content: String,
@@ -34,7 +43,29 @@ internal object DiagnosticsReader {
         val endLine: Int,
         val hasMore: Boolean,
         val truncatedByChars: Boolean,
+        /** 本页拍平后的不同文本行数（去重后）；与页行数相比即重复率。 */
+        val distinctLines: Int,
     )
+
+    /**
+     * 一条去重后的搜索命中。[lineNumbers] 是该内容出现的行号（最多 [MAX_HIT_LINE_NUMBERS] 个），
+     * [totalCount] 是实际出现次数；[text] 取首次出现时的原文。
+     */
+    data class SearchHit(
+        val text: String,
+        val lineNumbers: List<Int>,
+        val totalCount: Int,
+    ) {
+        /** 渲染成一行：`[x3] 行号 5,17,42: 内容`；行号被截断时以 `…共N处` 标注。 */
+        fun render(): String {
+            val nums = if (totalCount > lineNumbers.size) {
+                "${lineNumbers.joinToString(",")}…共${totalCount}处"
+            } else {
+                lineNumbers.joinToString(",")
+            }
+            return "[x$totalCount] 行号 $nums: $text"
+        }
+    }
 
     /** 三种日志的子目录名；未知 kind 返回 null。 */
     fun resolveRoot(base: File, kind: String): File? = when (kind) {
@@ -51,39 +82,47 @@ internal object DiagnosticsReader {
         }?.sortedBy { it.name } ?: emptyList()
 
     /**
-     * 只属于 [sessionId] 这个会话的模型交互日志，**当前文件在前、轮转归档在后**。
+     * 列出某会话的模型交互日志，**按时间顺序**（轮转归档在前、正在写的在后）。
      *
      * 会话 id 的净化规则必须与 [com.aicode.core.util.AILogger] 落盘时一致（非 `[A-Za-z0-9_-]`
-     * 一律换成 `_`），否则会漏匹配。返回顺序即优先级：调用方取 `firstOrNull()` 才是正在写的
-     * 那份日志——按名字升序时归档 `session-x.log.1` 排在当前 `session-x.log` 之后，直接取末尾会读到归档。
+     * 一律换成 `_`），否则会漏匹配。返回顺序即读取顺序：归档是先前写下的，故排在前面；
+     * 取「正在写的那个」用 `lastOrNull()`。
      */
     fun sessionLogFiles(root: File, sessionId: String): List<File> {
         val safeId = sessionId.replace(Regex("[^A-Za-z0-9_-]"), "_")
         val all = listFiles(root)
-        val current = all.firstOrNull { it.name == "session-$safeId.log" }
         val rotated = all.firstOrNull { it.name == "session-$safeId.log.1" }
-        return listOfNotNull(current, rotated)
+        val current = all.firstOrNull { it.name == "session-$safeId.log" }
+        return listOfNotNull(rotated, current)
     }
 
     /**
-     * 读取一页：以文件末尾 [offsetFromEnd] 行为基准，向前取 [lines] 行。
-     * 流式扫描、只保留窗口大小的环形缓冲，20MB 的 ai-logs 也不会整份进内存。
+     * 读取一页：把 [files] 依序当作**同一条日志流**，以流末尾 [offsetFromEnd] 行为基准向前取
+     * [lines] 行；行号在整个流内连续。
+     *
+     * 流式扫描、只保留窗口大小的环形缓冲，故「当前 + 轮转归档」合计 40MB 的会话也不会整份进内存。
+     * 任一文件不可读即返回 null：诊断工具宁可让调用方报错，也不给半截数据。
      */
-    fun readWindow(file: File, offsetFromEnd: Int, lines: Int): Page? {
-        if (!file.isFile || !file.canRead()) return null
-        val keep = (lines.coerceAtLeast(1) + offsetFromEnd.coerceAtLeast(0)).coerceAtMost(100_000)
+    fun readWindow(files: List<File>, offsetFromEnd: Int, lines: Int): Page? {
+        if (files.isEmpty() || files.any { !it.isFile || !it.canRead() }) return null
+        val keep = (lines.coerceAtLeast(1) + offsetFromEnd.coerceAtLeast(0)).coerceAtMost(MAX_RING_LINES)
         val ring = ArrayDeque<String>()
         var total = 0
-        runCatching {
-            file.forEachLine { raw ->
-                total++
-                ring.addLast(raw.take(MAX_LINE_CHARS))
-                while (ring.size > keep) ring.removeFirst()
-            }
-        }.onFailure { return null }
+        for (file in files) {
+            runCatching {
+                file.forEachLine { raw ->
+                    total++
+                    ring.addLast(raw.take(MAX_LINE_CHARS))
+                    while (ring.size > keep) ring.removeFirst()
+                }
+            }.onFailure { return null }
+        }
 
         if (total == 0) {
-            return Page(content = "", totalLines = 0, startLine = 0, endLine = 0, hasMore = false, truncatedByChars = false)
+            return Page(
+                content = "", totalLines = 0, startLine = 0, endLine = 0,
+                hasMore = false, truncatedByChars = false, distinctLines = 0,
+            )
         }
 
         val pageEnd = (total - offsetFromEnd.coerceAtLeast(0)).coerceAtLeast(0)
@@ -104,39 +143,76 @@ internal object DiagnosticsReader {
             endLine = pageEnd,
             hasMore = pageStart > 1,
             truncatedByChars = truncatedByChars,
+            distinctLines = slice.distinct().size,
         )
     }
 
     /**
-     * 子串搜索（大小写不敏感），返回 (行号, 行内容, 是否命中行) 附上下各一行上下文。
-     * 命中数超过 [MAX_SEARCH_HITS] 即停止；行内容先按 [MAX_LINE_CHARS] 截断。
+     * 子串搜索（大小写不敏感）：[files] 依序视为同一条流，行号连续。
+     *
+     * 结果**按内容去重**。`ai-logs` 记的是每次模型调用的完整请求体，同一段文本会因历史重发
+     * 出现在几十行里；逐行返回只会把上下文塞满重复内容，也看不出「这段到底重复了多少次」。
+     * 去重后每个不同内容给一条，附其全部行号，调用方再用 `read` 按行号精确定位。
+     *
+     * 去重键是**剥掉行首时间戳后的整行**，所以 `logs/` / `traces/` 里同一逻辑事件在不同时刻的
+     * 重复也归为一条。不同内容条数上限 [MAX_SEARCH_HITS]；单条最多记 [MAX_HIT_LINE_NUMBERS]
+     * 个行号，超出部分只计入 [SearchHit.totalCount]。
+     *
+     * 流式逐行匹配，不把日志整份读进内存——会话文件是 20MB 级，两份拼接后再全量驻留会逼近
+     * 移动端堆上限。任一文件不可读返回 null。
      */
-    fun search(file: File, query: String, contextLines: Int = 1): List<String>? {
-        if (!file.isFile || !file.canRead()) return null
+    fun search(files: List<File>, query: String): List<SearchHit>? {
+        if (files.isEmpty() || files.any { !it.isFile || !it.canRead() }) return null
         val needle = query.lowercase()
-        val all = ArrayList<String>(4096)
-        runCatching {
-            file.forEachLine { raw -> all.add(raw.take(MAX_LINE_CHARS)) }
-        }.onFailure { return null }
-
-        val hits = ArrayList<String>()
-        var i = 0
-        var matched = 0
-        while (i < all.size && matched < MAX_SEARCH_HITS) {
-            if (all[i].lowercase().contains(needle)) {
-                matched++
-                val from = (i - contextLines).coerceAtLeast(0)
-                val to = (i + contextLines).coerceAtMost(all.size - 1)
-                for (j in from..to) {
-                    val mark = if (j == i) ">" else " "
-                    hits.add("$mark ${j + 1}: ${all[j]}")
+        val byContent = LinkedHashMap<String, SearchHitBuilder>()
+        var lineNo = 0
+        var halted = false
+        for (file in files) {
+            runCatching {
+                file.bufferedReader().use { reader ->
+                    var raw = reader.readLine()
+                    while (raw != null && !halted) {
+                        lineNo++
+                        val line = raw.take(MAX_LINE_CHARS)
+                        if (line.lowercase().contains(needle)) {
+                            val key = normalizeForDedup(line)
+                            val existing = byContent[key]
+                            if (existing != null) {
+                                existing.add(lineNo)
+                            } else if (byContent.size < MAX_SEARCH_HITS) {
+                                byContent[key] = SearchHitBuilder(line, lineNo)
+                            } else {
+                                halted = true
+                            }
+                        }
+                        raw = reader.readLine()
+                    }
                 }
-                if (to > i) i = to + 1 else i++
-            } else {
-                i++
-            }
+            }.onFailure { return null }
+            if (halted) break
         }
-        return hits
+        return byContent.values.map { it.build() }
+    }
+
+    /** 去重键：剥掉行首时间戳再 trim。 */
+    private fun normalizeForDedup(line: String): String =
+        LEADING_TIMESTAMP.replace(line, "").trim()
+
+    /** 逐条命中累积行号：行号列表封顶，总数照实累加。 */
+    private class SearchHitBuilder(private val text: String, firstLine: Int) {
+        private val lineNumbers = ArrayList<Int>()
+        private var total = 0
+
+        init {
+            add(firstLine)
+        }
+
+        fun add(lineNo: Int) {
+            total++
+            if (lineNumbers.size < MAX_HIT_LINE_NUMBERS) lineNumbers.add(lineNo)
+        }
+
+        fun build() = SearchHit(text = text, lineNumbers = lineNumbers.toList(), totalCount = total)
     }
 
     /** 按总字符上限截断（保留头部，日志阅读习惯是头部在前）。 */

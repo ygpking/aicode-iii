@@ -49,7 +49,9 @@ import javax.inject.Inject
  *
  * 会话边界：`kind=ai` 只读**当前会话**的模型交互原文，且 `sources`/`list` 也**只列当前会话的文件**
  * （含其轮转归档，不暴露其它会话的文件名）；不提供 `session_id` 参数，缺 sessionId 时直接报错而不
- * 回退到别的会话。与 [BrowseHistoryTool] 同一口径，不让模型翻阅其它会话。
+ * 回退到别的会话。`read`/`search` 会把轮转归档与当前文件**按时间顺序合并为一条流**（行号连续），
+ * 因为 [com.aicode.core.util.AILogger] 轮转的目的正是让「当前 + 上一轮」两段历史都可用于回溯。
+ * 与 [BrowseHistoryTool] 同一口径，不让模型翻阅其它会话。
  */
 class DiagnosticsTool @Inject constructor(
     @param:ApplicationContext private val context: Context
@@ -66,6 +68,31 @@ class DiagnosticsTool @Inject constructor(
          * 二者不是同一回事（工具名不在名单内，但读到的内容确实来自外部）。
          */
         const val SOURCE_DIAGNOSTICS = "diagnostics"
+
+        /** 命中行的总重复次数超过此值才提示去重（少量重复不值得干扰阅读）。 */
+        const val DUPLICATE_HIT_WARN = 5
+
+        /**
+         * 页内重复率告警阈值，**按日志类型分档**：三类日志的正常基线相差数倍，统一阈值只能
+         * 低到「永不触发」或高到「把正常当异常」。分档依据是 2026-10-06 实测：
+         * `trace` 页内重复 1~7%（一条记录一个事件）、`app` 24~41%（同类事件逐条重写）、
+         * `ai` ~44%（每轮重发完整历史）。阈值取在该类基线之上，只在明显异常时提示。
+         */
+        fun duplicateWarnRatio(kind: String): Double = when (kind) {
+            "trace" -> 0.30
+            "ai" -> 0.70
+            else -> 0.60
+        }
+
+        /**
+         * `ai-logs` 的重复根因说明，回填在 `sources`/`list` 里。
+         *
+         * 不讲清楚这一点，模型会把重复当成「真的执行了 N 次」——实测同一会话文件里
+         * 一段 `## 身份` 出现 127 次，而它只是每轮重发历史。
+         */
+        const val NOTE_AI_LOG_DEDUP =
+            "kind=ai 记的是每次模型调用的完整请求体（含全部历史），同一段文本会因历史重发而重复多次；" +
+                "因此行数、出现次数均不能当作发生次数，统计请用 search 的去重结果"
     }
 
     override val name = "diagnostics"
@@ -161,15 +188,19 @@ class DiagnosticsTool @Inject constructor(
         return DiagnosticsReader.sessionLogFiles(root, sid)
     }
 
-    /** 选文件：app/trace 按 date（缺省最新）；ai 只认当前会话（缺省会话语境时报错，不跨会话兜底）。 */
-    private fun fileFor(kind: String, root: File, args: Map<String, JsonElement>, context: AgentContext): File? {
+    /**
+     * 选文件：app/trace 按 date（缺省最新）；ai 返回当前会话的**全部文件**（轮转归档在前、
+     * 正在写的在后）——轮转的目的就是让「当前 + 上一轮」都可用于回溯（见 [com.aicode.core.util.AILogger]），
+     * 只读当前那份会把更早的历史弄丢。
+     */
+    private fun filesFor(kind: String, root: File, args: Map<String, JsonElement>, context: AgentContext): List<File> {
         if (kind == "ai") {
-            val sid = context.sessionId?.takeIf { it.isNotBlank() } ?: return null
-            return DiagnosticsReader.sessionLogFiles(root, sid).firstOrNull()
+            val sid = context.sessionId?.takeIf { it.isNotBlank() } ?: return emptyList()
+            return DiagnosticsReader.sessionLogFiles(root, sid)
         }
         val files = DiagnosticsReader.listFiles(root)
-        if (files.isEmpty()) return null
-        return DiagnosticsReader.pickFile(files, args["date"]?.jsonPrimitive?.contentOrNull?.trim())
+        if (files.isEmpty()) return emptyList()
+        return listOfNotNull(DiagnosticsReader.pickFile(files, args["date"]?.jsonPrimitive?.contentOrNull?.trim()))
     }
 
     private fun sources(base: File, context: AgentContext): ToolResult {
@@ -198,6 +229,7 @@ class DiagnosticsTool @Inject constructor(
         }
         result["currentSession"] = JsonPrimitive(context.sessionId?.let { "session-$it.log" } ?: "-")
         note += "kind=ai 仅列当前会话的文件（含轮转归档）；读取即脱敏（密钥→[REDACTED_*]）；轨迹可按 s=<session前8位> 与 tN 定位本次对话，←#seq 是因果链"
+        note += NOTE_AI_LOG_DEDUP
         result["note"] = JsonPrimitive(note.joinToString("；"))
         FileLogger.v(TAG, "diagnostics sources：session=${context.sessionId}")
         return ToolResult.Success(JsonObject(result))
@@ -221,19 +253,25 @@ class DiagnosticsTool @Inject constructor(
                 mapOf(
                     "kind" to JsonPrimitive(kind),
                     "count" to JsonPrimitive(files.size),
-                    "files" to arr
+                    "files" to arr,
+                    "note" to JsonPrimitive(
+                        if (kind == "ai") NOTE_AI_LOG_DEDUP
+                        else "行数、出现次数均不能当作发生次数；统计请用 search（已按内容去重）"
+                    )
                 )
             )
         )
     }
 
     private fun read(root: File, kind: String, args: Map<String, JsonElement>, context: AgentContext): ToolResult {
-        val file = fileFor(kind, root, args, context)
-            ?: return ToolResult.Error("$kind 暂无日志文件（可能首次启动或日志等级为 NONE）", "NO_LOG_FILE")
+        val files = filesFor(kind, root, args, context)
+        if (files.isEmpty()) {
+            return ToolResult.Error("$kind 暂无日志文件（可能首次启动或日志等级为 NONE）", "NO_LOG_FILE")
+        }
         val lines = (args["lines"]?.jsonPrimitive?.intOrNull ?: DEFAULT_LINES).coerceIn(1, MAX_LINES)
         val offset = (args["offset_from_end"]?.jsonPrimitive?.intOrNull ?: 0).coerceAtLeast(0)
-        val page = DiagnosticsReader.readWindow(file, offset, lines)
-            ?: return ToolResult.Error("读取日志失败（文件不可读）: ${file.name}", "READ_FAILED")
+        val page = DiagnosticsReader.readWindow(files, offset, lines)
+            ?: return ToolResult.Error("读取日志失败（文件不可读）: ${files.first().name}", "READ_FAILED")
 
         val scrubbed = ToolOutputScrubber.scrub(page.content)
         val levelFilter = if (kind == "app") args["level"]?.jsonPrimitive?.contentOrNull?.trim()?.uppercase() else null
@@ -245,7 +283,7 @@ class DiagnosticsTool @Inject constructor(
         val wrapped = UntrustedEnvelope.wrap(SOURCE_DIAGNOSTICS, text)
 
         val resultMap = mutableMapOf<String, JsonElement>(
-            "file" to JsonPrimitive(file.name),
+            "file" to JsonPrimitive(files.last().name),
             "kind" to JsonPrimitive(kind),
             "content" to JsonPrimitive(wrapped),
             "total_lines" to JsonPrimitive(page.totalLines),
@@ -253,36 +291,66 @@ class DiagnosticsTool @Inject constructor(
             "end_line" to JsonPrimitive(page.endLine),
             "has_more" to JsonPrimitive(page.hasMore)
         )
+        if (files.size > 1) {
+            resultMap["files"] = JsonArray(files.map { JsonPrimitive(it.name) })
+            resultMap["note"] = JsonPrimitive(
+                "本会话日志已轮转，共 ${files.size} 个文件，已按时间顺序合并为一条流（行号连续）：${files.joinToString("、") { it.name }}"
+            )
+        }
         val note = when {
             page.truncatedByChars -> "本页因总字符上限被截断，请减小 lines 后重试。"
             page.hasMore -> "还有更早内容；把 offset_from_end 增大 ${page.endLine - page.startLine + 1} 可继续往前翻。"
             else -> null
         }
-        if (note != null) resultMap["note"] = JsonPrimitive(note)
-        FileLogger.v(TAG, "diagnostics read：kind=$kind file=${file.name} lines=[${page.startLine},${page.endLine}]/${page.totalLines}")
+        if (note != null) {
+            val prev = resultMap["note"]?.jsonPrimitive?.contentOrNull
+            resultMap["note"] = JsonPrimitive(if (prev.isNullOrBlank()) note else "$prev；$note")
+        }
+        // 重复率：`ai-logs` 记的是每轮重发的完整请求体；`app`/`trace` 也逐条重写状态，
+        // 故只给数字，并在高于该类基线时才附一句提醒（阈值分档理由见 [duplicateWarnRatio]）。
+        val pageLines = page.endLine - page.startLine + 1
+        if (pageLines > 1) {
+            resultMap["distinct_lines"] = JsonPrimitive(page.distinctLines)
+            if (page.distinctLines < pageLines * duplicateWarnRatio(kind)) {
+                val dupNote = "本页 $pageLines 行里只有 ${page.distinctLines} 行不同内容（重复率约 ${100 - page.distinctLines * 100 / pageLines}%）" +
+                    "：${if (kind == "ai") "kind=ai 记的是每轮重发的完整请求体" else "同类事件会逐条重复出现"}，" +
+                    "行数不等于发生次数，统计请用 search 的去重结果"
+                val prev = resultMap["note"]?.jsonPrimitive?.contentOrNull
+                resultMap["note"] = JsonPrimitive(if (prev.isNullOrBlank()) dupNote else "$prev；$dupNote")
+            }
+        }
+        FileLogger.v(TAG, "diagnostics read：kind=$kind files=${files.size} lines=[${page.startLine},${page.endLine}]/${page.totalLines}")
         return ToolResult.Success(JsonObject(resultMap))
     }
 
     private fun search(root: File, kind: String, args: Map<String, JsonElement>, context: AgentContext): ToolResult {
         val query = args["query"]?.jsonPrimitive?.contentOrNull?.trim()
         if (query.isNullOrEmpty()) return ToolResult.Error("search 需要 query 参数", "MISSING_QUERY")
-        val file = fileFor(kind, root, args, context)
-            ?: return ToolResult.Error("暂无日志文件可搜索", "NO_LOG_FILE")
-        val hits = DiagnosticsReader.search(file, query)
+        val files = filesFor(kind, root, args, context)
+        if (files.isEmpty()) return ToolResult.Error("暂无日志文件可搜索", "NO_LOG_FILE")
+        val hits = DiagnosticsReader.search(files, query)
             ?: return ToolResult.Error("搜索日志失败（文件不可读）", "SEARCH_FAILED")
+        val totalOccurrences = hits.sumOf { it.totalCount }
         val body = UntrustedEnvelope.wrap(
             SOURCE_DIAGNOSTICS,
-            ToolOutputScrubber.scrub(hits.joinToString("\n"))
+            ToolOutputScrubber.scrub(hits.joinToString("\n") { it.render() })
         )
-        return ToolResult.Success(
-            JsonObject(
-                mapOf(
-                    "file" to JsonPrimitive(file.name),
-                    "query" to JsonPrimitive(query),
-                    "hits" to JsonPrimitive(hits.size),
-                    "content" to JsonPrimitive(body)
-                )
-            )
+        val resultMap = mutableMapOf<String, JsonElement>(
+            "file" to JsonPrimitive(files.last().name),
+            "query" to JsonPrimitive(query),
+            // hits 语义已由「命中行数」改为「不同内容条数」，保留 occurrences 让调用方仍能看出重复规模。
+            "hits" to JsonPrimitive(hits.size),
+            "occurrences" to JsonPrimitive(totalOccurrences),
+            "content" to JsonPrimitive(body)
         )
+        val note = buildList {
+            add("结果已按内容去重：$totalOccurrences 行命中合并为 ${hits.size} 条不同内容，行号见每条前缀，可用 read 按行定位")
+            if (totalOccurrences > hits.size && hits.size > 1 && totalOccurrences >= DUPLICATE_HIT_WARN) {
+                add("重复多的那条通常来自「每轮重发历史」的请求体，不代表真实发生次数")
+            }
+        }.joinToString("；")
+        resultMap["note"] = JsonPrimitive(note)
+        FileLogger.v(TAG, "diagnostics search：kind=$kind query=$query 命中行=$totalOccurrences 去重后=${hits.size}")
+        return ToolResult.Success(JsonObject(resultMap))
     }
 }
