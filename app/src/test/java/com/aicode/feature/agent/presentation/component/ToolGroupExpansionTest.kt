@@ -12,10 +12,15 @@ import org.junit.Test
  * 连续工具调用分组的展开判定。
  *
  * 展开与否 = **上层持久化的手动选择**（[AIAgentViewModel.toolExpansionOverrides]，按 [toolGroupKey] 取）：
- * 没有手动记录就一律收起——工具调用统一默认不展开，组内还在跑、本轮仍在进行都不再自动弹开。
+ * 没有手动记录就一律收起，工具调用统一默认不展开。
  *
- * 重点守两条：①手动选择跨重建稳定（持久化的语义就是每次重建都按同一份覆盖走）；
- * ②没有手动记录时任何分组都不自动展开。
+ * **唯一例外**：本轮仍在进行时，最末一个分组自动展开——那批成员行还在逐条追加，收起会看不到
+ * 正在产生的内容。回合收工后恢复默认收起。手动选择始终优先于这条自动规则。
+ *
+ * 重点守四条：①手动选择跨重建稳定（持久化的语义就是每次重建都按同一份覆盖走）；
+ * ②没有手动记录时、且轮次已收工时，任何分组都不自动展开；
+ * ③进行中的展开只作用于最末一批，不回溯影响历史分组，收工后必须回到收起态；
+ * ④手动收起优先于进行中的自动展开。
  */
 class ToolGroupExpansionTest {
 
@@ -33,7 +38,8 @@ class ToolGroupExpansionTest {
     private fun items(
         messages: List<AgentUIMessage>,
         overrides: Map<String, Boolean> = emptyMap(),
-    ) = buildChatItems(messages, overrides)
+        turnRunning: Boolean = false,
+    ) = buildChatItems(messages, overrides, turnRunning)
 
     @Test
     fun finishedTurn_collapsesByDefault() {
@@ -42,6 +48,71 @@ class ToolGroupExpansionTest {
         // 收起时不生成成员行
         assertFalse(items.any { it.key == "t1" })
         assertEquals(1, items.size)
+    }
+
+    @Test
+    fun runningTurn_expandsLastGroup() {
+        // 进行中的分组是「当下正在发生的事」：成员行还在逐条追加，此刻收起会把刚流式吐出的
+        // 过渡说明连同已有内容一起藏掉，界面上就是「字吐出来又被收回去」。
+        val items = items(listOf(tool("t1"), tool("t2")), turnRunning = true)
+        assertTrue("进行中的分组必须展开", items.first().groupExpanded)
+        assertTrue(items.any { it.key == "t1" })
+        assertTrue(items.any { it.key == "t2" })
+    }
+
+    @Test
+    fun runningTurn_expandsOnlyLastGroup() {
+        // 历史分组不受影响：只有最末一批连续成员是「进行中」，前面几批早已收工。
+        val messages = listOf(
+            tool("t1"), tool("t2"),
+            assistant("a1"),
+            tool("t3"), tool("t4"),
+        )
+        val items = items(messages, turnRunning = true)
+        val headers = items.filter { it.key.startsWith("toolgroup:") }
+        assertEquals(2, headers.size)
+        assertFalse("历史分组保持收起", headers[0].groupExpanded)
+        assertTrue("最末分组展开", headers[1].groupExpanded)
+    }
+
+    @Test
+    fun runningTurn_withoutTrailingToolRows_expandsNothing() {
+        // 进行中但末尾不是工具行（工具已跑完、正在追写最终答复）：末尾那批成员早已结束，
+        // 不该因为「本轮还在跑」就把历史分组拉开展示。
+        val messages = listOf(
+            tool("t1"), tool("t2"),
+            assistant("a1"),
+        )
+        val items = items(messages, turnRunning = true)
+        val headers = items.filter { it.key.startsWith("toolgroup:") }
+        assertEquals(1, headers.size)
+        assertFalse("末尾无工具行时不得展开", headers[0].groupExpanded)
+    }
+
+    @Test
+    fun runningTurn_emptyList_doesNotCrash() {
+        // 边界：空列表时倒扫下溢（下标记为 -1）。
+        assertTrue(items(emptyList(), turnRunning = true).isEmpty())
+    }
+
+    @Test
+    fun runningTurn_finishedAfterward_collapsesAgain() {
+        // 同一份消息，回合收工（turnRunning=false）后必须回到默认收起态，不会永久展开。
+        val messages = listOf(tool("t1"), tool("t2"))
+        assertTrue(items(messages, turnRunning = true).first().groupExpanded)
+        assertFalse(items(messages, turnRunning = false).first().groupExpanded)
+    }
+
+    @Test
+    fun runningTurn_manualCollapseIsRespected() {
+        // 手动选择优先于自动展开（与参考实现同序）：用户主动收起一个还在跑的分组是明确意图，
+        // 自动规则不得把它改回展开——文档里「手动选择之后会一直按你的选择显示」这句不能破。
+        val items = items(
+            listOf(tool("t1"), tool("t2")),
+            overrides = mapOf(groupKey to false),
+            turnRunning = true,
+        )
+        assertFalse("手动收起过：进行中也不自动展开", items.first().groupExpanded)
     }
 
     @Test
@@ -54,8 +125,10 @@ class ToolGroupExpansionTest {
 
     @Test
     fun noGroupAutoExpands() {
-        // 回归：曾经「组内还在跑」或「本轮仍在进行且这是最后一个分组」会自动弹开整组。
-        // 现在一律默认收起，历史分组与最新分组一视同仁。
+        // 收工后的轮次一律默认收起，历史分组与最新分组一视同仁。
+        // 注意：这里只覆盖 turnRunning=false。进行中的轮次会展开最末分组（见
+        // runningTurn_expandsLastGroup），那是「过程正在追加、藏起来会丢字」的必要例外，
+        // 不是自动弹开的历史行为回归。
         val messages = listOf(
             tool("t1"), tool("t2"),
             assistant("a1"),

@@ -283,14 +283,38 @@ private fun messageRenderItems(message: AgentUIMessage): List<ChatRenderItem> {
  * 两件事：长文拆块（原逻辑）与**连续工具调用分组**。分组规则对齐参考图：
  * 连续 TOOL 消息折成一条「N 次工具调用」头行，成员行只在展开时生成。
  *
- * 分组**默认收起**——工具调用一律不自动展开（运行中也不弹开），要不要看细节由用户点开；
+ * 分组**默认收起**——工具调用一律不自动展开，要不要看细节由用户点开；
  * [groupOverrides] 是宿主持久化的手动选择（key = [toolGroupKey]），只认它，没有记录即收起。
+ *
+ * **例外：本轮仍在进行（[turnRunning]）时，最末一个分组自动展开。**
+ * 进行中的分组是「当下正在发生的事」，其成员行还在逐条追加。若此刻收起，成员行不再生成，
+ * 刚刚流式吐出的过渡说明会连同已有内容一起从屏幕上消失、折叠成一行摘要，看上去就是
+ * 「字吐出来又被收回去」。回合收工后该分组自然回到默认收起态。
+ *
+ * **手动选择仍然优先**（与参考实现一致）：[groupOverrides] 里有记录时一律按记录走，
+ * 自动展开只在没有记录时生效。这样「手动收起一个还在跑的分组」是你自己的选择，
+ * 不会被自动规则改回展开。
+ *
+ * 判据只取「仍在进行」这一个维度，不掺入流式文本或动画状态：工具执行完到下一轮首个 delta
+ * 之间的空档期，[turnRunning] 仍为 true（与 isAssistantSettled 共用同一判据，见 0cb9204），
+ * 于是整轮只展开一次、不再反复横跳。
+ *
+ * @param turnRunning 本轮是否仍在进行（`agentState is Loading || Streaming`）
  */
 internal fun buildChatItems(
     messages: List<AgentUIMessage>,
     groupOverrides: Map<String, Boolean>,
+    turnRunning: Boolean = false,
 ): List<ChatRenderItem> {
     val items = ArrayList<ChatRenderItem>(messages.size)
+    // 进行中的轮次只会是最后一批连续成员：其后再无打断项（用户消息 / 最终答复）
+    val runningGroupStart = if (turnRunning) {
+        var k = messages.size - 1
+        while (k >= 0 && messages[k].isGroupMember()) k--
+        (k + 1).takeIf { it < messages.size }
+    } else {
+        null
+    }
     var i = 0
     while (i < messages.size) {
         val message = messages[i]
@@ -303,7 +327,7 @@ internal fun buildChatItems(
         while (j < messages.size && messages[j].isGroupMember()) j++
         val members = messages.subList(i, j).toList()
         val key = toolGroupKey(members.first())
-        val expanded = groupOverrides[key] == true
+        val expanded = groupOverrides[key] ?: (i == runningGroupStart)
         items += ChatRenderItem(
             message = members.first(),
             key = key,
@@ -553,10 +577,11 @@ fun AIChatPanel(
     // 连续的工具调用折成一个「N 次工具调用」分组；chatItems 的顺序即 LazyColumn item 顺序。
     // 提到这里（而不是 LazyColumn 分支内）是因为 isFarFromBottom 的「布局是否对应当前消息」判定
     // 需要它：分组会让 item 数 ≠ 消息数 + 1，不能再拿消息数当期望值。
-    val chatItems = remember(messages, toolGroupOverrideSnapshot) {
+    val chatItems = remember(messages, toolGroupOverrideSnapshot, isBusy) {
         buildChatItems(
             messages = messages,
             groupOverrides = toolGroupOverrideSnapshot,
+            turnRunning = isBusy,
         )
     }
     // 每轮任务的总耗时（用户发送 → 本轮 AI 收工）与 token 合计，都只挂在轮末助手气泡下方
