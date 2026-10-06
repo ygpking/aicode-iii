@@ -8,6 +8,7 @@ import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.workflow.DurableTaskRepository
+import dagger.Lazy
 import com.aicode.feature.agent.presentation.MessageRole
 import java.util.UUID
 import javax.inject.Inject
@@ -18,8 +19,12 @@ import com.aicode.core.util.runCatchingCancellable
 class SessionUseCase @Inject constructor(
     private val chatSessionDao: ChatSessionDao,
     private val agentMessageDao: AgentMessageDao,
-    private val durableTaskRepository: DurableTaskRepository,
-    private val checkpointManager: CheckpointManager
+    // Lazy 注入打破 DI 环：这两者经 FileAccessProvider → DelegatingFileAccess →
+    // Local/RemoteSftpFileAccess → provideRemoteSftpFileAccess(workspaceRepository)
+    // → WorkspaceRepository → SessionUseCase 成环（v1.18.5 tag CI 实炸）。
+    // 运行时 deleteSession 调用时各单例早已就绪，.get() 无递归初始化风险。
+    private val durableTaskRepository: Lazy<DurableTaskRepository>,
+    private val checkpointManager: Lazy<CheckpointManager>
 ) {
     companion object {
         private const val TAG = "SessionUseCase"
@@ -88,9 +93,9 @@ class SessionUseCase @Inject constructor(
         // 清理是删除的唯一出口：账本/检查点漏清会让冷启动扫出孤儿恢复提示、快照文件泄漏。
         // UI 层另有幂等清理，重复调用无害。清理自身失败不阻断删除主流程。
         deleted.forEach { sid ->
-            runCatchingCancellable { durableTaskRepository.clearSession(sid) }
+            runCatchingCancellable { durableTaskRepository.get().clearSession(sid) }
                 .onFailure { FileLogger.e(TAG, "清理会话 $sid 的 durable 账本失败", it) }
-            runCatchingCancellable { checkpointManager.clearSessionCheckpoints(sid) }
+            runCatchingCancellable { checkpointManager.get().clearSessionCheckpoints(sid) }
                 .onFailure { FileLogger.e(TAG, "清理会话 $sid 的检查点失败", it) }
         }
         return deleted
