@@ -40,8 +40,8 @@ class RestoreCompactedRangeTool @Inject constructor(
     override val capabilities: Set<ToolCapability> = emptySet()
     override val description =
         "恢复一段已被上下文压缩折叠的历史：原文回到上下文回放，块内摘要退场。" +
-            "当压缩后的摘要丢失了继续任务所需的细节（报错原文、代码片段、精确数值），" +
-            "而翻阅历史只能当资料读、无法直接引用时用本工具。" +
+            "需要**引用原文**时用本工具——压缩摘要只够定位，browseHistory 只给截断片段，" +
+            "要报错原文、代码片段、精确数值或某句话的措辞就得把原文放回上下文。" +
             "不带 block_id 调用时列出全部可恢复的压缩块；确认后带 block_id 恢复。"
 
     override val parameters: Map<String, ToolParameter> = mapOf(

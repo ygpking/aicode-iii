@@ -40,8 +40,10 @@ class BrowseHistoryTool @Inject constructor(
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities: Set<ToolCapability> = emptySet()
     override val description =
-        "翻阅本会话的完整历史，包含已被上下文压缩折叠掉的早期消息（这些内容不会自动回到上下文里）。" +
-            "当需要回忆压缩之前讨论过的细节、某个报错原文、改过哪些文件、之前试过什么方案时用它回捞。" +
+        "检索本会话的历史（含已被上下文压缩折叠、当前上下文里看不到的消息），用于定位：判断某事是否发生过、" +
+            "大致在哪、涉及哪些文件。**正文是截断的**（单条最多 ${SessionHistoryPager.MAX_CHARS_PER_MESSAGE} 字符、" +
+            "单页总字符封顶 ${SessionHistoryPager.MAX_TOTAL_CHARS}），引用报错原文、代码片段或精确措辞时给不出，" +
+            "那种情形改用 restoreCompactedRange 把原文放回上下文。" +
             "默认返回最近 ${SessionHistoryPager.DEFAULT_LIMIT} 条，每页最多 ${SessionHistoryPager.MAX_LIMIT} 条。"
 
     override val parameters: Map<String, ToolParameter> = mapOf(
