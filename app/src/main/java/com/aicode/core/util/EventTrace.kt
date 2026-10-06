@@ -408,17 +408,20 @@ object EventTrace {
 
             // 从最新文件往前回读，凑出「上一个进程 START 之后」的全部行（跨文件拼接）。
             // 找到 START 就停——它前面同文件的内容属于更早的进程，不入本次扫描。
-            val lines = ArrayList<String>()
+            // 每行连它的来源文件一起记：补写必须回落到「该回合记录所在的那个文件」。
+            // 不能写「今天」——被杀的进程在昨天、重开在今天的跨天场景下，今天的文件还没创建，
+            // 补写会另起一份新文件，原回合桶永远合不上，正好否定本函数「让它自己合上」的目的。
+            val lines = ArrayList<Pair<File, String>>()
             var found = false
             for (file in files.asReversed()) {
                 val part = runCatching { file.readLines() }.getOrNull() ?: continue
                 val idx = part.indexOfLast { it.contains("LIFECYCLE") && it.contains("PROCESS START") }
+                val chunk = if (idx >= 0) part.subList(idx, part.size) else part
+                lines.addAll(0, chunk.map { file to it })
                 if (idx >= 0) {
-                    lines.addAll(0, part.subList(idx, part.size))
                     found = true
                     break
                 }
-                lines.addAll(0, part)
             }
             if (!found) return@runCatching
 
@@ -427,18 +430,20 @@ object EventTrace {
             val openTurn = HashMap<String, String>()
             val maxSeqOf = HashMap<String, Long>()      // "scope/turn" → 最大 seq
             val countOf = HashMap<String, Long>()        // "scope/turn" → 条数
+            val seqFileOf = HashMap<String, File>()      // "scope/turn" → 最大 seq 所在文件（补写落点）
             // 与 [loadTurnFloor] 共用同一个回合号正则：两处对「什么是回合记录」的判定必须一致，
             // 否则会出现「清点时认得、恢复高水位时不认得」这类看似矛盾的行为。
             val turnRe = TURN_BUCKET_RE
             for (i in 1 until lines.size) {
-                val m = turnRe.find(lines[i]) ?: continue
+                val (srcFile, line) = lines[i]
+                val m = turnRe.find(line) ?: continue
                 val scope = m.groupValues[1]
                 // 正则第 2 组是**纯数字**，而轨迹格式里回合号写作 `t7`——必须补上前缀。
                 // 不补的后果：补写的终止行变成 `s=xxxx 7 #13`，不满足轨迹格式，
                 // analyze_traces.py 的 LINE_RE（要求 t\d+）会整行丢弃——产出的是一堆垃圾行。
                 val turn = "t" + m.groupValues[2]
                 val seq = m.groupValues[3].toLongOrNull() ?: continue
-                val text = lines[i]
+                val text = line
                 val key = "$scope/$turn"
                 if (text.contains("  TURN  ")) {
                     when {
@@ -450,15 +455,19 @@ object EventTrace {
                 }
                 // 只统当前打开的桶：已收尾桶的尾巴行（如 SNAPSHOT）不应再计入
                 if (openTurn[scope] == turn) {
-                    maxSeqOf[key] = maxOf(maxSeqOf[key] ?: 0L, seq)
+                    if (seq >= (maxSeqOf[key] ?: 0L)) {
+                        maxSeqOf[key] = seq
+                        seqFileOf[key] = srcFile
+                    }
                     countOf[key] = (countOf[key] ?: 0L) + 1
                 }
             }
             if (openTurn.isEmpty()) return@runCatching
 
             val now = timestampFormat.format(Instant.now())
-            appendLine(
-                dir,
+            // 告警旁白写在上一进程最后在写的那份文件里，与它描述的残局同一时间线。
+            appendLineTo(
+                files.last(),
                 "$now  -      -    -    -  LIFECYCLE  " +
                         "上轮有 ${openTurn.size} 个回合未收尾（${openTurn.entries.joinToString(" ") { "${it.key}/${it.value}" }}）" +
                         "——${reason ?: "死因不可知"}\n"
@@ -470,12 +479,13 @@ object EventTrace {
             // 用 appendLine 直写并显式带 seq，**不走 record()**：那些回合的计数器属于
             // 已消失的进程，本进程里没有对应条目，走 record 只会被当成「回合已收尾」丢弃。
             // 序号接在桶内最大值之后，避免与既有序号撞车（同刚修好的跳进程重号）。
-            // 局限：该行为写在「今天」的文件，跳天时与原桶不在同一文件，按 s=/t 过滤仍能找到。
+            // 写回该回合最后一条记录所在的文件，桶与终止行始终同文件，跨天也不例外。
             for ((scope, turn) in openTurn) {
                 val key = "$scope/$turn"
                 val last = maxSeqOf[key] ?: continue
-                appendLine(
-                    dir,
+                val target = seqFileOf[key] ?: continue
+                appendLineTo(
+                    target,
                     "$now  s=$scope $turn #${last + 1} ←#$last  TURN  " +
                             "轮次中断/进程消失（已记 ${countOf[key] ?: 0} 条，无收尾）——${reason ?: "死因不可知"}\n"
                 )
@@ -496,6 +506,12 @@ object EventTrace {
             val day = dayFormat.format(Instant.now())
             File(dir, "trace-$day.log").appendText(line)
         }.onFailure { Log.e(TAG, "追加轨迹行失败", it) }
+    }
+
+    /** 向**指定**文件追加一行。补写历史文件的内容必须用这个，不能用 [appendLine]（后者恒写当天）。 */
+    private fun appendLineTo(file: File, line: String) {
+        runCatching { file.appendText(line) }
+            .onFailure { Log.e(TAG, "追加轨迹行失败", it) }
     }
 
     /** 返回轨迹文件列表（含轮转归档），供占用统计与查看界面使用。 */
