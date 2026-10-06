@@ -1689,9 +1689,17 @@ class AIAgentViewModel @Inject constructor(
             withContext(NonCancellable) {
                 EventTrace.snapshot(sessionId, "LEFTOVER", leftoverStateOf(sessionId))
                 EventTrace.endTurn(turnId, sessionId, "cancelled")
+                // durable 账本：主动取消/停止置 CANCELLED（区别于崩溃残留：明确终态不会被恢复扫描命中）。
+                //
+                // 两个坑叠在一起，缺一个都会让这条记录永远残在 RUNNING：
+                // 1. 不能拿 isOwnJob 当条件。用户点「停止」后，队列下一条会在同一个会话上
+                //    立刻接管（实测 24ms 内），sessionJobs[sid] 已指向新 job——旧 job 的收尾
+                //    看到 isOwnJob=false 就跳过，任务被误判成崩溃残留。
+                //    幂等性由 cancelIfRunning 保证：状态已非 RUNNING 时直接不动。
+                // 2. 必须在 NonCancellable 里。guarded 用的是 runCatchingCancellable，
+                //    它故意重新抛出 CancellationException，在取消态下调它就是「调了但写不进去」。
+                durableTaskRepository.cancelIfRunning(durableTaskId)
             }
-            // durable 账本：主动取消/停止置 CANCELLED（区别于崩溃残留：明确终态不会被恢复扫描命中）。
-            if (isOwnJob) durableTaskRepository.finish(durableTaskId, TaskEvent.CANCEL)
             if (isOwnJob &&
                 (cancelledState is AgentUIState.Loading || cancelledState is AgentUIState.Streaming)
             ) {

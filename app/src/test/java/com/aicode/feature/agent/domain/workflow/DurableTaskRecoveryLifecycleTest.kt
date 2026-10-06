@@ -145,4 +145,57 @@ class DurableTaskRecoveryLifecycleTest {
         assertEquals("重构登录", verdict.sessionTitle)
         assertTrue(verdict.isSubAgent)
     }
+
+    /**
+     * 用户主动停止任务时，记录必须落到终态。
+     *
+     * 回归的是「用户明明按了停止，下次启动却报『上次异常退出』」：
+     * 停止会让队列下一条在同一会话上立即接管，旧 job 的收尾若拿「当前 job 是否本会话的 job」
+     * 当条件就会跳过收尾，记录永远残在 RUNNING，冷启动按非终态判为崩溃残留。
+     */
+    @Test
+    fun cancelIfRunning_marksRunningTaskTerminal() = runTest {
+        val dao = FakeDurableTaskDao()
+        dao.rows["t1"] = DurableTaskEntity(
+            id = "t1",
+            sessionId = "s1",
+            state = TaskState.RUNNING.name,
+            promptSnippet = "写个功能",
+            round = 1,
+            createdAt = 900L,
+            updatedAt = System.currentTimeMillis()
+        )
+        val repo = repoWith(dao)
+
+        repo.cancelIfRunning("t1")
+
+        assertEquals(TaskState.CANCELLED.name, dao.rows.getValue("t1").state)
+        assertTrue(
+            "主动停止的任务不得被冷启动报成崩溃残留",
+            repo.scanForRecovery().none { it is RecoveryVerdict.Recoverable }
+        )
+    }
+
+    /**
+     * 取消收尾会在「任务已自然跑完」之后被触发（收尾阶段自身被取消），
+     * 此时状态已非 RUNNING，不得再改动——否则每次都要刷一条「非法任务转移」告警。
+     */
+    @Test
+    fun cancelIfRunning_leavesSettledTaskUntouched() = runTest {
+        val dao = FakeDurableTaskDao()
+        dao.rows["t1"] = DurableTaskEntity(
+            id = "t1",
+            sessionId = "s1",
+            state = TaskState.COMPLETED.name,
+            promptSnippet = "写个功能",
+            round = 1,
+            createdAt = 900L,
+            updatedAt = System.currentTimeMillis()
+        )
+        val repo = repoWith(dao)
+
+        repo.cancelIfRunning("t1")
+
+        assertEquals(TaskState.COMPLETED.name, dao.rows.getValue("t1").state)
+    }
 }

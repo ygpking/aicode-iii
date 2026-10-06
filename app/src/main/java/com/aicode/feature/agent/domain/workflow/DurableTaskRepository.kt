@@ -86,6 +86,25 @@ class DurableTaskRepository @Inject constructor(
     }
 
     /**
+     * 用户取消时的收尾：仅当记录仍为 RUNNING 时才置 CANCELLED。
+     *
+     * 为什么不能直接用 [finish] + `TaskEvent.CANCEL`：取消收尾（协程的
+     * `catch CancellationException`）也会在任务已经自然跑完之后被触发（收尾阶段自身被取消），
+     * 那时状态已非 RUNNING，再发 CANCEL 会走 Rejected 分支、刷出「非法任务转移」告警。
+     *
+     * 为什么不能把「当前 job 是否本会话的 job」当条件：用户点「停止」后，队列下一条会在同一
+     * 会话上立即接管（实测 24ms 内），旧 job 的收尾看到 job 已易主就跳过，这条记录会永远残在
+     * RUNNING，冷启动被误判为「崩溃残留」——用户主动停止的任务被报成「应用异常退出」。
+     * 判据只能是记录自身的状态。
+     */
+    suspend fun cancelIfRunning(taskId: String) {
+        val current = guarded { dao.getById(taskId) }.getOrNull() ?: return
+        if (TaskStateMachine.parse(current.state) != TaskState.RUNNING) return
+        transition(taskId, TaskEvent.CANCEL)
+        prune()
+    }
+
+    /**
      * 会话被删除时清掉它名下的全部账本记录（含已终态的历史）。
      *
      * 不清的话，崩溃残留（仍处非终态）的记录会和会话一起变成「孤儿」：下次冷启动
