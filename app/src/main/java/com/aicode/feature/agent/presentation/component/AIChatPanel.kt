@@ -124,13 +124,15 @@ private const val CALIBRATE_TAIL_MS = 1_200L
 /**
  * 该 item 是否是「当前展开的工具分组」的成员行（用于加一级缩进）。
  *
- * 成员 item 自身不带所属分组信息（key 就是消息 id），但一个展开的分组，其成员一定是紧跟分组头的一串
- * 连续 TOOL 行；故从本项往前**只走连续的 TOOL 行**，遇到的第一个非 TOOL 行就是分组头，它上面的
- * [ChatRenderItem.groupExpanded] 已经是「手动选择优先」的终值。中途一旦遇到非 TOOL 行（如助手正文）
- * 立即停止并判定「不属于任何分组」——否则分组之后被打断的孤立 TOOL 行会错误继承前一个分组的缩进。
+ * 成员 item 自身不带所属分组信息（key 就是消息 id），但一个展开的分组，其成员一定是紧跟分组头的
+ * 一串连续成员行（TOOL 结果行与带工具调用的助手过渡说明，见 [AgentUIMessage.isToolPreface]）；
+ * 故从本项往前**只走连续的成员行**，遇到的第一个非成员行就是分组头，它上面的
+ * [ChatRenderItem.groupExpanded] 已经是「手动选择优先」的终值。中途一旦遇到非成员行
+ * （如用户消息、最终答复）立即停止并判定「不属于任何分组」——否则分组之后被打断的孤立
+ * 工具行会错误继承前一个分组的缩进。
  *
  * @param index 本项在 [chatItems] 中的下标
- * @param isToolRow 本项是否为 TOOL 消息
+ * @param isToolRow 本项是否为成员行（TOOL 结果或带工具调用的助手过渡说明）
  */
 internal fun isExpandedGroupMember(
     chatItems: List<ChatRenderItem>,
@@ -142,8 +144,8 @@ internal fun isExpandedGroupMember(
     for (k in index - 1 downTo 0) {
         val candidate = chatItems[k]
         if (candidate.toolGroup != null) return candidate.groupExpanded
-        // 回退路径只允许是连续的 TOOL 行；遇到别的内容说明本行不在任何分组的成员序列里
-        if (candidate.message.role != MessageRole.TOOL) return false
+        // 回退路径只允许是连续的成员行；遇到别的内容说明本行不在任何分组的成员序列里
+        if (!candidate.message.isGroupMember()) return false
     }
     return false
 }
@@ -193,20 +195,40 @@ private const val TOOL_GROUP_CONTENT_TYPE = "tool-group"
 private val ToolGroupMemberPadding = PaddingValues(start = 16.dp)
 
 /**
- * 该消息是否参与「连续工具调用」分组。
+ * 该消息是否归入「连续工具调用」分组。
+ *
+ * 两类成员：
+ * - TOOL 结果行；
+ * - 带工具调用的助手过渡说明（[AgentUIMessage.isToolPreface]）——它本就是「为这一次工具调用说的话」，
+ *   与随后的工具行同属一次调用，折叠为一行而非各自占一行。
  *
  * 上下文压缩失败/摘要、后台通知这些 TOOL 消息各有专用渲染分支（见 [AgentMessageItem] 的早退），
- * 混进分组会被当成普通工具行，故一并排除；普通消息（用户/助手）天然打断分组。
+ * 混进分组会被当成普通工具行，故一并排除；普通消息（用户/最终答复）天然打断分组。
  *
- * **带附件的工具（`sendFile` / `generateImage`）也不分组**：它们产出的文件行就是结果本身，
- * 折进「N 次工具调用」后随分组默认收起，等于把发来的文件藏起来；留作顶层 item 才常显。
+ * **带附件的消息（`sendFile` / `generateImage`）不分组**：它们产出的文件行就是结果本身，
+ * 折进分组后默认收起，等于把发来的文件藏起来；留作顶层 item 才常显。
  */
-private fun AgentUIMessage.isGroupableTool(): Boolean =
-    role == MessageRole.TOOL && !isCompactionFailure && !isContextSummary &&
-        !isCompactionMarker && !isBackgroundNotification && attachments.isEmpty()
+private fun AgentUIMessage.isGroupMember(): Boolean {
+    if (attachments.isNotEmpty()) return false
+    if (isToolPreface) return true
+    return role == MessageRole.TOOL && !isCompactionFailure && !isContextSummary &&
+        !isCompactionMarker && !isBackgroundNotification
+}
 
 /** 分组标识：取组内首条消息 id，保证一批工具调用在追加过程中 item key 稳定（不会重建导致视口跳动）。 */
 private fun toolGroupKey(first: AgentUIMessage): String = "toolgroup:${first.id}"
+
+/**
+ * 分组头要报的「N 次工具调用」里的 N。
+ *
+ * 数 TOOL 结果行：一条带多个 `tool_calls` 的助手过渡说明会落成多条 TOOL 行，
+ * 按过渡说明数会少报。
+ *
+ * 下限取 1：流式中工具还没开始执行时组内可能只有过渡说明（它只会在真的带着工具调用时才产生），
+ * 此时报「0 次工具调用」与事实相反。
+ */
+internal fun toolCallCountOf(members: List<AgentUIMessage>): Int =
+    members.count { it.role == MessageRole.TOOL }.coerceAtLeast(1)
 
 /**
  * 该助手消息是否会渲染出「气泡下方的元信息行」——即能不能承接那排「复制 / 更多」按钮。
@@ -272,13 +294,13 @@ internal fun buildChatItems(
     var i = 0
     while (i < messages.size) {
         val message = messages[i]
-        if (!message.isGroupableTool()) {
+        if (!message.isGroupMember()) {
             items += messageRenderItems(message)
             i++
             continue
         }
         var j = i
-        while (j < messages.size && messages[j].isGroupableTool()) j++
+        while (j < messages.size && messages[j].isGroupMember()) j++
         val members = messages.subList(i, j).toList()
         val key = toolGroupKey(members.first())
         val expanded = groupOverrides[key] == true
@@ -1216,13 +1238,15 @@ fun AIChatPanel(
                             val inExpandedGroup = isExpandedGroupMember(
                                 chatItems = chatItems,
                                 index = index,
-                                isToolRow = item.message.role == MessageRole.TOOL,
+                                isToolRow = item.message.isGroupMember(),
                             )
                             if (group != null) {
                                 // 分组头：点一下展开/收起整组工具调用，并复用同一套视口重定位。
+                                // 计数只数 TOOL 结果行：组内还有「带工具调用的助手过渡说明」，
+                                // 它是同一次调用的另一面，算进去会报出比实际多的次数。
                                 // 还在跑时由「N 次工具调用」这行文案自己走涟漪高光（见 ToolCallGroupHeader）。
                                 ToolCallGroupHeader(
-                                    count = group.size,
+                                    count = toolCallCountOf(group),
                                     running = group.any { it.id in runningToolIds || it.isToolRunning(null) },
                                     expanded = item.groupExpanded,
                                     onToggle = {

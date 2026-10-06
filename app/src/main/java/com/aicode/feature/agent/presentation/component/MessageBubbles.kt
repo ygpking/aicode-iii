@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -45,6 +46,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.ClipEntry
 import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalConfiguration
@@ -354,6 +356,8 @@ internal fun AgentMessageItem(
                         } else if (message.isToolPreface && !chunked) {
                             // 过渡说明（随工具调用发出的那句）：折叠为一行，点开看全文。
                             // 只改观感，不碰喂给模型的历史（见 AgentUIMessage.isToolPreface）。
+                            // 分组：不带附件的归入连续工具调用分组（见 isGroupMember），默认收起，
+                            // 与它描述的那次调用同处一组；带附件的留作顶层 item，此处仍折叠为一行。
                             ToolPrefaceRow(text = message.content)
                         } else {
                             // 助手正文：不套容器，直接铺在页面底色上（文档流）。分块之间只留一个段落间距，
@@ -691,7 +695,9 @@ private fun CompactionFailureCard(message: AgentUIMessage) {
 @Composable
 private fun ToolPrefaceRow(text: String) {
     var expanded by remember { mutableStateOf(false) }
-    val preview = text.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty()
+    // 折叠行取**最后**一个非空行与思考气泡一致：过渡说明是紧接着工具调用的，末行才是当前进展。
+    // 取首行会与流式气泡（滚到末尾）显示的不是同一句，工具一开始就看着内容跳回开头。
+    val previewLine = text.lineSequence().lastOrNull { it.isNotBlank() }?.trim().orEmpty()
     Column(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
@@ -701,7 +707,7 @@ private fun ToolPrefaceRow(text: String) {
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = preview,
+                text = previewLine,
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -715,8 +721,10 @@ private fun ToolPrefaceRow(text: String) {
                 modifier = Modifier.size(16.dp)
             )
         }
+        // 展开后只渲染全文，不再保留预览行：单行文本时预览与全文一字不差，
+        // 两者上下并排就是同一句话显示两遍（与既有 ReasoningBubble 同约定）。
         if (expanded) {
-            Spacer(Modifier.height(Spacing.xs))
+            Spacer(Modifier.height(Spacing.sm))
             SelectionContainer {
                 CompositionLocalProvider(
                     LocalTextSelectionColors provides TextSelectionColors(
@@ -727,7 +735,10 @@ private fun ToolPrefaceRow(text: String) {
                     Text(
                         text = text,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp)
+                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                        modifier = Modifier.pointerInput(text) {
+                            detectTapGestures(onDoubleTap = { expanded = false })
+                        }
                     )
                 }
             }

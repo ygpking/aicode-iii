@@ -24,6 +24,10 @@ class ToolGroupExpansionTest {
     private fun assistant(id: String) =
         AgentUIMessage(id = id, role = MessageRole.ASSISTANT, content = "看一下")
 
+    /** 随工具调用发出的助手过渡说明：界面折成一行、归入同一次工具调用（见 [AgentUIMessage.isToolPreface]）。 */
+    private fun preface(id: String) =
+        AgentUIMessage(id = id, role = MessageRole.ASSISTANT, content = "先看一下这个", isToolPreface = true)
+
     private val groupKey = "toolgroup:t1"
 
     private fun items(
@@ -183,5 +187,51 @@ class ToolGroupExpansionTest {
         assertFalse(isExpandedGroupMember(items, 0, isToolRow = true))
         assertFalse(isExpandedGroupMember(items, items.size, isToolRow = true))
         assertFalse(isExpandedGroupMember(items, -1, isToolRow = true))
+    }
+
+    // ---- 过渡说明归入工具分组 ----
+
+    @Test
+    fun prefaceAndItsTools_foldIntoOneGroup() {
+        // 实测形态：助手说一句（带 tool_calls），工具执行完落一条结果行。
+        val messages = listOf(
+            preface("p1"),
+            tool("t1"),
+            preface("p2"),
+            tool("t2"),
+        )
+        val items = items(messages)
+
+        assertEquals("过渡说明与工具行应折成一组", 1, items.size)
+        assertEquals("toolgroup:p1", items.first().key)
+        assertEquals(4, items.first().toolGroup?.size)
+    }
+
+    @Test
+    fun groupCount_countsToolRowsNotPreface() {
+        val messages = listOf(preface("p1"), tool("t1"), preface("p2"), tool("t2"), tool("t3"))
+        val members = items(messages).first().toolGroup!!
+
+        assertEquals("只数真实的工具结果行，过渡说明不算", 3, toolCallCountOf(members))
+    }
+
+    @Test
+    fun groupCount_neverReportsZeroWhilePrefacePending() {
+        // 工具还未开始执行：组内只有过渡说明（它只会在真的带着工具调用时产生）。
+        val members = items(listOf(preface("p1"))).first().toolGroup!!
+
+        assertEquals("不得报「 0 次工具调用」", 1, toolCallCountOf(members))
+    }
+
+    @Test
+    fun expandedGroup_indentsItsPrefaceToo() {
+        val messages = listOf(preface("p1"), tool("t1"))
+        val items = items(messages, overrides = mapOf("toolgroup:p1" to true))
+        val prefaceIndex = items.indexOfFirst { it.key == "p1" }
+        val toolIndex = items.indexOfFirst { it.key == "t1" }
+
+        assertTrue("前置条件：组应展开", prefaceIndex > 0 && toolIndex > prefaceIndex)
+        assertTrue("成员过渡说明应缩进", isExpandedGroupMember(items, prefaceIndex, isToolRow = true))
+        assertTrue("成员工具行应缩进", isExpandedGroupMember(items, toolIndex, isToolRow = true))
     }
 }
