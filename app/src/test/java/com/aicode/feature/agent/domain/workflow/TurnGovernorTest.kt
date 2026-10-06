@@ -17,19 +17,22 @@ class TurnGovernorTest {
     fun segmentBoundaryRequestsWrapUpThenContinues() {
         val g = TurnGovernor(roundsPerSegment = 3, maxContinuations = 2)
         g.beginTurn(); g.beginTurn()
-        assertEquals("第3轮=段尾，应收束", TurnVerdict.InjectWrapUpNotice, g.beginTurn())
-        // 进入第2段
-        assertEquals(TurnVerdict.InjectWrapUpNotice, g.beginTurn())
+        // 段尾那轮照常执行（不再在段尾注入），新段开始前才注入一次
+        assertEquals("第3轮=段尾轮，正常继续", TurnVerdict.Continue, g.beginTurn())
+        assertEquals("新段开始前注入一次收束提示", TurnVerdict.InjectWrapUpNotice, g.beginTurn())
+        // 新段第 1 轮正常继续
+        assertEquals(TurnVerdict.Continue, g.beginTurn())
     }
 
     @Test
     fun hardStopAfterSegmentsExhausted() {
         val g = TurnGovernor(roundsPerSegment = 2, maxContinuations = 1)
-        // 第1段：轮1 Continue，轮2 收束
+        // 第1段：轮1、轮2 都 Continue（段尾轮照常执行）
         assertEquals(TurnVerdict.Continue, g.beginTurn())
+        assertEquals(TurnVerdict.Continue, g.beginTurn())
+        // 跨段：新段开始前注入一次收束提示
         assertEquals(TurnVerdict.InjectWrapUpNotice, g.beginTurn())
-        // 续跑第2段：跨段收束提示，然后轮1 Continue
-        assertEquals(TurnVerdict.InjectWrapUpNotice, g.beginTurn())
+        // 续跑第2段：轮1 Continue
         assertEquals(TurnVerdict.Continue, g.beginTurn())
         // 第2段末（续跑额度已用尽）→ 硬停
         val v = g.beginTurn()
