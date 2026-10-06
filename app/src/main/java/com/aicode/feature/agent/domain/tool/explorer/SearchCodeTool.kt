@@ -50,10 +50,16 @@ class SearchCodeTool @Inject constructor(
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
         return try {
             val rawArgs = args["args"]?.jsonPrimitive?.contentOrNull?.trim().orEmpty()
-            if (rawArgs.isEmpty()) return ToolResult.Error("缺少搜索参数 args", "MISSING_ARGS")
+            if (rawArgs.isEmpty()) return ToolResult.Error(
+                "缺少搜索参数 args。例：args=\"-n \\\"关键词\\\" ~/workspace/app\"；路径不存在会报错，不确定时先 list 确认。",
+                "MISSING_ARGS"
+            )
 
             val tokens = parseShellWords(rawArgs)
-                ?: return ToolResult.Error("args 中存在未闭合的引号", "INVALID_ARGS")
+                ?: return ToolResult.Error(
+                    "args 中存在未闭合的引号。检查引号是否成对（正则里的 () | {} 也需转义，否则报 regex parse error）。",
+                    "INVALID_ARGS"
+                )
             if (tokens.isEmpty()) return ToolResult.Error("缺少搜索参数 args", "MISSING_ARGS")
 
             val command = buildSearchCommand(tokens, pathHomeResolver.home())
@@ -68,10 +74,15 @@ class SearchCodeTool @Inject constructor(
 
             // 127 = shell 找不到命令；合并 stderr 后通常也能看到 command not found，双保险
             if (isRgMissing(result.output) || result.exitCode == 127) {
-                return ToolResult.Error("容器内未安装 rg", "RG_MISSING")
+                return ToolResult.Error("容器内未安装 rg。容器镜像不含 rg 时可先执行 apt install ripgrep 安装后重试。", "RG_MISSING")
             }
             if (result.exitCode != null && result.exitCode > 1) {
-                return ToolResult.Error(result.output.ifBlank { "rg 执行失败" }, "RG_ERROR")
+                val raw = result.output.ifBlank { "rg 执行失败" }
+                return ToolResult.Error(
+                    if (raw.contains("regex parse error")) "$raw\n提示：search 走 rg 正则，特殊字符 ( ) | { } 需转义；纯文本搜索加 -F 关闭正则。"
+                    else raw,
+                    "RG_ERROR"
+                )
             }
 
             val lines = result.output.lineSequence().filter { it.isNotBlank() }.toList()

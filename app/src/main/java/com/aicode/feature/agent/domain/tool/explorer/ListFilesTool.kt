@@ -53,12 +53,21 @@ class ListFilesTool @Inject constructor(
         return try {
             val rawArgs = args["args"]?.jsonPrimitive?.contentOrNull.orEmpty()
             val tokens = parseShellWords(rawArgs)
-                ?: return ToolResult.Error("args 中存在未闭合的引号", "INVALID_ARGS")
+                ?: return ToolResult.Error(
+                    "args 中存在未闭合的引号，检查引号是否成对后重试（含空格的路径需整体加引号）。",
+                    "INVALID_ARGS"
+                )
             val (lsTokens, pipeSegments) = splitPipes(tokens)
-                ?: return ToolResult.Error("管道符前缺少 ls 参数", "INVALID_PIPE")
+                ?: return ToolResult.Error(
+                    "管道符 | 前缺少 ls 参数。截断输出只支持 | head [-n N]，例：args=\"-l ~/workspace | head -n 20\"。",
+                    "INVALID_PIPE"
+                )
             val headLimits = pipeSegments.map { seg ->
                 headLinesOf(seg)
-                    ?: return ToolResult.Error("list 仅支持 | head [-n N] 截断输出，不支持其它管道命令", "INVALID_PIPE")
+                    ?: return ToolResult.Error(
+                        "list 仅支持 | head [-n N] 截断输出，不支持其它管道命令（grep/sort/wc 等一律不行）。",
+                        "INVALID_PIPE"
+                    )
             }
             val options = parseLsOptions(lsTokens)
                 ?: return ToolResult.Error("不支持的 ls 参数。支持：-a, -A, -l, -R, -d, -1, -h, -r, -t, -f, --", "UNSUPPORTED_OPTION")

@@ -97,7 +97,7 @@ class RemoteSshEngine @Inject constructor(
             val exitCode = session.exitStatus
             watchdog.cancel()
             if (timedOut.get()) {
-                emit(CommandEvent.Line("[命令执行超时：超过 ${effectiveTimeout}ms 已被强制终止]"))
+                emit(CommandEvent.Line(LinuxContainerEngine.timeoutNotice(effectiveTimeout)))
                 emit(CommandEvent.Exit(null))
             } else {
                 if (exitCode != 0) FileLogger.w(TAG, "命令退出码=$exitCode: ${sanitizeCommandForLog(command)}")
@@ -109,7 +109,7 @@ class RemoteSshEngine @Inject constructor(
         } catch (e: Exception) {
             watchdog.cancel()
             if (timedOut.get()) {
-                emit(CommandEvent.Line("[命令执行超时：超过 ${effectiveTimeout}ms 已被强制终止]"))
+                emit(CommandEvent.Line(LinuxContainerEngine.timeoutNotice(effectiveTimeout)))
                 emit(CommandEvent.Exit(null))
             } else {
                 FileLogger.e(TAG, "命令读输出异常(已保留此前输出): ${sanitizeCommandForLog(command)}", e)

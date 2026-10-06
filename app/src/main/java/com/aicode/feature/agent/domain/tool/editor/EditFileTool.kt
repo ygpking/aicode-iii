@@ -130,7 +130,10 @@ class EditFileTool @Inject constructor(
                     return ToolResult.Error("第 ${i + 1} 个编辑的 old_string 不能为空；创建文件请用 writeFile。", "EMPTY_OLD_STRING")
                 }
                 if (e.oldString == e.newString) {
-                    return ToolResult.Error("第 ${i + 1} 个编辑的 old_string 与 new_string 相同，无需修改", "NO_OP")
+                    return ToolResult.Error(
+                        "第 ${i + 1} 个编辑的 old_string 与 new_string 相同，无需修改。确认改动是否已在上一步生效；不要重发同一编辑。",
+                        "NO_OP"
+                    )
                 }
             }
 

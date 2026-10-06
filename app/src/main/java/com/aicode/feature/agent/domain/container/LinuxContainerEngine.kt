@@ -171,6 +171,13 @@ class LinuxContainerEngine @Inject constructor(
         /** 命令超时上限（毫秒）：再大的请求也会被钳到此值，防止事实上的“无限等待”。 */
         const val MAX_TIMEOUT_MS = 1_800_000L
 
+        /**
+         * 超时提示行（拼进输出，喂回模型/展示给用户）。本地与远程引擎共用一份，
+         * 避免两处文案漂移（远程版曾漏掉建议，实测模型超时后只会原地重试）。
+         */
+        internal fun timeoutNotice(timeoutMs: Long): String =
+            "[命令执行超时：超过 ${timeoutMs}ms 已被强制终止。长任务（构建/安装/测试）改用 terminal 工具后台执行（notify=true，完成后会收到通知）；确需同步等待时增大 timeout 参数重试。]"
+
         /** 超时后给进程的优雅退出宽限（毫秒），过后强杀。 */
         private const val TIMEOUT_KILL_GRACE_MS = 200L
 
@@ -480,10 +487,6 @@ class LinuxContainerEngine @Inject constructor(
             return@launch
         }
     }
-
-    /** 超时提示行（拼进输出，喂回模型/展示给用户）。 */
-    private fun timeoutNotice(timeoutMs: Long): String =
-        "[命令执行超时：超过 ${timeoutMs}ms 已被强制终止]"
 
     /**
      * 启动进程。rootfs/proot 安装就绪则用 PRoot 进入容器；

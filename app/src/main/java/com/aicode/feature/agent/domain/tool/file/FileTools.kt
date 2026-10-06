@@ -47,13 +47,19 @@ class ReadFileTool @Inject constructor(
         return try {
             val path = args["path"]?.jsonPrimitive?.contentOrNull ?: run {
                 FileLogger.w(TAG, "read_file 缺少 path 参数")
-                return ToolResult.Error("路径参数缺失", "MISSING_PATH")
+                return ToolResult.Error(
+                    "路径参数缺失。path 支持 ~/workspace/... 项目路径或容器绝对路径；不确定位置时先 list 父目录。",
+                    "MISSING_PATH"
+                )
             }
             FileLogger.d(TAG, "read_file path=$path")
 
             if (!fileAccess.exists(path)) {
                 FileLogger.w(TAG, "read_file 文件不存在: $path")
-                return ToolResult.Error("文件不存在: $path", "FILE_NOT_FOUND")
+                return ToolResult.Error(
+                    "文件不存在: $path。先用 list 查看父目录确认实际路径（注意大小写与相对/绝对路径）；若是待创建的新文件，改用 writeFile。",
+                    "FILE_NOT_FOUND"
+                )
             }
 
             val startLine = args["start_line"]?.jsonPrimitive?.intOrNull?.coerceAtLeast(1) ?: 1
@@ -184,7 +190,10 @@ class WriteFileTool @Inject constructor(
         return try {
             val path = args["path"]?.jsonPrimitive?.contentOrNull ?: run {
                 FileLogger.w(TAG, "write_file 缺少 path 参数")
-                return ToolResult.Error("路径参数缺失", "MISSING_PATH")
+                return ToolResult.Error(
+                    "路径参数缺失。目标路径需含文件名（含目录时自动创建）；不确定位置时先 list 父目录。",
+                    "MISSING_PATH"
+                )
             }
             val content = args["content"]?.jsonPrimitive?.contentOrNull ?: ""
             val overwrite = args["overwrite"]?.jsonPrimitive?.booleanOrNull ?: true
@@ -202,7 +211,10 @@ class WriteFileTool @Inject constructor(
             val existed = fileAccess.exists(path)
             if (existed && !overwrite) {
                 FileLogger.w(TAG, "write_file 文件已存在且 overwrite=false: $path")
-                return ToolResult.Error("文件已存在: $path（overwrite=false）", "FILE_EXISTS")
+                return ToolResult.Error(
+                    "文件已存在: $path（overwrite=false）。确认要覆盖则带 overwrite=true 重试；想保留原文件只追加局部修改则改用 editFile。",
+                    "FILE_EXISTS"
+                )
             }
 
             // 写前留存旧内容，供生成「旧→新」差异（与 edit_file 同构，UI 据此渲染彩色 diff）。

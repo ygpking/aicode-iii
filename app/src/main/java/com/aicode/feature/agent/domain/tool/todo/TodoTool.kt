@@ -97,7 +97,10 @@ class TodoTool @Inject constructor(
 
     private suspend fun replaceTodos(args: Map<String, JsonElement>, sessionId: String): ToolResult {
         val itemElements = args["items"] as? JsonArray
-            ?: return ToolResult.Error("需要 items 数组", "MISSING_ITEMS")
+            ?: return ToolResult.Error(
+                "需要 items 数组。每次传完整清单：[{subject: 标题, description: 说明, status: pending|in_progress|completed, priority: 整数}]，清空传 []。",
+                "MISSING_ITEMS"
+            )
         val existingBySubject = todoItemDao.getBySessionOnce(sessionId)
             .groupBy { normalizeSubject(it.subject) }
             .mapValues { (_, items) -> items.toMutableList() }
@@ -106,7 +109,7 @@ class TodoTool @Inject constructor(
 
         for ((idx, element) in itemElements.withIndex()) {
             val draft = parseTodoDraft(element, idx) ?: return ToolResult.Error(
-                "第 ${idx + 1} 项需要字符串标题或含 subject 的对象",
+                "第 ${idx + 1} 项需要字符串标题或含 subject 的对象。各项字段：subject（必填）、description、status（pending/in_progress/completed）、priority（整数，越大越优先）。",
                 "INVALID_ITEM"
             )
             val previous = existingBySubject[normalizeSubject(draft.subject)]?.removeFirstOrNull()

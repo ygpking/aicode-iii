@@ -98,7 +98,10 @@ class AskUserQuestionTool @Inject constructor(
     override suspend fun execute(args: Map<String, JsonElement>): ToolResult {
         val questionsJson = args["questions"]?.jsonArray
         if (questionsJson == null || questionsJson.isEmpty()) {
-            return ToolResult.Error("缺少必需参数: questions（至少包含一个问题）", "MISSING_QUESTIONS")
+            return ToolResult.Error(
+                "缺少必需参数: questions（至少包含一个问题）。每项含 question（完整问句）、header（短标签 ≤12 字）、options（2~4 个 {label, description}）。",
+                "MISSING_QUESTIONS"
+            )
         }
 
         if (questionsJson.size > MAX_QUESTIONS) {
@@ -123,13 +126,13 @@ class AskUserQuestionTool @Inject constructor(
             val optionsJson = qObj["options"]?.jsonArray
             if (optionsJson == null || optionsJson.size < MIN_OPTIONS) {
                 return ToolResult.Error(
-                    "第 ${idx + 1} 个问题至少需要 $MIN_OPTIONS 个选项",
+                    "第 ${idx + 1} 个问题至少需要 $MIN_OPTIONS 个选项。每个选项含 label（短文）与 description（说明何时选它），UI 会自动附「其他」项。",
                     "TOO_FEW_OPTIONS"
                 )
             }
             if (optionsJson.size > MAX_OPTIONS) {
                 return ToolResult.Error(
-                    "第 ${idx + 1} 个问题最多 $MAX_OPTIONS 个选项，当前 ${optionsJson.size} 个",
+                    "第 ${idx + 1} 个问题最多 $MAX_OPTIONS 个选项，当前 ${optionsJson.size} 个。优先保留差异最大的几个，其余合入「其他」由用户自由输入。",
                     "TOO_MANY_OPTIONS"
                 )
             }
@@ -144,7 +147,7 @@ class AskUserQuestionTool @Inject constructor(
 
             if (options.size < MIN_OPTIONS) {
                 return ToolResult.Error(
-                    "第 ${idx + 1} 个问题解析后有效选项不足 $MIN_OPTIONS 个",
+                    "第 ${idx + 1} 个问题解析后有效选项不足 $MIN_OPTIONS 个。每个选项需含非空 label；label 缺失的项会被丢弃。",
                     "INVALID_OPTIONS"
                 )
             }

@@ -94,6 +94,17 @@ class ExecuteCommandTool @Inject constructor(
     }
 
     /**
+     * 失败命令（退出码非 0 或超时，null = 超时/异常）从输出中提取关键错误行附在末尾：
+     * 错误行可能已被限幅截掉或被进度输出稀释，摘要让模型不用重跑就知道错在哪。
+     * 成功命令不附（正常输出里的 error 字样不是失败）。
+     */
+    private fun appendErrorSummary(output: String, exitCode: Int?): String {
+        if (exitCode == 0) return output
+        val summary = BuildErrorExtractor.extract(output) ?: return output
+        return "$output\n\n$summary"
+    }
+
+    /**
      * 仅对「被识别为构建命令」的调用采样内存：普通命令（ls/grep）开销小，多一次查询没必要。
      * 采样失败或内存充足时返回 null。
      * 必须**执行前**调用：任务已在跑时才知道内存不足已经来不及阻止。
@@ -142,9 +153,9 @@ class ExecuteCommandTool @Inject constructor(
             // 两处重复实测占日志 15%+，且工具执行期必然经过 engine，不会漏记。
             // 执行前采样：事后采样无法提前预警，就失去了意义
             val memWarning = memoryWarningFor(guarded.rewritten)
-            val output = commandEngine.runCommandSync(guarded.command, workdir, timeoutMs)
-            FileLogger.v(TAG, "execute_command 完成，输出 ${output.length} 字符")
-            ToolResult.Success(JsonPrimitive(appendGuardNote(output, guarded.note, memWarning)))
+            val result = commandEngine.runCommandSyncWithExit(guarded.command, workdir, timeoutMs)
+            FileLogger.v(TAG, "execute_command 完成，退出码 ${result.exitCode}，输出 ${result.output.length} 字符")
+            ToolResult.Success(JsonPrimitive(appendErrorSummary(appendGuardNote(result.output, guarded.note, memWarning), result.exitCode)))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -176,6 +187,7 @@ class ExecuteCommandTool @Inject constructor(
         // 真正有诊断价值的结尾报错反而被挤出尾窗，折叠计数也失真。
         val accumulated = BoundedOutput()
         val folder = LineFolder()
+        var exitCode: Int? = null
         try {
             val workdir = workspaceRepository.currentPath()
             val timeoutMs = resolveTimeoutMs(args)
@@ -199,7 +211,7 @@ class ExecuteCommandTool @Inject constructor(
                         // 实时区展示原始行：进度条回刷等噪点让用户看到“在动”，不参与模型上下文。
                         emit(ToolStreamEvent.Progress(event.text))
                     }
-                    is CommandEvent.Exit -> { /* 结束在流完成后统一聚合 */ }
+                    is CommandEvent.Exit -> { exitCode = event.code }
                 }
             }
             folder.finish().forEach { line ->
@@ -207,7 +219,8 @@ class ExecuteCommandTool @Inject constructor(
                 accumulated.append("\n")
             }
             FileLogger.v(TAG, "execute_command(流式) 完成，输出 ${accumulated.totalChars} 字符")
-            emit(ToolStreamEvent.Completed(ToolResult.Success(JsonPrimitive(appendGuardNote(accumulated.build(), guarded.note, memWarning)))))
+            val built = appendErrorSummary(appendGuardNote(accumulated.build(), guarded.note, memWarning), exitCode)
+            emit(ToolStreamEvent.Completed(ToolResult.Success(JsonPrimitive(built))))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
