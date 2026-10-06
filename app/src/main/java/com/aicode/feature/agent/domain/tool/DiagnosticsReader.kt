@@ -36,6 +36,9 @@ internal object DiagnosticsReader {
     /** 环形缓冲保留的最大行数：兼顾「往回翻很久」与内存上限。 */
     const val MAX_RING_LINES = 100_000
 
+    /** 回看偏移上限：ring 按行封顶但不按字符封顶，offset 无限会让峰值内存随单行长便宜无界。 */
+    const val MAX_OFFSET_FROM_END = 10_000
+
     data class Page(
         val content: String,
         val totalLines: Int,
@@ -105,7 +108,7 @@ internal object DiagnosticsReader {
      */
     fun readWindow(files: List<File>, offsetFromEnd: Int, lines: Int): Page? {
         if (files.isEmpty() || files.any { !it.isFile || !it.canRead() }) return null
-        val keep = (lines.coerceAtLeast(1) + offsetFromEnd.coerceAtLeast(0)).coerceAtMost(MAX_RING_LINES)
+        val keep = (lines.coerceAtLeast(1) + offsetFromEnd.coerceIn(0, MAX_OFFSET_FROM_END)).coerceAtMost(MAX_RING_LINES)
         val ring = ArrayDeque<String>()
         var total = 0
         for (file in files) {
@@ -161,7 +164,7 @@ internal object DiagnosticsReader {
      * 流式逐行匹配，不把日志整份读进内存——会话文件是 20MB 级，两份拼接后再全量驻留会逼近
      * 移动端堆上限。任一文件不可读返回 null。
      */
-    fun search(files: List<File>, query: String): List<SearchHit>? {
+    fun search(files: List<File>, query: String): Pair<List<SearchHit>, Boolean>? {
         if (files.isEmpty() || files.any { !it.isFile || !it.canRead() }) return null
         val needle = query.lowercase()
         val byContent = LinkedHashMap<String, SearchHitBuilder>()
@@ -191,7 +194,9 @@ internal object DiagnosticsReader {
             }.onFailure { return null }
             if (halted) break
         }
-        return byContent.values.map { it.build() }
+        // 第二个值：是否因 MAX_SEARCH_HITS 触顶提前停扫——调用方必须把它透传给模型，
+        // 否则 hits/occurrences 被当成全量统计，统计结论会系统性偏小。
+        return byContent.values.map { it.build() } to halted
     }
 
     /** 去重键：剥掉行首时间戳再 trim。 */
@@ -230,10 +235,15 @@ internal object DiagnosticsReader {
         return sb.toString() to truncated
     }
 
-    /** 按名称挑选文件：date 指定时匹配 `log-<date>.txt` / `trace-<date>.log` 等；缺省取最新。 */
+    /** 字典序下轮转归档（.log.1/.txt.2）排在正本之后，判「最新」时必须排除。 */
+    private val ROTATION_SUFFIX = Regex("""\.(log|txt)\.\d+$""")
+
+    /** 按名称挑选文件：date 指定时匹配 `log-<date>.txt` / `trace-<date>.log` 等；缺省取最新正本。 */
     fun pickFile(files: List<File>, date: String?): File? {
         if (files.isEmpty()) return null
-        if (date.isNullOrBlank()) return files.last()
-        return files.firstOrNull { it.name.contains(date) } ?: files.last()
+        // sortedBy(name) 后 last() 是最老一代归档，「缺省=最新」必须先剥掉归档再取末位。
+        val canonical = files.filterNot { ROTATION_SUFFIX.containsMatchIn(it.name) }
+        if (date.isNullOrBlank()) return canonical.lastOrNull() ?: files.last()
+        return canonical.lastOrNull { it.name.contains(date) } ?: canonical.lastOrNull() ?: files.last()
     }
 }

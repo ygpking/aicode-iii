@@ -328,7 +328,7 @@ class DiagnosticsTool @Inject constructor(
         if (query.isNullOrEmpty()) return ToolResult.Error("search 需要 query 参数", "MISSING_QUERY")
         val files = filesFor(kind, root, args, context)
         if (files.isEmpty()) return ToolResult.Error("暂无日志文件可搜索", "NO_LOG_FILE")
-        val hits = DiagnosticsReader.search(files, query)
+        val (hits, truncatedByHits) = DiagnosticsReader.search(files, query)
             ?: return ToolResult.Error("搜索日志失败（文件不可读）", "SEARCH_FAILED")
         val totalOccurrences = hits.sumOf { it.totalCount }
         val body = UntrustedEnvelope.wrap(
@@ -341,10 +341,14 @@ class DiagnosticsTool @Inject constructor(
             // hits 语义已由「命中行数」改为「不同内容条数」，保留 occurrences 让调用方仍能看出重复规模。
             "hits" to JsonPrimitive(hits.size),
             "occurrences" to JsonPrimitive(totalOccurrences),
+            "truncated_by_hits" to JsonPrimitive(truncatedByHits),
             "content" to JsonPrimitive(body)
         )
         val note = buildList {
             add("结果已按内容去重：$totalOccurrences 行命中合并为 ${hits.size} 条不同内容，行号见每条前缀，可用 read 按行定位")
+            if (truncatedByHits) {
+                add("不同内容条数已达上限 ${DiagnosticsReader.MAX_SEARCH_HITS}，其后内容未扫描，hits/occurrences 只是部分值")
+            }
             if (totalOccurrences > hits.size && hits.size > 1 && totalOccurrences >= DUPLICATE_HIT_WARN) {
                 add("重复多的那条通常来自「每轮重发历史」的请求体，不代表真实发生次数")
             }

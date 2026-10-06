@@ -230,6 +230,19 @@ object EventTrace {
                     override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
                         markCleanExit()
                     }
+
+                    override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+                        // 回前台进程仍活着，marker 必须从 STOP 拨回 START：否则此后被杀时
+                        // reportPreviousExit 见 STOP 早退，系统侧死因行静默缺失。
+                        // 只改 marker 文件，不写 LIFECYCLE 时序行——补写扫描靠 PROCESS START
+                        // 定「上个进程起点」，回前台若也落一行会把窗口错停在回前台处。
+                        val dir = logDir ?: return
+                        ioExecutor.execute {
+                            runCatching {
+                                File(dir, MARKER_FILE).writeText("PROCESS START|${System.currentTimeMillis()}")
+                            }.onFailure { Log.e(TAG, "更新前台标记失败", it) }
+                        }
+                    }
                 })
         }.onFailure { Log.e(TAG, "注册后台标记失败", it) }
     }
@@ -400,10 +413,22 @@ object EventTrace {
      * 抽成带参函数而非在内部读 [appContext]：测试要验证的是「清点 + 补写」这套逻辑本身，
      * 而非 Android 系统 API 能否调通（后者属设备侧验证）。
      */
+    /** 轮转代数新度：正本最新；.1 次之，N 越大越旧。 */
+    private val TRACE_ROTATION = Regex("""\.log\.(\d+)$""")
+    private val TRACE_DATE = Regex("""trace-(\d{4}-\d{2}-\d{2})""")
+
+    /** 按真实时间序（旧→新）排：字典序会把 .log.1 排到正本之后，补写/回看全部读错代。 */
+    private fun List<File>.sortedChronologically(): List<File> = sortedWith(
+        compareBy(
+            { TRACE_DATE.find(it.name)?.groupValues?.get(1).orEmpty() },
+            { TRACE_ROTATION.find(it.name)?.groupValues?.get(1)?.toInt()?.unaryMinus() ?: Int.MAX_VALUE }
+        )
+    )
+
     internal fun reportStaleTurnsForTest(dir: File, reason: String?) {
         runCatching {
             val files = dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }
-                ?.sortedBy { it.name } ?: return@runCatching
+                ?.toList()?.sortedChronologically() ?: return@runCatching
             if (files.isEmpty()) return@runCatching
 
             // 从最新文件往前回读，凑出「上一个进程 START 之后」的全部行（跨文件拼接）。
@@ -517,7 +542,7 @@ object EventTrace {
     /** 返回轨迹文件列表（含轮转归档），供占用统计与查看界面使用。 */
     fun listTraceFiles(): List<File> {
         val dir = logDir ?: return emptyList()
-        return dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }?.sortedBy { it.name } ?: emptyList()
+        return dir.listFiles { f -> f.isFile && f.name.startsWith("trace-") }?.toList()?.sortedChronologically() ?: emptyList()
     }
 
     /** 轨迹占用字节数（含轮转归档）；供存储统计使用。 */

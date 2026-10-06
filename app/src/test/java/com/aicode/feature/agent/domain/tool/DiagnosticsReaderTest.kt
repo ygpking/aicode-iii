@@ -129,7 +129,7 @@ class DiagnosticsReaderTest {
     fun search_dedupesByContentAndReportsAllLineNumbers() {
         // 同一内容在流里出现两次（行 2 与行 4），只应给一条并列出两个行号。
         val f = tempFile("trace-x.log", "alpha\nBeta\nGAMMA\nBeta")
-        val hits = DiagnosticsReader.search(listOf(f), "beta")!!
+        val hits = DiagnosticsReader.search(listOf(f), "beta")!!.first
 
         assertEquals(1, hits.size)
         assertEquals("Beta", hits[0].text)
@@ -142,7 +142,7 @@ class DiagnosticsReaderTest {
     fun search_stripsLeadingTimestampBeforeComparing() {
         // logs/ 与 traces/ 每行带时间戳；同一逻辑内容不该因时刻不同被当成两条。
         val f = tempFile("log-x.txt", "2026-10-06 09:00:01.1 DEBUG [T] same\n2026-10-06 09:05:02.9 DEBUG [T] same")
-        val hits = DiagnosticsReader.search(listOf(f), "same")!!
+        val hits = DiagnosticsReader.search(listOf(f), "same")!!.first
         assertEquals(1, hits.size)
         assertEquals(2, hits[0].totalCount)
     }
@@ -151,7 +151,7 @@ class DiagnosticsReaderTest {
     fun search_capsRecordedLineNumbersButKeepsTotal() {
         val cap = DiagnosticsReader.MAX_HIT_LINE_NUMBERS
         val f = tempFile("trace-cap.log", (1..cap + 5).joinToString("\n") { "dup target" })
-        val hits = DiagnosticsReader.search(listOf(f), "target")!!
+        val hits = DiagnosticsReader.search(listOf(f), "target")!!.first
 
         assertEquals(1, hits.size)
         assertEquals(cap + 5, hits[0].totalCount)
@@ -162,7 +162,19 @@ class DiagnosticsReaderTest {
     @Test
     fun search_noMatchReturnsEmptyList() {
         val f = tempFile("trace-x.log", numbered(5))
-        assertTrue(DiagnosticsReader.search(listOf(f), "zzz-not-there")!!.isEmpty())
+        assertTrue(DiagnosticsReader.search(listOf(f), "zzz-not-there")!!.first.isEmpty())
+    }
+
+    @Test
+    fun search_reportsTruncationWhenHitCapReached() {
+        // 超过 MAX_SEARCH_HITS 触顶后必须把 halted 传出去：否则 hits/occurrences 被当全量统计。
+        val f = tempFile(
+            "trace-cap.log",
+            (1..DiagnosticsReader.MAX_SEARCH_HITS + 1).joinToString("\n") { "unique-$it hit" }
+        )
+        val (hits, truncated) = DiagnosticsReader.search(listOf(f), "hit")!!
+        assertEquals(DiagnosticsReader.MAX_SEARCH_HITS, hits.size)
+        assertTrue(truncated)
     }
 
     @Test
@@ -171,7 +183,7 @@ class DiagnosticsReaderTest {
         val rotated = File(dir, "session-aaa.log.1").apply { writeText("old target\nold-2") }
         val current = File(dir, "session-aaa.log").apply { writeText("new-1\nnew target") }
 
-        val hits = DiagnosticsReader.search(listOf(rotated, current), "target")!!
+        val hits = DiagnosticsReader.search(listOf(rotated, current), "target")!!.first
         // 归档里的命中是第 1 行，当前文件里的命中接着数第 4 行——行号跨文件连续。
         assertEquals(2, hits.size)
         assertEquals(listOf(1), hits[0].lineNumbers)
