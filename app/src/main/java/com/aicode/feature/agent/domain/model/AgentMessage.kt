@@ -10,7 +10,12 @@ sealed class AgentMessage {
     data class UserMessage(
         val id: String = "",
         val content: String,
-        val images: List<AgentImage> = emptyList()
+        val images: List<AgentImage> = emptyList(),
+        /**
+         * 刚从压缩块恢复（块归属非空且未折叠）。压缩器据此让恢复段优先进入 tail 保护区；
+         * 序列化携带默认值，线上/wire 不受影响。
+         */
+        val restoredFromCompaction: Boolean = false
     ) : AgentMessage()
 
     @Serializable
@@ -28,7 +33,9 @@ sealed class AgentMessage {
          * 本轮模型直接生成的图片（Gemini 图像模型）。内存态下 base64Data 可为空、path 指向容器文件，
          * 回放时按 path 重建 base64 喂模型；落库只存附件路径不存 base64（见 [MessagePersistenceUseCase]）。
          */
-        val images: List<AgentImage> = emptyList()
+        val images: List<AgentImage> = emptyList(),
+        /** 刚从压缩块恢复，见 [UserMessage.restoredFromCompaction]。 */
+        val restoredFromCompaction: Boolean = false
     ) : AgentMessage()
 
     @Serializable
@@ -38,7 +45,9 @@ sealed class AgentMessage {
         val result: String,
         val images: List<AgentImage> = emptyList(),
         /** 仅喂模型的精简结果文本；null 时回退用 [result]。UI 与持久化仍用 result。 */
-        val modelResult: String? = null
+        val modelResult: String? = null,
+        /** 刚从压缩块恢复，见 [UserMessage.restoredFromCompaction]。 */
+        val restoredFromCompaction: Boolean = false
     ) : AgentMessage()
 }
 

@@ -55,6 +55,7 @@ import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.agent.domain.tool.ToolOutputStore
 import com.aicode.feature.agent.domain.tool.RetrieveToolResultTool
 import com.aicode.feature.agent.domain.tool.BrowseHistoryTool
+import com.aicode.feature.agent.domain.tool.RestoreCompactedRangeTool
 import com.aicode.feature.agent.domain.tool.DiagnosticsTool
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.terminal.domain.DelegatingTerminalSessionProvider
@@ -310,6 +311,7 @@ object AgentModule {
         browserTool: BrowserTool,
         virtualScreenTool: VirtualScreenTool,
         browseHistoryTool: BrowseHistoryTool,
+        restoreCompactedRangeTool: RestoreCompactedRangeTool,
         diagnosticsTool: DiagnosticsTool
     ): ToolRegistry {
         return ToolRegistry().apply {
@@ -338,6 +340,7 @@ object AgentModule {
             register("browser", browserTool)
             register("virtualScreen", virtualScreenTool)
             register("browseHistory", browseHistoryTool)
+            register("restoreCompactedRange", restoreCompactedRangeTool)
             register("diagnostics", diagnosticsTool)
         }
     }

@@ -223,6 +223,10 @@ class ContextCompactor @Inject constructor(
 
         val markerId = UUID.randomUUID().toString()
         val compactedId = UUID.randomUUID().toString()
+        // 块 id：head 标记、marker、summary 三者共持，供 restoreCompactedRange 整体翻转。
+        // 覆盖式语义：后续压缩若把本块消息吸进新 head，会写入新块 id 接管——
+        // 恢复旧块只回它仍持有的那部分，与最新摘要不冲突。
+        val blockId = UUID.randomUUID().toString()
         val markerMessage = AgentMessage.UserMessage(
             id = markerId,
             content = CONTEXT_COMPACTION_MARKER
@@ -251,6 +255,11 @@ class ContextCompactor @Inject constructor(
                 // head 会被回放过滤掉（isCompacted）而摘要缺失 → 重启后那段上下文静默消失。
                 agentDatabase.withTransaction {
                     if (headIdsToMark.isNotEmpty()) {
+                        // 先接管块归属再标折叠：老压缩块若被本块吸走，其块 id 被覆盖，
+                        // 旧块恢复只会回它仍持有的部分（与最新摘要不冲突）。
+                        headIdsToMark.chunked(COMPACTED_IDS_CHUNK).forEach { chunk ->
+                            agentMessageDao.assignCompactionBlock(chunk, blockId)
+                        }
                         // 分块更新：Room 的 IN (...) 会为每个元素生成一个绑定参数，
                         // 超 SQLite 变量上限（旧版 999）会直接报错；压缩型会话的 head 可达数百条。
                         headIdsToMark.chunked(COMPACTED_IDS_CHUNK).forEach { chunk ->
@@ -275,7 +284,8 @@ class ContextCompactor @Inject constructor(
                             role = MessageRole.USER.name,
                             content = CONTEXT_COMPACTION_MARKER,
                             timestamp = insertBase,
-                            isCompactionMarker = true
+                            isCompactionMarker = true,
+                            compactionBlockId = blockId
                         )
                     )
                     agentMessageDao.insert(
@@ -285,7 +295,8 @@ class ContextCompactor @Inject constructor(
                             role = MessageRole.ASSISTANT.name,
                             content = compactedMessage.content,
                             timestamp = insertBase + 1,
-                            isContextSummary = true
+                            isContextSummary = true,
+                            compactionBlockId = blockId
                         )
                     )
                 }
@@ -346,17 +357,7 @@ class ContextCompactor @Inject constructor(
 
     private fun selectTailStartIndex(messages: List<AgentMessage>, usableTokens: Int): Int {
         val budget = ModelContextPolicy.preserveRecentTokens(usableTokens)
-        var total = 0
-        var splitIndex = messages.size
-
-        for (index in messages.indices.reversed()) {
-            val next = estimateTokens(messages[index])
-            if (total + next > budget && splitIndex < messages.size) break
-            total += next
-            splitIndex = index
-        }
-
-        return splitIndex
+        return CompactionTailSelector.compute(messages, budget) { msg -> estimateTokens(msg) }
     }
 
     private fun estimateTokens(messages: List<AgentMessage>): Int =

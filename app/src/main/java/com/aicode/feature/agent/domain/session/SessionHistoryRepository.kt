@@ -15,6 +15,24 @@ data class SessionHistoryItem(
     val compacted: Boolean
 )
 
+/** 一个压缩块的概览（恢复工具的列表行）。 */
+data class CompactionBlockOverview(
+    val blockId: String,
+    /** 该块当前持有的原文条数（不含 marker/summary）。 */
+    val originalCount: Int,
+    /** 当前处于已折叠状态的条数（恢复后为 0）。 */
+    val compactedCount: Int,
+    /** 覆盖的时间窗起点/终点。 */
+    val minTimestamp: Long,
+    val maxTimestamp: Long,
+    /** 该块摘要的首行预览（截到 [SUMMARY_PREVIEW_CHARS] 字符）；无摘要为空串。 */
+    val summaryPreview: String
+) {
+    companion object {
+        const val SUMMARY_PREVIEW_CHARS = 120
+    }
+}
+
 /**
  * 会话历史翻阅端口。
  *
@@ -38,4 +56,13 @@ interface SessionHistoryRepository {
 
     /** 与 [browse] 同一筛选口径下的总条数，供调用方判断是否还有更早的内容。 */
     suspend fun count(sessionId: String, keyword: String): Int
+
+    /** 列出会话内的压缩块（按时间升序），含每块摘要预览。 */
+    suspend fun listCompactionBlocks(sessionId: String): List<CompactionBlockOverview>
+
+    /**
+     * 恢复一个压缩块：原文回到回放，块内 marker/summary 退场。
+     * 返回 null 表示块不存在；成功时返回回灌上下文的原文条数。
+     */
+    suspend fun restoreBlock(sessionId: String, blockId: String): Int?
 }

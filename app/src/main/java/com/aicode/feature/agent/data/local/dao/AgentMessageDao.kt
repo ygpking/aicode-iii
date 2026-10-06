@@ -41,6 +41,73 @@ interface AgentMessageDao {
     @Query("UPDATE agent_messages SET isCompacted = 1 WHERE id IN (:ids)")
     suspend fun markMessagesCompactedByIds(ids: List<String>)
 
+    /** 把消息划入压缩块（老压缩块被新块吸走时由新块接管归属）。 */
+    @Query("UPDATE agent_messages SET compactionBlockId = :blockId WHERE id IN (:ids)")
+    suspend fun assignCompactionBlock(ids: List<String>, blockId: String)
+
+    /**
+     * 列出会话内的压缩块（恢复工具的数据源）：每个块一次压缩产生，head 消息 + marker + summary
+     * 共持同一 [AgentMessageEntity.compactionBlockId]。
+     *
+     * 摘要首行取该块 `isContextSummary = 1` 行的内容开头（SQLite 无「取组内首行」的简洁写法，
+     * 用 GROUP_CONCAT 顺序在旧 Android 上不可靠，故块列表只回块 id 与统计，摘要预览由调用方
+     * 用 [getCompactionBlockSummary] 单独取）。
+     */
+    @Query(
+        """
+        SELECT compactionBlockId AS blockId,
+               COUNT(*) AS messageCount,
+               SUM(CASE WHEN isCompacted = 1 THEN 1 ELSE 0 END) AS compactedCount,
+               MIN(timestamp) AS minTimestamp,
+               MAX(timestamp) AS maxTimestamp
+        FROM agent_messages
+        WHERE sessionId = :sessionId AND compactionBlockId IS NOT NULL
+        GROUP BY compactionBlockId
+        ORDER BY minTimestamp ASC
+        """
+    )
+    suspend fun listCompactionBlocks(sessionId: String): List<CompactionBlockInfo>
+
+    /** 取某压缩块的摘要文本（该块唯一一条 `isContextSummary = 1` 行的正文）。无则返回 null。 */
+    @Query(
+        """
+        SELECT content FROM agent_messages
+        WHERE sessionId = :sessionId AND compactionBlockId = :blockId AND isContextSummary = 1
+        LIMIT 1
+        """
+    )
+    suspend fun getCompactionBlockSummary(sessionId: String, blockId: String): String?
+
+    /** 恢复：块内原文回到回放（isCompacted 置 0），块内的 marker/summary 退场（置 1）。 */
+    @Query(
+        """
+        UPDATE agent_messages
+        SET isCompacted = CASE WHEN isContextSummary = 1 OR isCompactionMarker = 1 THEN 1 ELSE 0 END
+        WHERE sessionId = :sessionId AND compactionBlockId = :blockId
+        """
+    )
+    suspend fun restoreCompactionBlock(sessionId: String, blockId: String)
+
+    /** 撤销恢复：块内原文重新折叠（isCompacted 置 1），块内的 marker/summary 回场（置 0）。 */
+    @Query(
+        """
+        UPDATE agent_messages
+        SET isCompacted = CASE WHEN isContextSummary = 1 OR isCompactionMarker = 1 THEN 0 ELSE 1 END
+        WHERE sessionId = :sessionId AND compactionBlockId = :blockId
+        """
+    )
+    suspend fun retakeCompactionBlock(sessionId: String, blockId: String)
+
+    /** 块内已折叠（非 marker/summary）的原文条数，供恢复前估算将回灌的上下文量。 */
+    @Query(
+        """
+        SELECT COUNT(*) FROM agent_messages
+        WHERE sessionId = :sessionId AND compactionBlockId = :blockId
+          AND isCompacted = 1 AND isContextSummary = 0 AND isCompactionMarker = 0
+        """
+    )
+    suspend fun countCompactedByBlock(sessionId: String, blockId: String): Int
+
     @Query("DELETE FROM agent_messages")
     suspend fun deleteAllMessages()
 
@@ -201,4 +268,15 @@ data class SessionStorageUsage(
     val title: String?,
     val messageCount: Int,
     val bytes: Long
+)
+
+/** 一个上下文压缩块的统计投影（[AgentMessageDao.listCompactionBlocks] 的行类型）。 */
+data class CompactionBlockInfo(
+    val blockId: String,
+    /** 块内总行数（head 原文 + marker + summary）。 */
+    val messageCount: Int,
+    /** 当前仍处于已折叠状态的行数（恢复后为 0，再次折叠后回升）。 */
+    val compactedCount: Int,
+    val minTimestamp: Long,
+    val maxTimestamp: Long
 )

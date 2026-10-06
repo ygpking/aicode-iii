@@ -225,6 +225,13 @@ class MessagePersistenceUseCase @Inject constructor(
         val entities = agentMessageDao.getMessagesBySessionOnce(sessionId)
             .filter { !it.isCompacted }
 
+        // 刚从压缩块恢复（块归属非空且未折叠）：供压缩器把恢复段优先进 tail 保护区。
+        // 本地属性而非实体字段：isCompacted=0 且 compactionBlockId!=null 本身就是「已恢复」的完整判据。
+        val restoredIds = entities.asSequence()
+            .filter { !it.isCompacted && !it.compactionBlockId.isNullOrBlank() }
+            .mapTo(HashSet()) { it.id }
+        fun AgentMessageEntity.isRestored(): Boolean = id in restoredIds
+
         // 第一遍：求 assistant 声明的 toolCallId 与 tool 结果 toolCallId 的交集。
         val declaredIds = mutableSetOf<String>()
         val resultIds = mutableSetOf<String>()
@@ -265,7 +272,7 @@ class MessagePersistenceUseCase @Inject constructor(
                             append("附件：")
                             attachments.forEach { att ->
                                 append('\n')
-                                append("- ")
+                                append("-")
                                 append(att.fileName)
                                 append("：")
                                 append(att.containerPath)
@@ -282,7 +289,8 @@ class MessagePersistenceUseCase @Inject constructor(
                         AgentMessage.UserMessage(
                             id = e.id,
                             content = finalContent,
-                            images = images
+                            images = images,
+                            restoredFromCompaction = e.isRestored()
                         )
                     )
                 }
@@ -319,7 +327,8 @@ class MessagePersistenceUseCase @Inject constructor(
                                 signature = e.signature ?: "",
                                 thinkingBlocksJson = e.thinkingBlocksJson ?: "",
                                 // 附件里的图片按路径重建 base64（带缓存），供下一轮上下文回放。
-                                images = imageAttachments.mapNotNull { it.toAgentImage() }
+                                images = imageAttachments.mapNotNull { it.toAgentImage() },
+                                restoredFromCompaction = e.isRestored()
                             )
                         )
                         // 全孤儿轮：按声明顺序补占位结果，保持 assistant(tool_calls) 与 tool 结果配对。
@@ -343,7 +352,8 @@ class MessagePersistenceUseCase @Inject constructor(
                             AgentMessage.ToolResultMessage(
                                 id = tcId,
                                 toolName = e.toolName ?: "unknown",
-                                result = e.content
+                                result = e.content,
+                                restoredFromCompaction = e.isRestored()
                             )
                         )
                     }

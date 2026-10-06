@@ -50,7 +50,11 @@ data class AgentMessageEntity(
     // 位置在末尾：备份 DTO 映射按位置参数，插到中间会错位。
     val thinkingBlocksJson: String? = null,
     // 仅 ASSISTANT 行：本轮输入中命中服务端缓存的 token 数，UI 据此显示缓存命中率。同样只能追加在末尾。
-    val cachedInputTokens: Int = 0
+    val cachedInputTokens: Int = 0,
+    // 上下文压缩块 id：同一次压缩写入的 head 消息、marker 与摘要共持同一 id，
+    // 供恢复时作为整体翻转（head 的 isCompacted 置 0、marker/summary 的置 1）。
+    // 只能追加在末尾：备份 DTO 映射按位置参数，插到中间会错位。存量数据为 null（老压缩无块边界，不可恢复）。
+    val compactionBlockId: String? = null
 ) {
     fun toUIMessage(): AgentUIMessage {
         val roleEnum = MessageRole.valueOf(role)

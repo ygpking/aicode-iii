@@ -239,7 +239,9 @@ data class AgentMessageDto(
     val isContextSummary: Boolean = false,
     val isCompactionMarker: Boolean = false,
     /** Anthropic thinking / redacted_thinking 内容块的原样快照（JSON 数组文本）。 */
-    val thinkingBlocksJson: String? = null
+    val thinkingBlocksJson: String? = null,
+    /** 上下文压缩块 id（同一次压缩的 head/marker/summary 共持），供恢复时整体翻转。只能追加在末尾。 */
+    val compactionBlockId: String? = null
 )
 
 @Serializable
