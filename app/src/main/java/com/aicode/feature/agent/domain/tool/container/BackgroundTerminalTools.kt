@@ -4,6 +4,7 @@ import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.container.CommandSleepGuard
 import com.aicode.feature.agent.domain.container.sanitizeCommandForLog
 import com.aicode.feature.agent.domain.tool.AgentTool
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
 import com.aicode.feature.agent.domain.tool.StreamingAgentTool
@@ -80,6 +81,8 @@ class TerminalSessionTool @Inject constructor(
     }
 
     override val name = "terminal"
+    // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
+    override val renderHint = ToolRenderHint.TERMINAL
     override val description =
         "管理常驻后台终端会话页面。支持启动后台命令、按标签发送输入/快捷键、读取输出、列出/关闭标签。耗时长且会自行结束的任务（编译、测试）用 start + notify=true：start 只返回初始输出，结束后系统会主动回调并触发新一轮，勿轮询；常驻服务用 notify=false，需要结果时再 read。中断前台进程用 key=ctrl+c。"
     override val permissionPolicy = ToolPermissionPolicy.ASK

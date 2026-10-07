@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.tool.file
 
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import com.aicode.feature.agent.domain.tool.FileReadStateStore
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
@@ -32,6 +33,8 @@ class ReadFileTool @Inject constructor(
     private val readStateStore: FileReadStateStore
 ) : AbstractContextualTool() {
     override val name = "readFile"
+    // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
+    override val renderHint = ToolRenderHint.READ
     override val description = "读取指定路径的文件内容。支持工作区文件或容器绝对路径的系统文件。单次读取受文件大小限制，超大文件可通过 start_line 分段读取。"
     override val capabilities = setOf(ToolCapability.READ_WORKSPACE)
     override val parameters = mapOf(

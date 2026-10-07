@@ -91,12 +91,32 @@ data class PendingToolPermission(
     val sessionId: String = ""
 )
 
+/**
+ * 工具的「呈现意图」元数据（抄 DSH defineTool 的 presentCall/presentResult 思路）：
+ * UI 层据此统一选卡片样式，避免每个工具各写一套渲染分支。
+ * 仅在「语义与默认分支不一致」的工具上 override；未标注 = GENERIC。
+ */
+enum class ToolRenderHint(val token: String) {
+    GENERIC("generic"),
+    TERMINAL("terminal"),
+    DIFF("diff"),
+    READ("read"),
+    SEARCH("search"),
+    WEB("web")
+}
+
 abstract class AgentTool {
     abstract val name: String
     abstract val description: String
     abstract val parameters: Map<String, ToolParameter>
     open val permissionPolicy: ToolPermissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     open val capabilities: Set<ToolCapability> = emptySet()
+
+    /**
+     * 呈现意图：UI 消费（如差异卡门控）优先读它，缺失回退按工具名判定。
+     * 只影响观感，不影响执行与工具选择。
+     */
+    open val renderHint: ToolRenderHint = ToolRenderHint.GENERIC
 
     open fun effectiveCapabilities(args: Map<String, JsonElement>): Set<ToolCapability> {
         return capabilities

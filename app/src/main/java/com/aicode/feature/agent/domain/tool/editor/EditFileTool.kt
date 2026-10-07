@@ -4,6 +4,7 @@ import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LineDiff
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import com.aicode.feature.agent.domain.tool.FileReadStateStore
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
@@ -53,6 +54,8 @@ class EditFileTool @Inject constructor(
     private val writeLease: SubAgentWriteLease
 ) : AbstractContextualTool() {
     override val name = "editFile"
+    // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
+    override val renderHint = ToolRenderHint.DIFF
     override val description =
         "通过字符串匹配替换修改已存在的文件内容。作为局部修改文件的首选工具。支持通过 edits 数组一次性应用多处修改，整批编辑是原子的——任一处匹配失败将整批回滚，文件不会处于改了一半的状态。匹配不要求逐字节相同：智能引号、多余行号前缀、转义失真、缩进不齐都会被自动容错；改前需已读过该文件。整文件重写请用 writeFile。"
     override val permissionPolicy = ToolPermissionPolicy.ASK

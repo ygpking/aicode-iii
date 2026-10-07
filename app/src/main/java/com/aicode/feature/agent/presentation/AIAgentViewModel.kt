@@ -132,7 +132,8 @@ import javax.inject.Inject
 @HiltViewModel
 class AIAgentViewModel @Inject constructor(
     private val agentWorkflow: AgentWorkflow,
-    private val toolRegistry: ToolRegistry,
+    // 暴露给 AIChatPanel：经 LocalToolRegistry 供渲染组件按工具元数据（renderHint）选卡片。
+    val toolRegistry: ToolRegistry,
     private val agentMessageDao: AgentMessageDao,
     private val chatSessionDao: ChatSessionDao,
     private val llmCallRecordDao: LlmCallRecordDao,

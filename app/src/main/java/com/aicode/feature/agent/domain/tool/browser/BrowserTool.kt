@@ -5,6 +5,7 @@ import com.aicode.feature.agent.domain.tool.AgentTool
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolParameter
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import com.aicode.feature.agent.domain.tool.ToolResult
 import com.aicode.feature.agent.domain.subagent.SubAgentWriteLease
 import com.aicode.feature.workspace.domain.FileAccessProvider
@@ -34,6 +35,8 @@ class BrowserTool @Inject constructor(
     }
 
     override val name = "browser"
+    // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
+    override val renderHint = ToolRenderHint.WEB
     override val description = "控制内置浏览器执行自动化操作。支持多标签页（Multi-tab）与后台运行。" +
         "所有操作支持可选参数 tabId（缺省时作用于当前激活的标签页）。" +
         "常规操作不会自动截图，需查看页面视觉内容时请显式调用 action=\"screenshot\"，截图将自动保存到项目 .aicode 目录。" +

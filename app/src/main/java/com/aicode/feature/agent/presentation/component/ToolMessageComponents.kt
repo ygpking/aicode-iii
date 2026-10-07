@@ -36,6 +36,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.staticCompositionLocalOf
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -90,6 +93,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import com.aicode.R
 
+/** 工具注册表的组合层通路：供渲染组件按工具元数据（如 renderHint）选卡片，而非按名硬编码。 */
+internal val LocalToolRegistry = staticCompositionLocalOf<com.aicode.feature.agent.domain.tool.ToolRegistry?> { null }
+
 internal val DiffAddBg: Color
     @Composable get() = MaterialTheme.semanticColors.diffAddBg
 
@@ -129,8 +135,13 @@ internal fun ToolMessageBody(
 ) {
     val streaming = liveOutput != null
     val running = message.isToolRunning(liveOutput)
+    // 差异卡门控：优先读工具的 renderHint 元数据（抄 DSH present 思路），
+    // registry 不可达或非 DIFF 时回退按工具名判定，标注前后行为一致。
+    val registry = LocalToolRegistry.current
+    val hintDiff = registry?.getAvailableTools()
+        ?.firstOrNull { it.name == message.toolName }?.renderHint == ToolRenderHint.DIFF
     val edit = if (!running && !message.isError &&
-        (message.toolName == "editFile" || message.toolName == "writeFile")
+        (hintDiff || message.toolName == "editFile" || message.toolName == "writeFile")
     ) {
         remember(message.id, message.content) { parseEditDiff(message.content) }
     } else null

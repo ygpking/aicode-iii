@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.tool.explorer
 
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.tool.AgentTool
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolParameter
@@ -36,6 +37,8 @@ class ListFilesTool @Inject constructor(
     }
 
     override val name = "list"
+    // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
+    override val renderHint = ToolRenderHint.READ
     override val description = "按 ls 风格列出文件和目录。例：args=\"-la ~/workspace/app\"。支持追加 `| head [-n N]` 截断输出。"
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities = setOf(ToolCapability.READ_WORKSPACE)

@@ -1191,7 +1191,8 @@ fun AIChatPanel(
     CompositionLocalProvider(
         LocalMarkdownImageTransformer provides markdownImageTransformer,
         LocalImageViewer provides imageViewerState,
-        LocalAttachmentOpener provides attachmentOpener
+        LocalAttachmentOpener provides attachmentOpener,
+        LocalToolRegistry provides viewModel.toolRegistry
     ) {
         Scaffold(
         containerColor = MaterialTheme.colorScheme.background,

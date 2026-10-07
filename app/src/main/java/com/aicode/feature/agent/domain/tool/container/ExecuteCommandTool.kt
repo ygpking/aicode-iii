@@ -9,6 +9,7 @@ import com.aicode.feature.agent.domain.container.CommandSleepGuard
 import com.aicode.feature.agent.domain.container.HostMemoryProbe
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.tool.AgentTool
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import com.aicode.feature.agent.domain.tool.LineFolder
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.PendingToolPermission
@@ -54,6 +55,8 @@ class ExecuteCommandTool @Inject constructor(
     }
 
     override val name = "Bash"
+    // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
+    override val renderHint = ToolRenderHint.TERMINAL
     override val description = "在当前执行环境（本地 Linux 容器或远程 SSH 服务器）中执行 Shell 命令。支持 npm、git 等绝大多数终端操作。对于耗时任务（如安装大量依赖、启动服务器等），请不要在此命令末尾加 '&' 挂后台，而是强烈建议改用 `terminal` 工具（action=\"start\"）来创建常驻终端页面，这样才能方便后续查看实时输出结果和管理进程。另外，含独立 `sleep N`（N 超过 30 秒）的命令会被直接拦截：禁止用固定延时等待外部状态（构建、测试、CI、子代理、文件生成等）；长任务用 `terminal`（action=\"start\", notify=true）后台运行，结束会主动通知。"
     override val permissionPolicy = ToolPermissionPolicy.ASK
     override val capabilities = setOf(ToolCapability.EXECUTE_COMMANDS)

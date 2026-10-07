@@ -2,6 +2,7 @@ package com.aicode.feature.agent.domain.tool.search
 
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.agent.domain.tool.AgentTool
+import com.aicode.feature.agent.domain.tool.ToolRenderHint
 import com.aicode.feature.agent.domain.tool.ParameterType
 import com.aicode.feature.agent.domain.tool.ToolParameter
 import com.aicode.feature.agent.domain.tool.ToolCapability
@@ -25,6 +26,8 @@ class WebFetchTool @Inject constructor() : AgentTool() {
     }
 
     override val name = "webfetch"
+    // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
+    override val renderHint = ToolRenderHint.WEB
     override val description = "抓取指定 HTTP/HTTPS 网页内容。支持提取网页正文为纯文本或返回原始 HTML 结构。"
     override val capabilities = setOf(ToolCapability.NETWORK_READ)
 
