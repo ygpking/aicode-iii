@@ -33,6 +33,14 @@ interface CheckpointDao {
     @Query("SELECT COUNT(*) FROM checkpoint_file_snapshots WHERE checkpointId = :checkpointId AND filePath = :filePath")
     suspend fun countSnapshot(checkpointId: String, filePath: String): Int
 
+    /** 本会话快照覆盖的去重文件清单（含 CREATE 型）；供崩溃恢复时提示「重跑前需核对的文件」。 */
+    @Query(
+        "SELECT DISTINCT filePath FROM checkpoint_file_snapshots " +
+            "WHERE checkpointId IN (SELECT id FROM session_checkpoints WHERE sessionId = :sessionId) " +
+            "ORDER BY filePath"
+    )
+    suspend fun listDistinctFilesForSession(sessionId: String): List<String>
+
     @Query("DELETE FROM session_checkpoints WHERE sessionId = :sessionId")
     suspend fun deleteCheckpointsForSession(sessionId: String)
 

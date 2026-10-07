@@ -6,10 +6,12 @@ import com.aicode.feature.agent.data.local.dao.CheckpointDao
 import com.aicode.feature.agent.data.local.entity.CheckpointEntity
 import com.aicode.feature.agent.data.local.entity.CheckpointFileSnapshotEntity
 import com.aicode.feature.workspace.domain.FileAccessProvider
+import com.aicode.core.util.runCatchingCancellable
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
@@ -39,7 +41,8 @@ class CheckpointManager @Inject constructor(
         prompt: String
     ): CheckpointEntity = withContext(Dispatchers.IO) {
         val checkpointId = UUID.randomUUID().toString()
-        val snippet = if (prompt.length > 60) prompt.take(60) + "..." else prompt
+        // 展示用摘要：与 DurableTaskRepository 的入账摘要同为 80 字，避免两套表展示长度不一致。
+        val snippet = if (prompt.length > 80) prompt.take(80) + "..." else prompt
         val entity = CheckpointEntity(
             id = checkpointId,
             sessionId = sessionId,
@@ -85,11 +88,18 @@ class CheckpointManager @Inject constructor(
         val snapshotFileName = "${UUID.randomUUID()}_${File(filePath).name}"
         val snapshotFile = File(snapshotDir, snapshotFileName)
 
-        if (changeType == "MODIFY") {
-            val originalContent = fileAccess.readFile(filePath)
-            snapshotFile.writeText(originalContent)
-        } else {
-            snapshotFile.writeText("") // 标示创建空记录
+        // 顺手清掉历史遗留的 .tmp（中断残留），避免无界堆积。
+        snapshotDir.listFiles { f -> f.isFile && f.name.endsWith(".tmp") }?.forEach { it.delete() }
+
+        // 先写同目录 .tmp 再 rename：writeText 写一半进程被杀会留下截断快照，
+        // restoreCodeToCheckpoint 会把截断内容覆盖回原文件（数据丢失放大）。
+        // 同目录 rename 原子，失败即无快照（fail-safe：没快照不该被回滚覆盖）。
+        val tmp = File(snapshotDir, "$snapshotFileName.tmp")
+        val content = if (changeType == "MODIFY") fileAccess.readFile(filePath) else ""
+        tmp.writeText(content)
+        if (!tmp.renameTo(snapshotFile)) {
+            tmp.delete()
+            throw IOException("checkpoint snapshot rename failed: ${snapshotFile.absolutePath}")
         }
 
         val snapshotEntity = CheckpointFileSnapshotEntity(
@@ -146,6 +156,14 @@ class CheckpointManager @Inject constructor(
         }
         FileLogger.i(TAG, "还原结束: session=$sessionId 共处理 $restoredFileCount 个文件")
         restoredFileCount
+    }
+
+    /**
+     * 本会话快照覆盖的去重文件清单：供崩溃恢复时提示「重跑前需核对的文件」。
+     */
+    suspend fun listSessionModifiedFiles(sessionId: String): List<String> = withContext(Dispatchers.IO) {
+        runCatchingCancellable { checkpointDao.listDistinctFilesForSession(sessionId) }
+            .getOrDefault(emptyList())
     }
 
     /**

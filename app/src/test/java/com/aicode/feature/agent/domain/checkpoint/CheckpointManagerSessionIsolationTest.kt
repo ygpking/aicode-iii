@@ -151,6 +151,12 @@ class CheckpointManagerSessionIsolationTest {
         override suspend fun countSnapshot(checkpointId: String, filePath: String): Int =
             snapshots.count { it.checkpointId == checkpointId && it.filePath == filePath }
 
+        // 对齐 Room 查询：join 本会话的 checkpoints 后按 filePath 去重排序
+        override suspend fun listDistinctFilesForSession(sessionId: String): List<String> {
+            val ids = checkpoints.filter { it.sessionId == sessionId }.mapTo(HashSet()) { it.id }
+            return snapshots.filter { it.checkpointId in ids }.map { it.filePath }.distinct().sorted()
+        }
+
         override suspend fun deleteCheckpointsForSession(sessionId: String) {
             checkpoints.removeAll { it.sessionId == sessionId }
         }

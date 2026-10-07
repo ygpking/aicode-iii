@@ -2,8 +2,10 @@ package com.aicode.feature.agent.domain.tool
 
 import com.aicode.core.util.EventTrace
 import com.aicode.core.util.FileLogger
+import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.session.SessionHistoryRepository
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -29,7 +31,8 @@ import javax.inject.Inject
  *    与摘要预览再决定；直接带 block_id 调用则立即恢复并返回回灌条数。
  */
 class RestoreCompactedRangeTool @Inject constructor(
-    private val sessionHistoryRepository: SessionHistoryRepository
+    private val sessionHistoryRepository: SessionHistoryRepository,
+    private val checkpointManager: CheckpointManager
 ) : AbstractContextualTool() {
     private companion object {
         const val TAG = "RestoreCompactedRange"
@@ -113,15 +116,26 @@ class RestoreCompactedRangeTool @Inject constructor(
             "实际回灌 0 条：该块原文可能已被后续压缩接管、或此前已恢复过。" +
                 "可先不带参数重新列块确认。"
         } else {
-            "已恢复：原文回到上下文回放，本块的旧摘要已退场。实际回灌 $restored 条原文，下轮请求生效。"
+            // 大块提示：恢复段直接进 tail 保护区，restored 过大时下一轮可能立即再次压缩。
+            "已恢复：原文回到上下文回放，本块的旧摘要已退场。实际回灌 $restored 条原文，下轮请求生效。" +
+                (if (restored > 50) " 恢复段较大，下一轮请求可能立即再次触发压缩。" else "")
         }
-        return ToolResult.Success(
-            JsonObject(
-                mapOf(
-                    "restored_messages" to JsonPrimitive(restored),
-                    "note" to JsonPrimitive(note)
-                )
-            )
+        // 崩溃恢复场景的关键提示：崩溃前工具已写的文件不随恢复回滚，重跑会重复副作用。
+        // 这里只列清单让模型/用户显式决定（不自动回滚——回滚是改用户文件的副作用）。
+        val modifiedFiles = runCatching {
+            checkpointManager.listSessionModifiedFiles(sessionId)
+        }.getOrDefault(emptyList())
+        val resultMap = mutableMapOf<String, JsonElement>(
+            "restored_messages" to JsonPrimitive(restored),
+            "note" to JsonPrimitive(note)
         )
+        if (modifiedFiles.isNotEmpty()) {
+            resultMap["files_modified_before_crash"] = JsonArray(modifiedFiles.map { JsonPrimitive(it) })
+            resultMap["note"] = JsonPrimitive(
+                note + " 注意：本会话崩溃前工具已修改过 ${modifiedFiles.size} 个文件（见 " +
+                    "files_modified_before_crash），重跑任务前先核对这些文件是否需要回滚。"
+            )
+        }
+        return ToolResult.Success(JsonObject(resultMap))
     }
 }
