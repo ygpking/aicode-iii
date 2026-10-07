@@ -1037,6 +1037,9 @@
     <string name="subagent_model">Model</string>
     <string name="subagent_tools">Tools</string>
     <string name="subagent_inject">Injected prompts</string>
+    <string name="subagent_interaction_modes">Interaction modes</string>
+    <string name="subagent_interaction_one_shot_hint">One-shot: cannot send further messages after completion</string>
+    <string name="subagent_interaction_continuable_hint">Continuable: can send follow-up messages after completion</string>
     <string name="subagent_prompt">Agent prompt</string>
     <string name="subagent_source_file">Definition file</string>
     <string name="subagent_inherit_parent">Inherit from parent session</string>

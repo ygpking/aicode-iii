@@ -42,6 +42,7 @@ import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
 import com.aicode.feature.agent.domain.subagent.AgentSaveError
 import com.aicode.feature.agent.domain.subagent.InjectPart
+import com.aicode.feature.agent.domain.subagent.SubAgentInteractionMode
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.settings.data.remote.ModelApiService
 import com.aicode.feature.settings.data.remote.ContainerImageDownloader
@@ -244,6 +245,7 @@ data class SubAgentUiEntry(
     val allowedTools: List<String>,
     val disallowedTools: List<String>,
     val inject: Set<InjectPart>,
+    val interactionModes: Set<SubAgentInteractionMode>,
     val prompt: String,
     val filePath: String?
 )
@@ -1265,6 +1267,7 @@ class SettingsViewModel @Inject constructor(
                             allowedTools = entry.definition.allowedTools,
                             disallowedTools = entry.definition.disallowedTools,
                             inject = entry.definition.inject,
+                            interactionModes = entry.definition.interactionModes,
                             prompt = entry.definition.prompt,
                             filePath = entry.definition.filePath
                         )

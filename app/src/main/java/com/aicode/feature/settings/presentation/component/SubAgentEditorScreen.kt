@@ -51,6 +51,7 @@ import com.aicode.feature.agent.domain.subagent.AgentDefinitionForm
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
 import com.aicode.feature.agent.domain.subagent.AgentSaveError
 import com.aicode.feature.agent.domain.subagent.InjectPart
+import com.aicode.feature.agent.domain.subagent.SubAgentInteractionMode
 import com.aicode.feature.settings.presentation.SubAgentSaveState
 import com.aicode.feature.settings.presentation.SubAgentUiEntry
 import com.aicode.feature.settings.domain.model.AIProviderConfig
@@ -94,6 +95,13 @@ internal fun SubAgentEditorScreen(
     // Set<InjectPart> 进不了 Bundle，存 token 列表；切页或旋转后仍能还原。
     var injectTokens by rememberSaveable {
         mutableStateOf((initial?.inject ?: AgentDefinition.DEFAULT_INJECT).map { it.token })
+    }
+    // 交互模式同上：存 token 列表，空表 = ALL（两者都支持）。
+    var modeTokens by rememberSaveable {
+        mutableStateOf(
+            (initial?.interactionModes?.takeIf { it != SubAgentInteractionMode.ALL } ?: emptySet())
+                .map { it.token }
+        )
     }
     var allowTools by rememberSaveable { mutableStateOf(initial?.allowedTools ?: emptyList()) }
     var denyTools by rememberSaveable { mutableStateOf(initial?.disallowedTools ?: emptyList()) }
@@ -149,6 +157,9 @@ internal fun SubAgentEditorScreen(
                                     allowedTools = allowTools,
                                     disallowedTools = denyTools,
                                     inject = injectTokens.mapNotNull { InjectPart.fromToken(it) }.toSet(),
+                                    interactionModes = modeTokens.mapNotNull {
+                                        SubAgentInteractionMode.fromToken(it)
+                                    }.toSet(),
                                     prompt = prompt.trim()
                                 ),
                                 scope
@@ -319,6 +330,48 @@ internal fun SubAgentEditorScreen(
                                     injectTokens + part.token
                                 } else {
                                     injectTokens - part.token
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+
+            SettingsGroupHeader(text = stringResource(R.string.subagent_interaction_modes))
+            SettingsGroup {
+                SubAgentInteractionMode.entries.forEachIndexed { index, mode ->
+                    if (index > 0) SettingsDivider()
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = Spacing.lg, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = mode.token,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = stringResource(
+                                    if (mode == SubAgentInteractionMode.ONE_SHOT) {
+                                        R.string.subagent_interaction_one_shot_hint
+                                    } else {
+                                        R.string.subagent_interaction_continuable_hint
+                                    }
+                                ),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        AppSwitch(
+                            checked = mode.token in modeTokens,
+                            onCheckedChange = { checked ->
+                                modeTokens = if (checked) {
+                                    modeTokens + mode.token
+                                } else {
+                                    modeTokens - mode.token
                                 }
                             }
                         )

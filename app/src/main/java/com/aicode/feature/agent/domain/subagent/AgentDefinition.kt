@@ -154,7 +154,8 @@ data class AgentDefinitionForm(
     val allowedTools: List<String> = emptyList(),
     val disallowedTools: List<String> = emptyList(),
     val inject: Set<InjectPart> = AgentDefinition.DEFAULT_INJECT,
-    val prompt: String = ""
+    val prompt: String = "",
+    val interactionModes: Set<SubAgentInteractionMode> = SubAgentInteractionMode.ALL
 )
 
 /** 保存子代理定义失败的原因。 */
