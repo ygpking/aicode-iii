@@ -57,6 +57,26 @@ class ContainerInstaller @Inject constructor(
         }
 
         /**
+         * 首次启动时释放内置示例扩展到 ~/.aicode/extensions/extension-starter/。
+         *
+         * 与 extractSkills（每次覆盖）刻意不同：只在本机从未释放过时复制一次，且以标记文件为准
+         * 而非检查目录——用户在管理页删除后重启不会「复活」，示例包的意义就是可参考可丢弃。
+         * 想重新体验：手动删除标记文件后重启（或让 AI 重写扩展内容）。
+         */
+        fun extractExtensionStarter(context: Context) {
+            val destRoot = File(File(context.filesDir, "aicode"), "extensions")
+            val marker = File(destRoot, ".starter-released")
+            if (marker.exists()) return
+            runCatching {
+                extractAssetsRecursive(context, "extension-starter", File(destRoot, "extension-starter"))
+                destRoot.mkdirs()
+                marker.writeText("released")
+            }.onFailure {
+                FileLogger.w(TAG, "释放内置示例扩展失败: ${it.message}", it)
+            }
+        }
+
+        /**
          * 从 assets 提取内置提示词到 ~/.aicode/prompts/，每次启动全量覆盖，使 App 升级后提示词随之更新。
          *
          * 用户自定义覆盖放在 ~/.aicode/prompts.custom/（同名即覆盖），本方法不触碰该目录，
@@ -639,6 +659,7 @@ class ContainerInstaller @Inject constructor(
             extractProvisionScript(context)
             extractEnvTool(context)
             extractSkills(context)
+            extractExtensionStarter(context)
         }
     }
 

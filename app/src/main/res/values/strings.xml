@@ -1043,7 +1043,7 @@
     <string name="subagent_interaction_continuable_hint">可继续：完成后仍可对其发送追加消息</string>
     <string name="settings_extensions">扩展</string>
     <string name="extensions_empty">没有已安装的扩展</string>
-    <string name="extensions_empty_hint">在 ~/.aicode/extensions/ 或项目的 .aicode/extensions/ 下放置 manifest.json 即可贡献技能、提示词与记忆</string>
+    <string name="extensions_empty_hint">扩展是一个目录 + 一份 manifest.json，可批量贡献技能、提示词、记忆与 MCP 配置。首次启动已内置「入门示例扩展」，可点开参考或直接删除；也可直接让 AI 帮你写一个（它会问 extension-guide 技能）。</string>
     <string name="extensions_no_project">当前项目没有安装扩展</string>
     <string name="extensions_no_global">全局没有安装扩展</string>
     <string name="extension_scope_project">项目</string>

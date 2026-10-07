@@ -38,3 +38,9 @@
 - 配置分全局（`~/.aicode/mcp.json`）与项目级（`<projectRoot>/.aicode/mcp.json`），项目级优先。
 - 用 `manageMcp` 安装、移除或列出（`scope` 指定 global 或 project）；不要手动编辑 mcp.json。
 - 支持远程 HTTP（`url`，可选 `headers` 鉴权）与本地 stdio（`command`，可选 `args`）。新增或移除后下一次会话生效。
+
+## 扩展（贡献 manifest）
+- 扩展是声明式资源包：一个目录 + `manifest.json`，批量贡献技能/提示词/记忆/MCP。两级根：全局 `~/.aicode/extensions/<extId>/`、项目 `<projectRoot>/.aicode/extensions/<extId>/`。
+- 用户问「怎么写扩展/做个扩展」时，先 `loadSkill` 加载 `extension-guide`（内置示例扩展贡献，含完整字段与层叠规则）；技能不存在时直接按该指南的目录约定用文件工具创建。
+- 写完提醒用户重启 App 或新开会话生效；生效后技能出现在技能清单、记忆出现在记忆清单、扩展在设置 →「扩展」页可见。
+- 解析失败的扩展会在扩展页行内红字列出问题，排查时优先看那里，不要盲改其它配置。

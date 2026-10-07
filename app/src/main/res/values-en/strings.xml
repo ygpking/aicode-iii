@@ -1042,7 +1042,7 @@
     <string name="subagent_interaction_continuable_hint">Continuable: can send follow-up messages after completion</string>
     <string name="settings_extensions">Extensions</string>
     <string name="extensions_empty">No extensions installed</string>
-    <string name="extensions_empty_hint">Place a manifest.json under ~/.aicode/extensions/ or the project\'s .aicode/extensions/ to contribute skills, prompts and memory</string>
+    <string name="extensions_empty_hint">An extension is a directory plus a manifest.json that contributes skills, prompts, memory and MCP config in one go. A built-in "Starter" example is preinstalled on first launch — open it for reference or just delete it. You can also simply ask the AI to write one for you (it will consult the extension-guide skill).</string>
     <string name="extensions_no_project">No extensions installed in the current project</string>
     <string name="extensions_no_global">No global extensions installed</string>
     <string name="extension_scope_project">Project</string>
