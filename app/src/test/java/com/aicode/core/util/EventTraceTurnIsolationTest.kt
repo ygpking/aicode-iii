@@ -4,6 +4,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import java.io.File
+import org.junit.Assume.assumeTrue
+import org.junit.BeforeClass
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -20,6 +23,16 @@ import org.robolectric.RobolectricTestRunner
  */
 @RunWith(RobolectricTestRunner::class)
 class EventTraceTurnIsolationTest {
+
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun guardEnvironment() {
+            val androidContainer = File("/system").exists() ||
+                System.getProperty("java.library.path")?.contains("/data/app") == true
+            assumeTrue("Robolectric 仅支持标准 Linux/CI 环境（当前为 Android PRoot 容器，会 UnsatisfiedLinkError）", !androidContainer)
+        }
+    }
 
     /** 两个会话各自的 `t1` 必须拿到**独立**的 seq 序列，不得共享计数器。 */
     @Test
