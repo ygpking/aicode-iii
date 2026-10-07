@@ -6,7 +6,17 @@ import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import java.io.File
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import com.aicode.core.net.AppProxy
+import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LogLevel
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
@@ -82,6 +92,8 @@ import com.aicode.feature.workspace.domain.model.RemoteConnection
 import com.aicode.feature.workspace.domain.repository.RemoteRepository
 import com.aicode.feature.agent.domain.extension.ExtensionRepository
 import com.aicode.feature.agent.domain.extension.ExtensionScope
+import com.aicode.feature.agent.domain.memory.MemoryRepository
+import com.aicode.feature.agent.domain.memory.MemoryScope
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.DashboardContext
@@ -348,6 +360,7 @@ class SettingsViewModel @Inject constructor(
     private val terminalSettingsRepository: TerminalSettingsRepository,
     private val proxySettingsRepository: ProxySettingsRepository,
     private val extensionRepository: ExtensionRepository,
+    private val memoryRepository: MemoryRepository,
     private val workspaceRepository: WorkspaceRepository
 ) : ViewModel() {
     private companion object {
@@ -1421,6 +1434,161 @@ class SettingsViewModel @Inject constructor(
                 withContext(Dispatchers.IO) { target.deleteRecursively() }
             }
             refreshExtensions()
+        }
+    }
+
+    // ── 记忆列表 ──
+
+    /** 记忆列表页的数据行：frontmatter 元数据摘要。 */
+    data class MemoryUiEntry(
+        val name: String,
+        val description: String,
+        val scope: MemoryScope,
+        val kind: String,
+        val pinned: Boolean,
+        val recallCount: Int,
+        val lastUsedMs: Long,
+        val updatedAtMs: Long,
+        val malformed: Boolean
+    )
+
+    /** 记忆冲突（从回执文件运行时派生：isMerge 且 relationship=contradict 的条目）。 */
+    data class MemoryConflict(
+        val receiptId: String,
+        val candidateName: String,
+        val targetName: String,
+        val contentPreview: String,
+        val evidence: String
+    )
+
+    private val _memories = MutableStateFlow<List<MemoryUiEntry>>(emptyList())
+    val memories: StateFlow<List<MemoryUiEntry>> = _memories.asStateFlow()
+
+    private val _memoryConflicts = MutableStateFlow<List<MemoryConflict>>(emptyList())
+    val memoryConflicts: StateFlow<List<MemoryConflict>> = _memoryConflicts.asStateFlow()
+
+    /** 重新扫描记忆与冲突（进入记忆页 / 裁决后调用）。 */
+    fun refreshMemories() {
+        viewModelScope.launch {
+            val (list, conflicts) = withContext(Dispatchers.IO) {
+                val projectRoot = runCatching { workspaceRepository.currentPath() }.getOrNull()
+                val list = runCatching {
+                    memoryRepository.listMemories(projectRoot).map { m ->
+                        MemoryUiEntry(
+                            name = m.name,
+                            description = m.description,
+                            scope = m.scope,
+                            kind = m.kind,
+                            pinned = m.pinned,
+                            recallCount = m.recallCount,
+                            lastUsedMs = m.lastUsedMs,
+                            updatedAtMs = m.effectiveUpdatedAtMs,
+                            malformed = m.malformed
+                        )
+                    }.sortedWith(compareByDescending<MemoryUiEntry> { it.pinned }
+                        .thenByDescending { it.recallCount }
+                        .thenByDescending { it.lastUsedMs })
+                }.getOrElse {
+                    FileLogger.w("SettingsViewModel", "刷新记忆列表失败", it)
+                    emptyList()
+                }
+                list to runCatching { deriveConflicts() }.getOrElse {
+                    FileLogger.w("SettingsViewModel", "扫描记忆冲突失败", it)
+                    emptyList()
+                }
+            }
+            _memories.value = list
+            _memoryConflicts.value = conflicts
+        }
+    }
+
+    /** 扫全部回执文件，派生 contradict 待裁决条目。只读，不改任何文件。 */
+    private fun deriveConflicts(): List<MemoryConflict> {
+        val dir = File(containerInstaller.aicodeDir, "memory/.curation")
+        val files = dir.listFiles { f -> f.isFile && f.name.endsWith(".json") } ?: return emptyList()
+        val json = Json { ignoreUnknownKeys = true; isLenient = true }
+        return files.flatMap { f ->
+            val receiptId = f.name.removeSuffix(".json")
+            runCatching {
+                val obj = json.parseToJsonElement(f.readText()).jsonObject
+                obj["items"]?.jsonArray?.mapNotNull { el ->
+                    val item = el.jsonObject
+                    if (item["isMerge"]?.jsonPrimitive?.booleanOrNull == true &&
+                        item["relationship"]?.jsonPrimitive?.contentOrNull == "contradict"
+                    ) {
+                        MemoryConflict(
+                            receiptId = receiptId,
+                            candidateName = item["name"]?.jsonPrimitive?.contentOrNull ?: "",
+                            targetName = item["targetName"]?.jsonPrimitive?.contentOrNull ?: "",
+                            contentPreview = item["content"]?.jsonPrimitive?.contentOrNull?.take(120) ?: "",
+                            evidence = item["evidence"]?.jsonPrimitive?.contentOrNull ?: ""
+                        )
+                    } else null
+                } ?: emptyList()
+            }.getOrElse { emptyList() }
+        }
+    }
+
+    /**
+     * 冲突裁决——采用候选：用候选内容覆盖目标记忆（scope 按目标在合并视图的实际作用域）。
+     * triggers 传 null 保留既有值；随后把回执条目 relationship 改为 confirm，apply 重跑时按 confirm 跳过。
+     */
+    fun resolveConflictAdopt(conflict: MemoryConflict) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) {
+                val projectRoot = runCatching { workspaceRepository.currentPath() }.getOrNull()
+                val candidate = memoryRepository.listMemories(projectRoot)
+                    .firstOrNull { NameKey.of(it.name) == NameKey.of(conflict.candidateName) }
+                    ?: run {
+                        FileLogger.w("SettingsViewModel", "裁决失败: 候选 ${conflict.candidateName} 不存在于记忆列表")
+                        return@withContext false
+                    }
+                val scope = memoryRepository.listMemories(projectRoot)
+                    .firstOrNull { NameKey.of(it.name) == NameKey.of(conflict.targetName) }?.scope ?: MemoryScope.GLOBAL
+                val saved = memoryRepository.saveMemory(
+                    name = conflict.targetName,
+                    description = candidate.description,
+                    content = candidate.content,
+                    scope = scope,
+                    projectRoot = projectRoot,
+                    triggers = null,
+                )
+                if (saved) markReceiptItemConfirm(conflict.receiptId, conflict.candidateName)
+                saved
+            }
+            if (ok) refreshMemories()
+        }
+    }
+
+    /** 冲突裁决——保留现有：把回执条目 relationship 改为 confirm，条目留档，重跑 apply 时跳过。 */
+    fun resolveConflictKeep(conflict: MemoryConflict) {
+        viewModelScope.launch {
+            val ok = withContext(Dispatchers.IO) { markReceiptItemConfirm(conflict.receiptId, conflict.candidateName) }
+            if (ok) refreshMemories()
+        }
+    }
+
+    /** 把回执里指定候选条目的 relationship 改为 confirm（JsonObject 直改，其余字段不动）。 */
+    private fun markReceiptItemConfirm(receiptId: String, candidateName: String): Boolean {
+        val dir = File(containerInstaller.aicodeDir, "memory/.curation")
+        val f = File(dir, "$receiptId.json")
+        if (!f.isFile) return false
+        val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+        return runCatching {
+            val root = json.parseToJsonElement(f.readText()).jsonObject
+            val newItems = root["items"]!!.jsonArray.map { el ->
+                val item = el.jsonObject
+                if (item["name"]?.jsonPrimitive?.contentOrNull == candidateName &&
+                    item["relationship"]?.jsonPrimitive?.contentOrNull == "contradict"
+                ) {
+                    JsonObject(item.toMap() + ("relationship" to JsonPrimitive("confirm")))
+                } else el
+            }
+            f.writeText(JsonObject(root.toMap() + ("items" to JsonArray(newItems))).toString())
+            true
+        }.getOrElse {
+            FileLogger.w("SettingsViewModel", "改回执失败: $receiptId", it)
+            false
         }
     }
 

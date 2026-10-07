@@ -97,6 +97,7 @@ import compose.icons.feathericons.BookOpen
 import compose.icons.feathericons.Box
 import compose.icons.feathericons.Cloud
 import compose.icons.feathericons.Cpu
+import compose.icons.feathericons.Database
 import compose.icons.feathericons.Download
 import compose.icons.feathericons.FileText
 import compose.icons.feathericons.Globe
@@ -149,6 +150,7 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     SkillDetail(R.string.settings_skills),
     SkillEditor(R.string.settings_skills),
     Extensions(R.string.settings_extensions),
+    Memories(R.string.settings_memories),
     SubAgents(R.string.settings_subagents),
     SubAgentDetail(R.string.settings_subagents),
     SubAgentEditor(R.string.settings_subagents),
@@ -208,6 +210,8 @@ fun SettingsScreen(
     val skillImportState by viewModel.skillImportState.collectAsStateWithLifecycle()
     val subAgents by viewModel.subAgents.collectAsStateWithLifecycle()
     val extensions by viewModel.extensions.collectAsStateWithLifecycle()
+    val memories by viewModel.memories.collectAsStateWithLifecycle()
+    val memoryConflicts by viewModel.memoryConflicts.collectAsStateWithLifecycle()
     val subAgentSaveState by viewModel.subAgentSaveState.collectAsStateWithLifecycle()
     val globalRules by viewModel.globalRules.collectAsStateWithLifecycle()
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
@@ -394,6 +398,7 @@ fun SettingsScreen(
         viewModel.refreshSkills()
         viewModel.refreshSubAgents()
         viewModel.refreshExtensions()
+        viewModel.refreshMemories()
     }
 
     // 编辑保存后回详情页：等列表刷新出新快照再换，避免详情页停在保存前的旧值（改名时按新名找）。
@@ -836,6 +841,12 @@ fun SettingsScreen(
                     projectName = currentProjectName,
                     entries = extensions,
                     onDelete = { extensionToDelete = it }
+                )
+                SettingsSection.Memories -> MemoryListSection(
+                    entries = memories,
+                    conflicts = memoryConflicts,
+                    onAdopt = viewModel::resolveConflictAdopt,
+                    onKeep = viewModel::resolveConflictKeep
                 )
                 SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
                     SkillDetailSection(
@@ -1388,6 +1399,12 @@ internal fun SettingsMenu(
                 icon = FeatherIcons.Box,
                 title = stringResource(SettingsSection.Extensions.titleRes),
                 onClick = { onOpen(SettingsSection.Extensions) }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Database,
+                title = stringResource(SettingsSection.Memories.titleRes),
+                onClick = { onOpen(SettingsSection.Memories) }
             )
             SettingsDivider()
             SettingsRow(
