@@ -300,15 +300,19 @@ private fun messageRenderItems(message: AgentUIMessage): List<ChatRenderItem> {
  * 于是整轮只展开一次、不再反复横跳。
  *
  * @param turnRunning 本轮是否仍在进行（`agentState is Loading || Streaming`）
+ * @param lastTurnFailed 刚收工的这轮是否以错误告终（`agentState is Error`）：
+ *   失败轮豁免自动收起——用户最需要当场看到的就是失败原因，收起来等于藏住报错；
+ *   手动选择仍优先（groupOverrides 有记录时照记录走）。
  */
 internal fun buildChatItems(
     messages: List<AgentUIMessage>,
     groupOverrides: Map<String, Boolean>,
     turnRunning: Boolean = false,
+    lastTurnFailed: Boolean = false,
 ): List<ChatRenderItem> {
     val items = ArrayList<ChatRenderItem>(messages.size)
     // 进行中的轮次只会是最后一批连续成员：其后再无打断项（用户消息 / 最终答复）
-    val runningGroupStart = if (turnRunning) {
+    val runningGroupStart = if (turnRunning || lastTurnFailed) {
         var k = messages.size - 1
         while (k >= 0 && messages[k].isGroupMember()) k--
         (k + 1).takeIf { it < messages.size }
@@ -573,15 +577,17 @@ fun AIChatPanel(
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
 
     val isBusy = agentState is AgentUIState.Loading || agentState is AgentUIState.Streaming
+    val lastTurnFailed = agentState is AgentUIState.Error
     // 拆块 + 工具分组：超长助手消息展开成多条有界 item（单条滚动轴、外观连续），
     // 连续的工具调用折成一个「N 次工具调用」分组；chatItems 的顺序即 LazyColumn item 顺序。
     // 提到这里（而不是 LazyColumn 分支内）是因为 isFarFromBottom 的「布局是否对应当前消息」判定
     // 需要它：分组会让 item 数 ≠ 消息数 + 1，不能再拿消息数当期望值。
-    val chatItems = remember(messages, toolGroupOverrideSnapshot, isBusy) {
+    val chatItems = remember(messages, toolGroupOverrideSnapshot, isBusy, lastTurnFailed) {
         buildChatItems(
             messages = messages,
             groupOverrides = toolGroupOverrideSnapshot,
             turnRunning = isBusy,
+            lastTurnFailed = lastTurnFailed,
         )
     }
     // 每轮任务的总耗时（用户发送 → 本轮 AI 收工）与 token 合计，都只挂在轮末助手气泡下方

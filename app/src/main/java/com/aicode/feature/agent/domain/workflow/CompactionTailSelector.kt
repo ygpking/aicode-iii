@@ -37,8 +37,12 @@ object CompactionTailSelector {
         }
 
         for (index in messages.indices.reversed()) {
+            val inRestored = restoredStart >= 0 && index >= restoredStart
             val next = estimate(messages[index])
-            if (total + next > budget && splitIndex < messages.size) break
+            // 恢复段整体进保护区，不受预算截断：预算耗尽若恰好落在段中间会把恢复段拆开，
+            // 半进半留等于恢复白做。超大段由恢复侧的预检告警承担（restored > 50 条时提示
+            // 「下一轮可能立即再压缩」）。段首之前的消息仍照常按预算。
+            if (!inRestored && total + next > budget && splitIndex < messages.size) break
             total += next
             splitIndex = index
             if (restoredStart >= 0 && index == restoredStart) break

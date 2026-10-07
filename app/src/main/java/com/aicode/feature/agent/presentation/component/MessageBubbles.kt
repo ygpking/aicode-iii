@@ -353,7 +353,7 @@ internal fun AgentMessageItem(
                                     }
                                 }
                             }
-                        } else if (message.isToolPreface && !chunked) {
+                        } else if (message.isToolPreface && !chunked && message.content.hasVisibleContent()) {
                             // 过渡说明（随工具调用发出的那句）：折叠为一行，点开看全文。
                             // 只改观感，不碰喂给模型的历史（见 AgentUIMessage.isToolPreface）。
                             // 分组：不带附件的归入连续工具调用分组（见 isGroupMember），默认收起，
@@ -370,7 +370,9 @@ internal fun AgentMessageItem(
                                     )
                                 ) {
                                     MarkdownContent(
-                                        text = contentSlice ?: message.content,
+                                        // 空正文+toolCalls 的助手消息（模型不写过渡说明时）不渲染空箭头、
+                                        // 也不留空白 item：hasVisibleContent 为 false 时整个不铺。
+                                        text = (contentSlice ?: message.content).takeIf { it.hasVisibleContent() } ?: "",
                                         color = MaterialTheme.colorScheme.onSurface,
                                         modifier = Modifier.fillMaxWidth(),
                                         cache = markdownCache,
