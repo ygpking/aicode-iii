@@ -21,11 +21,26 @@ class SkillRepository @Inject constructor(
     private val projectDirectorySkillSource: ProjectDirectorySkillSource,
     private val skillConfigRepository: SkillConfigRepository,
     private val localFileAccess: LocalFileAccess,
-    private val fileAccess: FileAccessProvider
+    private val fileAccess: FileAccessProvider,
+    private val extensionRepository: com.aicode.feature.agent.domain.extension.ExtensionRepository
 ) {
+    /** 扩展包贡献的技能（贡献 manifest 的 skills 目录，声明式只读源）。 */
+    private fun extensionSkills(): Pair<List<Skill>, List<Skill>> {
+        val global = extensionRepository.globalSkillDirs()
+            .flatMap { com.aicode.feature.agent.domain.skill.SkillDirectoryScanner.scan(localFileAccess, it.path) }
+        val project = extensionRepository.projectSkillDirs()
+            .flatMap { com.aicode.feature.agent.domain.skill.SkillDirectoryScanner.scan(localFileAccess, it.path) }
+        return global to project
+    }
+
     /** 全部技能（含来源作用域），未过滤禁用；同名技能项目级优先（与 MCP 两级配置一致）。 */
-    fun listAllSkills(): List<SkillEntry> =
-        mergeAll(localDirectorySkillSource.listSkills(), projectDirectorySkillSource.listSkills())
+    fun listAllSkills(): List<SkillEntry> {
+        val (globalExt, projectExt) = extensionSkills()
+        return mergeAll(
+            localDirectorySkillSource.listSkills() + globalExt,
+            projectDirectorySkillSource.listSkills() + projectExt
+        )
+    }
 
     /** 启用的技能列表（注入系统提示词用），禁用技能被过滤。 */
     fun listSkills(): List<Skill> =
@@ -37,8 +52,11 @@ class SkillRepository @Inject constructor(
             FileLogger.w(TAG, "load_skill 命中禁用名单，返回 null: $name")
             return null
         }
-        return localDirectorySkillSource.loadInstructions(name)
-            ?: projectDirectorySkillSource.loadInstructions(name)
+        localDirectorySkillSource.loadInstructions(name)?.let { return it }
+        projectDirectorySkillSource.loadInstructions(name)?.let { return it }
+        val (globalExt, projectExt) = extensionSkills()
+        return projectExt.firstOrNull { it.name.equals(name, ignoreCase = true) }?.instructions
+            ?: globalExt.firstOrNull { it.name.equals(name, ignoreCase = true) }?.instructions
     }
 
     /** 技能是否在任一作用域中被禁用。 */

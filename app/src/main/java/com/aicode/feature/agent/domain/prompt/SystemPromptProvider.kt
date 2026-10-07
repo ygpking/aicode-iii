@@ -35,6 +35,7 @@ class SystemPromptProvider @Inject constructor(
     private val memoryRepository: MemoryRepository,
     private val containerInstaller: ContainerInstaller,
     private val agentDefinitionRepository: AgentDefinitionRepository,
+    private val extensionRepository: com.aicode.feature.agent.domain.extension.ExtensionRepository,
     private val executionModeHolder: com.aicode.feature.settings.data.repository.ExecutionModeHolder
 ) {
     // 抽象独立的 Source
@@ -47,13 +48,20 @@ class SystemPromptProvider @Inject constructor(
 
         override fun build(ctx: AgentContext): String {
             return cached ?: run {
+                // 层叠次序（近者胜）：custom（用户显式）> 扩展 > 内置。
+                // mergeStatic 内 toMap 后写覆盖，故扩展片段在前、custom 在后。
+                val extFragments = extensionRepository.promptDirs(ctx.projectRoot)
+                    .flatMap { PromptFragmentResolver.numberedFragments(it) }
                 val merged = PromptFragmentResolver.mergeStatic(
                     BASE_FRAGMENTS.keys.toList(),
-                    PromptFragmentResolver.numberedFragments(customDir)
+                    extFragments + PromptFragmentResolver.numberedFragments(customDir)
                 )
                 val pieces = merged.mapNotNull { (number, override) ->
-                    // 内置数字走 resolvePrompt（内部按数字身份查覆盖）；新增片段直接读自定义文件。
-                    val raw = BASE_FRAGMENTS[number]?.let { resolvePrompt(it) }
+                    // 扩展片段优先于内置（mergeStatic 已让它胜出）；
+                    // 内置数字走 resolvePrompt（内部按数字身份查 custom/全局 prompts 覆盖）。
+                    val extFile = override?.takeIf { extFragments.any { ef -> ef.second == it } }
+                    val raw = extFile?.let { readFileOrNull(it) }
+                        ?: BASE_FRAGMENTS[number]?.let { resolvePrompt(it) }
                         ?: readFileOrNull(override)
                     raw?.replace(LEADING_COMMENT, "")?.trim()?.takeIf { it.isNotEmpty() }
                 }
@@ -352,7 +360,13 @@ class SystemPromptProvider @Inject constructor(
      * 不注入任何内置来源；动态内容仅通过 `{{AICODE_*}}` 变量按需取回。
      */
     private fun buildCustomOnly(ctx: AgentContext): String {
-        val fragments = PromptFragmentResolver.numberedFragments(customDir)
+        // .no-builtin 模式下扩展片段仍是用户主动安装的内容，保留并入（custom 优先）。
+        val extFragments = extensionRepository.promptDirs(ctx.projectRoot)
+            .flatMap { PromptFragmentResolver.numberedFragments(it) }
+        val byNumber = LinkedHashMap<Int, File>()
+        extFragments.forEach { (n, f) -> byNumber.putIfAbsent(n, f) }
+        PromptFragmentResolver.numberedFragments(customDir).forEach { (n, f) -> byNumber[n] = f }
+        val fragments = byNumber.entries.sortedBy { it.key }.map { it.key to it.value }
         if (fragments.isEmpty()) {
             FileLogger.w(
                 TAG,

@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.memory
 
 import com.aicode.feature.agent.domain.container.ContainerInstaller
+import com.aicode.feature.agent.domain.extension.ExtensionRepository
 import com.aicode.feature.agent.domain.provider.ResolvedChatProvider
 import com.aicode.feature.agent.domain.session.MessagePersistenceUseCase
 import com.aicode.feature.settings.data.repository.ExecutionMode
@@ -37,11 +38,15 @@ class MemoryCurationApplyScopeTest {
     private val executionModeHolder = mockk<ExecutionModeHolder> {
         every { currentMode() } returns ExecutionMode.LOCAL_PROOT
     }
+    private val projectAicodeRoot = mockk<ProjectAicodeRoot>(relaxed = true)
     private val repository = MemoryRepository(
         globalMemorySource = GlobalMemorySource(containerInstaller),
         executionModeHolder = executionModeHolder,
         containerInstaller = containerInstaller,
-        projectAicodeRoot = mockk<ProjectAicodeRoot>(relaxed = true),
+        projectAicodeRoot = projectAicodeRoot,
+        // 扩展仓库：aicodeDir 指向临时目录且无 extensions 子目录 → listExtensions 为空集，
+        // 本测试不受扩展机制影响（空扩展 = 恒等变换，正是新合并逻辑要锁定的行为）。
+        extensionRepository = ExtensionRepository(containerInstaller, projectAicodeRoot),
     )
 
     private val service = MemoryCurationService(

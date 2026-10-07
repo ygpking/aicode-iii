@@ -13,7 +13,8 @@ class MemoryRepository @Inject constructor(
     private val globalMemorySource: GlobalMemorySource,
     private val executionModeHolder: ExecutionModeHolder,
     private val containerInstaller: ContainerInstaller,
-    private val projectAicodeRoot: ProjectAicodeRoot
+    private val projectAicodeRoot: ProjectAicodeRoot,
+    private val extensionRepository: com.aicode.feature.agent.domain.extension.ExtensionRepository
 ) {
     /** 按当前会话 projectRoot 创建项目级数据源（内部按执行模式决定存储位置）。 */
     private fun projectSource(projectRoot: String) =
@@ -25,10 +26,21 @@ class MemoryRepository @Inject constructor(
         
         // 1. 加载全局记忆
         allMemories.addAll(globalMemorySource.listMemories())
+        // 1b. 全局扩展贡献的记忆（声明式资源包，只读源）
+        allMemories.addAll(
+            ExtensionMemorySource(
+                extensionRepository.globalMemoryDirs(), MemoryScope.GLOBAL
+            ).listMemories()
+        )
         
         // 2. 加载项目记忆（如果有）
         if (!projectRoot.isNullOrBlank()) {
             allMemories.addAll(projectSource(projectRoot).listMemories())
+            allMemories.addAll(
+                ExtensionMemorySource(
+                    extensionRepository.projectMemoryDirs(), MemoryScope.PROJECT
+                ).listMemories()
+            )
         }
         
         // 去重：按 name 小写分组，保留最后加入的（即项目级优先覆盖全局级）
@@ -43,9 +55,15 @@ class MemoryRepository @Inject constructor(
         if (!projectRoot.isNullOrBlank()) {
             val content = projectSource(projectRoot).loadContent(name)
             if (content != null) return content
+            // 项目扩展贡献的记忆（只读源）
+            ExtensionMemorySource(extensionRepository.projectMemoryDirs(), MemoryScope.PROJECT)
+                .loadContent(name)?.let { return it }
         }
         // 回退到全局读取
-        return globalMemorySource.loadContent(name)
+        globalMemorySource.loadContent(name)?.let { return it }
+        // 全局扩展贡献的记忆
+        return ExtensionMemorySource(extensionRepository.globalMemoryDirs(), MemoryScope.GLOBAL)
+            .loadContent(name)
     }
 
     /**
@@ -101,9 +119,20 @@ class MemoryRepository @Inject constructor(
                 project.touchMemory(name)
                 return true
             }
+            // 项目扩展贡献的记忆（只读源但 touch 回写扩展文件是安全的）
+            val projectExt = ExtensionMemorySource(extensionRepository.projectMemoryDirs(), MemoryScope.PROJECT)
+            if (projectExt.listMemories().any { NameKey.of(it.name) == key }) {
+                projectExt.touchMemory(name)
+                return true
+            }
         }
         if (globalMemorySource.listMemories().any { NameKey.of(it.name) == key }) {
             globalMemorySource.touchMemory(name)
+            return true
+        }
+        val globalExt = ExtensionMemorySource(extensionRepository.globalMemoryDirs(), MemoryScope.GLOBAL)
+        if (globalExt.listMemories().any { NameKey.of(it.name) == key }) {
+            globalExt.touchMemory(name)
             return true
         }
         return false
