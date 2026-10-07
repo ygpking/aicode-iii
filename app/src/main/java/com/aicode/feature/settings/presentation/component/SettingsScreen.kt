@@ -150,7 +150,9 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     SkillDetail(R.string.settings_skills),
     SkillEditor(R.string.settings_skills),
     Extensions(R.string.settings_extensions),
+    ExtensionDetail(R.string.settings_extensions),
     Memories(R.string.settings_memories),
+    MemoryDetail(R.string.settings_memories),
     SubAgents(R.string.settings_subagents),
     SubAgentDetail(R.string.settings_subagents),
     SubAgentEditor(R.string.settings_subagents),
@@ -183,6 +185,8 @@ private fun SettingsSection.depth(): Int = when (this) {
     SettingsSection.ProviderEditor,
     SettingsSection.SkillDetail,
     SettingsSection.SubAgentDetail,
+    SettingsSection.ExtensionDetail,
+    SettingsSection.MemoryDetail,
     SettingsSection.ContainerDownloads,
     SettingsSection.Log -> 2
     else -> 1
@@ -352,6 +356,11 @@ fun SettingsScreen(
     var selectedSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     var subAgentToDelete by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     var extensionToDelete by remember { mutableStateOf<SettingsViewModel.ExtensionUiEntry?>(null) }
+    var selectedExtension by remember { mutableStateOf<SettingsViewModel.ExtensionUiEntry?>(null) }
+    var selectedMemory by remember { mutableStateOf<SettingsViewModel.MemoryUiEntry?>(null) }
+    // 记忆详情正文：进详情页时异步读取，null = 加载中。
+    var memoryDetailContent by remember { mutableStateOf<String?>(null) }
+    val memoryMarkdownCache = remember { MarkdownRenderCache() }
     // 子代理编辑目标：null 表示新建一个；编辑现有定义时指向被编辑的条目。
     var editingSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     // 编辑页的返回目标：从详情页进就回详情页，从列表顶栏「＋」进就回列表。
@@ -384,6 +393,8 @@ fun SettingsScreen(
         SettingsSection.SkillEditor -> skillEditorReturn
         SettingsSection.SubAgentDetail -> SettingsSection.SubAgents
         SettingsSection.SubAgentEditor -> subAgentEditorReturn
+        SettingsSection.ExtensionDetail -> SettingsSection.Extensions
+        SettingsSection.MemoryDetail -> SettingsSection.Memories
         SettingsSection.ContainerDownloads -> SettingsSection.Container
         else -> if (expanded) null else SettingsSection.Menu
     }
@@ -840,14 +851,36 @@ fun SettingsScreen(
                 SettingsSection.Extensions -> ExtensionsSection(
                     projectName = currentProjectName,
                     entries = extensions,
-                    onDelete = { extensionToDelete = it }
+                    onDelete = { extensionToDelete = it },
+                    onOpenDetail = {
+                        selectedExtension = it
+                        section = SettingsSection.ExtensionDetail
+                    }
                 )
+                SettingsSection.ExtensionDetail -> selectedExtension?.let { entry ->
+                    ExtensionDetailSection(entry = entry)
+                }
                 SettingsSection.Memories -> MemoryListSection(
                     entries = memories,
                     conflicts = memoryConflicts,
                     onAdopt = viewModel::resolveConflictAdopt,
-                    onKeep = viewModel::resolveConflictKeep
+                    onKeep = viewModel::resolveConflictKeep,
+                    onOpenDetail = { entry ->
+                        selectedMemory = entry
+                        memoryDetailContent = null
+                        section = SettingsSection.MemoryDetail
+                    }
                 )
+                SettingsSection.MemoryDetail -> selectedMemory?.let { entry ->
+                    LaunchedEffect(entry.name) {
+                        memoryDetailContent = viewModel.loadMemoryContent(entry.name)
+                    }
+                    MemoryDetailSection(
+                        entry = entry,
+                        content = memoryDetailContent,
+                        cache = memoryMarkdownCache
+                    )
+                }
                 SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
                     SkillDetailSection(
                         entry = entry,

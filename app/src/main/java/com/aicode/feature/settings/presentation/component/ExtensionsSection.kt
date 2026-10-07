@@ -48,7 +48,8 @@ import compose.icons.feathericons.Box
 internal fun ExtensionsSection(
     projectName: String?,
     entries: List<SettingsViewModel.ExtensionUiEntry>,
-    onDelete: (SettingsViewModel.ExtensionUiEntry) -> Unit
+    onDelete: (SettingsViewModel.ExtensionUiEntry) -> Unit,
+    onOpenDetail: (SettingsViewModel.ExtensionUiEntry) -> Unit
 ) {
     val projectExtensions = entries.filter { it.scope == ExtensionScope.PROJECT }
     val globalExtensions = entries.filter { it.scope == ExtensionScope.GLOBAL }
@@ -120,7 +121,11 @@ internal fun ExtensionsSection(
                 } else {
                     projectExtensions.forEachIndexed { index, entry ->
                         if (index > 0) SettingsDivider()
-                        ExtensionRow(entry = entry, onDelete = { onDelete(entry) })
+                        ExtensionRow(
+                            entry = entry,
+                            onDelete = { onDelete(entry) },
+                            onClick = { onOpenDetail(entry) }
+                        )
                     }
                 }
             }
@@ -138,7 +143,11 @@ internal fun ExtensionsSection(
                 } else {
                     globalExtensions.forEachIndexed { index, entry ->
                         if (index > 0) SettingsDivider()
-                        ExtensionRow(entry = entry, onDelete = { onDelete(entry) })
+                        ExtensionRow(
+                            entry = entry,
+                            onDelete = { onDelete(entry) },
+                            onClick = { onOpenDetail(entry) }
+                        )
                     }
                 }
             }
@@ -146,13 +155,14 @@ internal fun ExtensionsSection(
     }
 }
 
-/** 单个扩展行：图标 + 名称/贡献摘要 + 作用域标签；有解析错误时行内红字列出；左滑删除。 */
+/** 单个扩展行：图标 + 名称/贡献摘要 + 作用域标签；有解析错误时行内红字列出；左滑删除，点击进详情。 */
 @Composable
 private fun ExtensionRow(
     entry: SettingsViewModel.ExtensionUiEntry,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onClick: () -> Unit
 ) {
-    SwipeToDeleteRow(onDelete = onDelete) {
+    SwipeToDeleteRow(onDelete = onDelete, onClick = onClick) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()

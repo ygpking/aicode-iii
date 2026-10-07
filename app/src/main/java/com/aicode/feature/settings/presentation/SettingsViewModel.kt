@@ -1377,7 +1377,13 @@ class SettingsViewModel @Inject constructor(
         val scope: ExtensionScope,
         val errors: List<String>,
         /** 贡献计数摘要，如 skills=1 prompts=2；仅用于展示。 */
-        val contributions: String
+        val contributions: String,
+        /** 贡献明细（相对扩展根的路径），详情页展示。 */
+        val skillDirs: List<String>,
+        val promptDirs: List<String>,
+        val memoryDirs: List<String>,
+        val mcpFile: String?,
+        val rootPath: String
     )
 
     private val _extensions = MutableStateFlow<List<ExtensionUiEntry>>(emptyList())
@@ -1403,7 +1409,12 @@ class SettingsViewModel @Inject constructor(
                                 "prompts=${c.prompts.size}",
                                 "memory=${c.memory.size}"
                             ) + (c.mcp?.let { listOf("mcp=1") } ?: emptyList()))
-                                .joinToString(" ")
+                                .joinToString(" "),
+                            skillDirs = c.skills,
+                            promptDirs = c.prompts,
+                            memoryDirs = c.memory,
+                            mcpFile = c.mcp,
+                            rootPath = entry.root.path
                         )
                     }
                 } catch (e: CancellationException) {
@@ -1451,6 +1462,12 @@ class SettingsViewModel @Inject constructor(
         val updatedAtMs: Long,
         val malformed: Boolean
     )
+
+    /** 读取记忆全文（供详情页展示）；不存在返回 null。 */
+    fun loadMemoryContent(name: String): String? {
+        val projectRoot = runCatching { workspaceRepository.currentPath() }.getOrNull()
+        return runCatching { memoryRepository.loadContent(name, projectRoot) }.getOrNull()
+    }
 
     /** 记忆冲突（从回执文件运行时派生：isMerge 且 relationship=contradict 的条目）。 */
     data class MemoryConflict(

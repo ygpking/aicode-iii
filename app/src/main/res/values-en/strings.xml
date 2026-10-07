@@ -1062,6 +1062,17 @@
     <string name="memory_recall_count">Recalled %1$d times</string>
     <string name="memory_never_recalled">Never recalled</string>
     <string name="memory_updated_at">Updated %1$s</string>
+    <string name="extension_errors_header">Issues</string>
+    <string name="extension_contributions_header">Contributions</string>
+    <string name="extension_contrib_skills">Skill directories</string>
+    <string name="extension_contrib_prompts">Prompt directories</string>
+    <string name="extension_contrib_memory">Memory directories</string>
+    <string name="extension_contrib_mcp">MCP config file</string>
+    <string name="extension_contrib_none">(none)</string>
+    <string name="extension_root_header">Extension root path</string>
+    <string name="memory_detail_meta">Metadata</string>
+    <string name="memory_detail_content">Content</string>
+    <string name="memory_content_unavailable">(Content unavailable: file missing or failed to parse)</string>
     <string name="subagent_prompt">Agent prompt</string>
     <string name="subagent_source_file">Definition file</string>
     <string name="subagent_inherit_parent">Inherit from parent session</string>

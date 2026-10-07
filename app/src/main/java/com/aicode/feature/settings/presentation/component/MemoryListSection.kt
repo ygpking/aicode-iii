@@ -1,6 +1,8 @@
 package com.aicode.feature.settings.presentation.component
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -48,7 +50,8 @@ internal fun MemoryListSection(
     entries: List<SettingsViewModel.MemoryUiEntry>,
     conflicts: List<SettingsViewModel.MemoryConflict>,
     onAdopt: (SettingsViewModel.MemoryConflict) -> Unit,
-    onKeep: (SettingsViewModel.MemoryConflict) -> Unit
+    onKeep: (SettingsViewModel.MemoryConflict) -> Unit,
+    onOpenDetail: (SettingsViewModel.MemoryUiEntry) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -106,7 +109,7 @@ internal fun MemoryListSection(
         SettingsGroup {
             entries.forEachIndexed { index, entry ->
                 if (index > 0) SettingsDivider()
-                MemoryRow(entry = entry)
+                MemoryRow(entry = entry, onClick = { onOpenDetail(entry) })
             }
         }
     }
@@ -175,13 +178,17 @@ private fun ConflictRow(
     }
 }
 
-/** 单个记忆行：图标 + 名称/描述 + 元数据标签（kind / pinned / 召回 / 时间）。 */
+/** 单个记忆行：图标 + 名称/描述 + 元数据标签（kind / pinned / 召回 / 时间）；点击进详情。 */
 @Composable
-private fun MemoryRow(entry: SettingsViewModel.MemoryUiEntry) {
+private fun MemoryRow(
+    entry: SettingsViewModel.MemoryUiEntry,
+    onClick: () -> Unit
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.semanticColors.cardSurface)
+            .clickable(onClick = onClick)
             .padding(start = Spacing.lg, end = Spacing.xs, top = 11.dp, bottom = 11.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {

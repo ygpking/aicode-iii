@@ -1063,6 +1063,17 @@
     <string name="memory_recall_count">召回 %1$d 次</string>
     <string name="memory_never_recalled">未召回</string>
     <string name="memory_updated_at">更新于 %1$s</string>
+    <string name="extension_errors_header">解析问题</string>
+    <string name="extension_contributions_header">贡献明细</string>
+    <string name="extension_contrib_skills">技能目录</string>
+    <string name="extension_contrib_prompts">提示词目录</string>
+    <string name="extension_contrib_memory">记忆目录</string>
+    <string name="extension_contrib_mcp">MCP 配置文件</string>
+    <string name="extension_contrib_none">（无）</string>
+    <string name="extension_root_header">扩展根路径</string>
+    <string name="memory_detail_meta">元数据</string>
+    <string name="memory_detail_content">记忆正文</string>
+    <string name="memory_content_unavailable">（正文不可用：文件缺失或解析失败）</string>
     <string name="subagent_prompt">agent 提示词</string>
     <string name="subagent_source_file">定义文件</string>
     <string name="subagent_inherit_parent">继承父会话</string>
