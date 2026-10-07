@@ -438,17 +438,31 @@ object EventTrace {
             // 补写会另起一份新文件，原回合桶永远合不上，正好否定本函数「让它自己合上」的目的。
             val lines = ArrayList<Pair<File, String>>()
             var found = false
+            // 逐文件流式读：遇到本文件最后一个 PROCESS START 就清掉前面的（同文件更早进程段），
+            // 内存只驻留「自 START 起」的行数。chunks 按处理顺序（新→旧）追加，最后反转拼接，
+            // 避免原来 addAll(0,…) 的整段头插。
+            val chunks = ArrayList<List<Pair<File, String>>>()
             for (file in files.asReversed()) {
-                val part = runCatching { file.readLines() }.getOrNull() ?: continue
-                val idx = part.indexOfLast { it.contains("LIFECYCLE") && it.contains("PROCESS START") }
-                val chunk = if (idx >= 0) part.subList(idx, part.size) else part
-                lines.addAll(0, chunk.map { file to it })
-                if (idx >= 0) {
-                    found = true
-                    break
-                }
+                val part = ArrayList<Pair<File, String>>()
+                var hadStart = false
+                runCatching {
+                    file.useLines { seq ->
+                        seq.forEach { raw ->
+                            if (raw.contains("LIFECYCLE") && raw.contains("PROCESS START")) {
+                                part.clear()
+                                hadStart = true
+                            }
+                            part.add(file to raw)
+                        }
+                    }
+                }.getOrNull() ?: continue
+                if (part.isEmpty()) continue
+                if (hadStart) found = true
+                chunks.add(part)
+                if (hadStart) break
             }
             if (!found) return@runCatching
+            chunks.asReversed().forEach { lines.addAll(it) }
 
             // 每个会话当前未收尾的回合：scope → turn，及其最大 seq 与条数。
             // 必须按会话分开：实测真机出现过「同一次启动有 2 个回合未收尾（两个会话各一个）」。
@@ -661,10 +675,17 @@ object EventTrace {
         // 先判上限、再取 seq：seq 只为「已接受」的记录分配，保证连续无空洞，
         // 于是「上一条 = seq-1」恒成立（否则默认因果会指向被丢弃的序号）。
         val mapKey = keyOf(scope, turnId)
-        val count = recordCounters[mapKey] ?: 0L
-        if (count >= MAX_RECORDS_PER_TURN) {
-            droppedCounters[mapKey] = (droppedCounters[mapKey] ?: 0L) + 1
-            return null
+        // CAS 递增并判上限：不用 ConcurrentHashMap.merge——它的返回值是 Java 平台类型
+        // （K2 下反复报 Long? 空值收窄），replace 循环原子性相同，「先判上限再发号」不变。
+        var accepted: Long
+        while (true) {
+            val cur = recordCounters[mapKey] ?: 0L
+            accepted = cur + 1
+            if (accepted > MAX_RECORDS_PER_TURN) {
+                droppedCounters.merge(mapKey, 1L) { _, v: Long -> v + 1 }
+                return null
+            }
+            if (recordCounters.replace(mapKey, cur, accepted)) break
         }
         val seqCounter = seqCounters[mapKey]
         if (seqCounter == null) {
@@ -673,7 +694,6 @@ object EventTrace {
             return null
         }
         val seq = seqCounter.incrementAndGet()
-        recordCounters[mapKey] = count + 1
 
         val bound = causeKey?.let { boundCauses[mapKey]?.get(it) }
         write(turnId, scope, seq, layer, detail, causeSeq ?: bound ?: (seq - 1).takeIf { it >= 1 })
@@ -687,7 +707,7 @@ object EventTrace {
     /**
      * 测试入口：从指定目录重读高水位。
      *
-     * 走的是与生产**完全相同**的 [loadTurnFloor]（含「遇 PROCESS START 即停」与按会话取最大），
+     * 走的是与生产**完全相同**的 [loadTurnFloor]（扫全部历史文件按会话取最大，不停在 PROCESS START），
      * 而不是另写一份等价逻辑——否则测的是副本，真路径仍然没被覆盖。
      */
     internal fun reloadTurnFloorForTest(dir: File) {
@@ -888,9 +908,17 @@ object EventTrace {
         val dir = file.parentFile ?: return
         for (i in MAX_ROTATIONS - 1 downTo 1) {
             val src = File(dir, "trace-$day.log.$i")
-            if (src.isFile) runCatching { src.renameTo(File(dir, "trace-$day.log.${i + 1}")) }
+            if (src.isFile) runCatching {
+                val dst = File(dir, "trace-$day.log.${i + 1}")
+                dst.delete() // renameTo 是否覆盖平台相关，先删对齐 AILogger 的做法
+                src.renameTo(dst)
+            }
         }
-        runCatching { file.renameTo(File(dir, "trace-$day.log.1")) }
+        runCatching {
+            val dst = File(dir, "trace-$day.log.1")
+            dst.delete()
+            file.renameTo(dst)
+        }
     }
 
     private fun cleanupOldLogs(dir: File) {
