@@ -676,10 +676,20 @@ object EventTrace {
         // 于是「上一条 = seq-1」恒成立（否则默认因果会指向被丢弃的序号）。
         val mapKey = keyOf(scope, turnId)
         // CAS 递增并判上限：不用 ConcurrentHashMap.merge——它的返回值是 Java 平台类型
-        // （K2 下反复报 Long? 空值收窄），replace 循环原子性相同，「先判上限再发号」不变。
+        // （K2 下反复报 Long? 空值收窄）。
+        // 注意 absent 语义：replace(key, cur, next) 对不存在的 key 返回 false——若把
+        // 「key 不存在」当成 cur=0 去 replace 会**无限重试**（v1.19.0-rc1 CI 单测挂死
+        // 3.5 小时的根因）。key 不存在必须走 putIfAbsent 原子初始化。
         var accepted: Long
         while (true) {
-            val cur = recordCounters[mapKey] ?: 0L
+            val cur = recordCounters[mapKey]
+            if (cur == null) {
+                if (recordCounters.putIfAbsent(mapKey, 1L) == null) {
+                    accepted = 1L
+                    break
+                }
+                continue // 并发方已初始化，重读后走正常递增分支
+            }
             accepted = cur + 1
             if (accepted > MAX_RECORDS_PER_TURN) {
                 droppedCounters.merge(mapKey, 1L) { _, v: Long -> v + 1 }
