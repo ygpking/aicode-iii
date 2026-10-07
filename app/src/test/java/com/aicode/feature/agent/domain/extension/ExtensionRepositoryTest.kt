@@ -72,9 +72,12 @@ class ExtensionRepositoryTest {
         )
         val repo = repo()
         val dirs = repo.skillDirs(null)
-        val entries = repo.listExtensions(null).map { Triple(it.manifest.id, it.manifest.contributes.skills, it.errors) }
-        assertTrue("skillDirs 应为空，实际=$dirs；entries=$entries；tmp.root=${tmp.root}", dirs.isEmpty())
         val entry = repo.listExtensions(null).single()
+        org.junit.Assert.assertEquals(
+            "越界贡献应被拒（tmp.root=${tmp.root}），errors=${entry.errors}",
+            emptyList<File>(),
+            dirs
+        )
         assertTrue(entry.errors.isNotEmpty())
     }
 

@@ -24,7 +24,7 @@ data class ExtensionEntry(
     val scope: ExtensionScope,
     val errors: List<String> = emptyList()
 ) {
-    /** 贡献目录解析为扩展根内的实际路径；越界路径被过滤（不抛错，逐条记入 [errors] 的兄弟清单由仓库层维护）。 */
+    /** 贡献目录解析为扩展根内的实际路径；scanDir 已预校验，此处为消费端双保险。 */
     fun resolveDirs(relatives: List<String>): List<File> =
         relatives.mapNotNull { rel -> safeResolve(root, rel) }
 
@@ -138,12 +138,45 @@ class ExtensionRepository @Inject constructor(
             if (manifest.id.isBlank() || !manifest.id.matches(ID_REGEX)) {
                 errors += "id 非法（应为 [a-z0-9-]）：${manifest.id}，已按目录名修正"
             }
-            val effective = if (errors.isEmpty()) manifest
-            else manifest.copy(id = manifest.id.takeIf { it.matches(ID_REGEX) } ?: extDir.name)
-            ExtensionEntry(effective, extDir, scope, errors).also {
-                if (errors.isNotEmpty()) FileLogger.w(TAG, "扩展 ${extDir.name} 存在问题: $errors")
+            val effectiveId = manifest.id.takeIf { it.matches(ID_REGEX) } ?: extDir.name
+            // 贡献路径越界检测前置：发现即记入 errors 并从清单剔除，
+            // 而不是等消费端 safeResolve 静默过滤——「越界被发现却不进错误清单」是无解释的空白。
+            var contributionErrors: List<String> = errors
+            fun checkPaths(rels: List<String>): List<String> = rels.mapNotNull { rel ->
+                // 注意：本类的 safeResolve 返回 Boolean（非 File?），不能写「!= null」——
+                // 对非空 Boolean 与 null 比较恒 true，会静默跳过全部越界记录。
+                val ok = safeResolve(extDir, rel)
+                if (!ok) contributionErrors = contributionErrors + "贡献路径越界被拒绝: $rel"
+                if (ok) rel else null
+            }
+            val checked = manifest.contributes.copy(
+                skills = checkPaths(manifest.contributes.skills),
+                prompts = checkPaths(manifest.contributes.prompts),
+                memory = checkPaths(manifest.contributes.memory),
+                mcp = manifest.contributes.mcp?.takeIf { rel ->
+                    val ok = safeResolve(extDir, rel) != null
+                    if (!ok) contributionErrors = contributionErrors + "贡献路径越界被拒绝: $rel"
+                    ok
+                }
+            )
+            ExtensionEntry(
+                manifest.copy(id = effectiveId, contributes = checked),
+                extDir,
+                scope,
+                contributionErrors
+            ).also {
+                if (contributionErrors.isNotEmpty()) FileLogger.w(TAG, "扩展 ${extDir.name} 存在问题: $contributionErrors")
             }
         }
+    }
+
+    /** 相对路径解析后是否仍落在 [root] 内（canonical 比对，防 `..` 与符号链接逃逸）。 */
+    private fun safeResolve(root: File, rel: String): Boolean {
+        if (rel.isBlank() || rel.startsWith("/")) return false
+        val f = File(root, rel)
+        val canonical = runCatching { f.canonicalFile }.getOrNull() ?: return false
+        val rootCanonical = runCatching { root.canonicalFile }.getOrNull() ?: return false
+        return canonical.path == rootCanonical.path || canonical.path.startsWith(rootCanonical.path + File.separator)
     }
 
     private companion object {
