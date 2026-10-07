@@ -4,6 +4,7 @@ import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import com.aicode.feature.workspace.domain.LocalFileAccess
+import java.io.File
 import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,10 +27,34 @@ class SkillRepository @Inject constructor(
 ) {
     /** 扩展包贡献的技能（贡献 manifest 的 skills 目录，声明式只读源）。 */
     private fun extensionSkills(): Pair<List<Skill>, List<Skill>> {
-        val global = extensionRepository.globalSkillDirs()
-            .flatMap { com.aicode.feature.agent.domain.skill.SkillDirectoryScanner.scan(localFileAccess, it.path) }
-        val project = extensionRepository.projectSkillDirs()
-            .flatMap { com.aicode.feature.agent.domain.skill.SkillDirectoryScanner.scan(localFileAccess, it.path) }
+        // 扩展目录是宿主 java.io.File（与 ExtensionMemorySource 同源），不能喂给走容器路径映射的
+        // FileAccessProvider：宿主绝对路径会被 toHostFile 兑底映射进 rootfs，扫出空目录——
+        // 实测表现即「扩展记忆在列表可见、扩展技能 loadSkill 报 SKILL_NOT_FOUND」。
+        fun scanDir(dir: File): List<Skill> = runCatching {
+            dir.walkTopDown().maxDepth(4)
+                .filter { it.isFile }
+                .filter { it.name.equals("SKILL.md", true) || it.name.equals("CLAUDE.md", true) }
+                .map { it.parentFile }
+                .distinct()
+                .mapNotNull { skillDir ->
+                    val file = sequenceOf("SKILL.md", "CLAUDE.md")
+                        .map { File(skillDir, it) }
+                        .firstOrNull { it.isFile } ?: return@mapNotNull null
+                    runCatching {
+                        SkillParser.parseText(
+                            file.readText(),
+                            fallbackName = skillDir.name,
+                            source = file.path
+                        ).copy(dirPath = file.parentFile?.path)
+                    }.onFailure { FileLogger.w(TAG, "解析扩展技能失败，已跳过: $skillDir", it) }
+                        .getOrNull()
+                }.toList()
+        }.getOrElse {
+            FileLogger.w(TAG, "扫描扩展技能目录失败: $dir", it)
+            emptyList()
+        }
+        val global = extensionRepository.globalSkillDirs().flatMap { scanDir(it) }
+        val project = extensionRepository.projectSkillDirs().flatMap { scanDir(it) }
         return global to project
     }
 
