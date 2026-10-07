@@ -52,9 +52,6 @@ class RemoteSshConnection @Inject constructor(
     @Volatile
     private var sftpSshClient: SSHClient? = null
 
-    @Volatile
-    private var sftpClient: SFTPClient? = null
-
     private val mutex = Mutex()
     private val sftpLock = Mutex()
 
@@ -134,11 +131,9 @@ class RemoteSshConnection @Inject constructor(
         }
     }
 
-    /** 关闭并清空独立 SFTP 通道；下次 [sftp] 会按当前 config 重建。 */
+    /** 关闭 SFTP 专用连接：transport 断开时其上所有 SFTP 通道一并关闭。 */
     private fun closeSftpInternal() {
-        runCatching { sftpClient?.close() }
         runCatching { sftpSshClient?.disconnect() }
-        sftpClient = null
         sftpSshClient = null
     }
 
@@ -201,33 +196,32 @@ class RemoteSshConnection @Inject constructor(
     }
 
     /**
-     * 获取独立的 SFTP client（惰性建立第二条 SSH 连接，与 exec 隔离）。调用方不应关闭它——
-     * 由 [disconnect] 统一管理。连接失效（未连接/未认证）时丢弃重建，覆盖 SFTP 通道崩溃后的自愈。
+     * 打开一条新的 SFTP 通道（惰性建立第二条 SSH 连接，与 exec 隔离；同一 transport 可开多条
+     * SFTP channel，互相独立）。连接失效（未连接/未认证）时丢弃重建，覆盖通道崩溃后的自愈。
+     * 通道的借用/归还由调用方（RemoteSftpFileAccess 的通道池）管理，[disconnect] 断 transport
+     * 时所有通道一并关闭。
      */
-    suspend fun sftp(): SFTPClient = sftpLock.withLock {
+    suspend fun openSftpChannel(): SFTPClient = sftpLock.withLock {
         val cfg = config ?: throw IllegalStateException("SSH 未配置")
-        sftpClient
-            ?.takeIf { sftpSshClient?.isConnected == true && sftpSshClient?.isAuthenticated == true }
-            ?.let { return@withLock it }
-        closeSftpInternal()
-        val client = try {
-            withContext(Dispatchers.IO) { newSshClient(cfg, socketTimeoutMs = 30_000) }
-        } catch (e: Exception) {
-            FileLogger.w(TAG, "SFTP 通道建立失败: ${cfg.host}:${cfg.port} as ${cfg.username}", e)
-            throw e
+        if (sftpSshClient?.isConnected != true || sftpSshClient?.isAuthenticated != true) {
+            closeSftpInternal()
+            val client = try {
+                withContext(Dispatchers.IO) { newSshClient(cfg, socketTimeoutMs = 30_000) }
+            } catch (e: Exception) {
+                FileLogger.w(TAG, "SFTP 通道建立失败: ${cfg.host}:${cfg.port} as ${cfg.username}", e)
+                throw e
+            }
+            sftpSshClient = client
         }
-        sftpSshClient = client
-        val sftp = try {
-            withContext(Dispatchers.IO) { client.newSFTPClient() }
+        try {
+            withContext(Dispatchers.IO) { sftpSshClient!!.newSFTPClient() }
         } catch (e: Exception) {
             FileLogger.w(TAG, "SFTPClient 初始化失败: ${cfg.host}:${cfg.port}", e)
             throw e
         }
-        sftpClient = sftp
-        sftp
     }
 
-    /** 丢弃当前 SFTP 通道（通道异常后调用），下次 [sftp] 会重建。 */
+    /** 丢弃当前 SFTP 连接（transport 层异常后调用），下次 [openSftpChannel] 会重建。 */
     suspend fun invalidateSftp() = sftpLock.withLock { closeSftpInternal() }
 
     /** 若已配置但未连接，立即尝试重连一次。返回是否最终连通。供 App 回到前台时主动触发。 */

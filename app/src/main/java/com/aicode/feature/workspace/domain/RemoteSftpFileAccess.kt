@@ -10,9 +10,8 @@ import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.workspace.domain.WorkspacePathMapper.Companion.CONTAINER_ROOT
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.util.concurrent.Semaphore
 import net.schmizz.sshj.sftp.FileMode
 import net.schmizz.sshj.sftp.OpenMode
 import net.schmizz.sshj.sftp.RemoteFile
@@ -39,6 +38,9 @@ private const val IO_CHUNK = 32 * 1024
 /** `readFile` / `readBytes` 的远程文件大小上限（字节）：超过即抛 [RemoteOutputTooLargeException]，避免整篇读进内存。 */
 private const val MAX_REMOTE_READ_BYTES = 8L * 1024 * 1024
 
+/** 通道池上限：与常见 SFTP 服务端的单连接并发 channel 上限保持保守距离。 */
+private const val SFTP_CHANNEL_LIMIT = 4
+
 /** 远程文件超过上限时抛出：调用方据此给出「内容过大」提示，而不是误判为文件不存在。 */
 class RemoteOutputTooLargeException(message: String) : IOException(message)
 
@@ -50,14 +52,18 @@ class RemoteOutputTooLargeException(message: String) : IOException(message)
  * 一并拖垮命令通道；分开后只影响文件读写，通道失效时丢弃、下次调用自动重建。
  *
  * 路径映射：AI 给的 `~/workspace/...` 映射到当前选中工作区的远程绝对路径；其它绝对路径（如 `/etc/...`）
- * 直接作为远程绝对路径使用。sshj 的 [SFTPClient] 非线程安全，所有操作经 [sftpMutex] 串行化。
+ * 直接作为远程绝对路径使用。sshj 的 [SFTPClient] 非线程安全，但同一 transport 可开多条独立
+ * channel：通道池（上限 [SFTP_CHANNEL_LIMIT]）让读/列目录等短操作不再排在长传输后面——
+ * 旧的全局互斥锁下一次传输网络半开就占死整个远程文件子系统。
  */
 class RemoteSftpFileAccess @Inject constructor(
     private val connection: RemoteSshConnection,
     private val workspaceRepository: WorkspaceRepository
 ) : FileAccessProvider {
 
-    private val sftpMutex = Mutex()
+    private val channelLock = Any()
+    private val idleChannels = ArrayDeque<SFTPClient>()
+    private val channelPermits = Semaphore(SFTP_CHANNEL_LIMIT)
 
     /** 当前选中工作区在远程服务器上的真实路径（如 /data/.../test/111）。 */
     private fun currentWorkspaceRoot(): String {
@@ -79,26 +85,47 @@ class RemoteSftpFileAccess @Inject constructor(
         displayPathFor(remotePath, currentWorkspaceRoot())
 
     /**
-     * 在独立 SFTP 通道上串行执行 [block]。传输层异常时丢弃当前通道（下次调用自动重建）后原样抛出；
-     * 业务错误（文件不存在/已存在、SFTP 状态码错误）不重建。不做自动重试——写操作重试可能重复落盘。
+     * 从通道池借一条执行 [block]：健康通道归还复用，transport 层坏则丢弃当前通道并清空池
+     * （同连接上的其它闲置通道一并作废，下次调用自动重建）。业务错误（文件不存在/已存在、
+     * SFTP 状态码错误）不重建。不做自动重试——写操作重试可能重复落盘。
      */
     private fun <T> withSftp(block: (SFTPClient) -> T): T = runBlocking {
         withContext(Dispatchers.IO) {
-            sftpMutex.withLock {
-                val sftp = catchingNonCancellation({ e -> IOException(friendlySshError(e), e) }) {
-                    connection.sftp()
+            channelPermits.acquire()
+            var sftp: SFTPClient? = null
+            var healthy = true
+            try {
+                sftp = synchronized(channelLock) { idleChannels.removeFirstOrNull() }
+                    ?: catchingNonCancellation({ e -> IOException(friendlySshError(e), e) }) {
+                        connection.openSftpChannel()
+                    }
+                val result = guarded { block(sftp) }
+                synchronized(channelLock) { idleChannels.addLast(sftp) }
+                result
+            } catch (e: Exception) {
+                healthy = e is SFTPException || e is NoSuchFileException || e is FileAlreadyExistsException
+                if (healthy) {
+                    sftp?.let { synchronized(channelLock) { idleChannels.addLast(it) } }
+                } else {
+                    // transport 已断：池内闲置通道全部失效，runCatching 尽力关当前坏通道。
+                    synchronized(channelLock) { idleChannels.clear() }
+                    runCatching { sftp?.close() }
                 }
-                guarded { block(sftp) }
+                throw e
+            } finally {
+                channelPermits.release()
             }
         }
     }
 
-    /**
-     * 复用已打开的 SFTP 通道执行一次操作（不重新取 client）。供 [readLines] 惰性迭代使用：每次只锁住
-     * 一次读取，`yield` 在锁外，调用方中途放弃迭代时不会把 [sftpMutex] 永久占住。
-     */
-    private fun <T> onSftp(block: () -> T): T = runBlocking {
-        withContext(Dispatchers.IO) { sftpMutex.withLock { guarded(block) } }
+    /** 一次性短操作：从池借一条通道执行 [block]。 */
+    private fun <T> onSftp(block: (SFTPClient) -> T): T = withSftp(block)
+
+    /** sequence 的受限挂起上下文用：非 suspend 包装（调用方已约定在 IO 线程迭代）。 */
+    private fun openChannelBlocking(): SFTPClient = runBlocking {
+        catchingNonCancellation({ e -> IOException(friendlySshError(e), e) }) {
+            connection.openSftpChannel()
+        }
     }
 
     /** 传输层异常时丢弃 SFTP 通道（下次调用自动重建）后原样抛出；业务错误不重建。 */
@@ -132,22 +159,44 @@ class RemoteSftpFileAccess @Inject constructor(
     /**
      * 惰性逐行读取：每次只物化当前一行（单行封顶 64K 字符），读到哪算哪，整文件不进内存。
      * 序列可重复迭代（每次迭代重新打开远程文件）；调用方需在 IO 线程上迭代。
+     *
+     * 整个迭代期间**长租**同一条通道（reader 绑定通道根，不能跨通道使用）。acquire 在首次
+     * 迭代才发生；现有唯一调用方（read_file 的窗口读）总是耗尽迭代器，不存在中途放弃
+     * 导致 finally 不执行的泄漏路径。
      */
     override fun readLines(path: String): Sequence<String> {
         val remote = toRemotePath(path)
         return sequence {
-            val reader = withSftp { sftp ->
+            channelPermits.acquire()
+            var sftp: SFTPClient? = null
+            var healthy = true
+            try {
+                // sequence 的受限挂起上下文里不能调普通 suspend 函数，
+                // 建连用 runBlocking 包装（调用方已约定在 IO 线程迭代，同线程无额外成本）。
+                sftp = synchronized(channelLock) { idleChannels.removeFirstOrNull() }
+                    ?: openChannelBlocking()
                 val attrs = sftp.statExistence(remote) ?: throw NoSuchFileException(File(remote))
                 if (attrs.type == FileMode.Type.DIRECTORY) throw IOException("是目录，无法按文件读取: $remote")
-                BoundedLineReader(InputStreamReader(RemoteFileInputStream(sftp.open(remote))))
-            }
-            try {
-                while (true) {
-                    val line = onSftp { reader.readLine() } ?: break
-                    yield(line.text)
+                val reader = BoundedLineReader(InputStreamReader(RemoteFileInputStream(sftp.open(remote))))
+                try {
+                    while (true) {
+                        val line = reader.readLine() ?: break
+                        yield(line.text)
+                    }
+                } finally {
+                    runCatching { reader.close() }
                 }
+            } catch (e: Exception) {
+                healthy = e is SFTPException || e is NoSuchFileException || e is FileAlreadyExistsException
+                if (healthy) {
+                    sftp?.let { synchronized(channelLock) { idleChannels.addLast(it) } }
+                } else {
+                    synchronized(channelLock) { idleChannels.clear() }
+                    runCatching { sftp?.close() }
+                }
+                throw e
             } finally {
-                runCatching { onSftp { reader.close() } }
+                channelPermits.release()
             }
         }
     }
