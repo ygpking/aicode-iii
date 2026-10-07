@@ -71,7 +71,9 @@ class ExtensionRepositoryTest {
             "placeholder" to "x"
         )
         val repo = repo()
-        assertTrue(repo.skillDirs(null).isEmpty())
+        val dirs = repo.skillDirs(null)
+        val entries = repo.listExtensions(null).map { Triple(it.manifest.id, it.manifest.contributes.skills, it.errors) }
+        assertTrue("skillDirs 应为空，实际=$dirs；entries=$entries；tmp.root=${tmp.root}", dirs.isEmpty())
         val entry = repo.listExtensions(null).single()
         assertTrue(entry.errors.isNotEmpty())
     }
