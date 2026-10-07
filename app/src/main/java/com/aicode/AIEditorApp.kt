@@ -216,6 +216,8 @@ class AIEditorApp : Application(), Configuration.Provider {
             return
         }
         super.onCreate()
+        // 卡顿帧监控：只在主进程开（:crash 子进程在上面已提前 return），越早越好，能覆盖启动期卡顿。
+        com.aicode.core.ui.JankMonitor.start()
         logDeviceInfo()
         // 把提供商级代理注册表挂到 AppProxy（applyGlobal 已在 attachBaseContext 完成），
         // 此后按目标 host 分派 provider 专属代理；无 provider 配置时回退全局代理。
