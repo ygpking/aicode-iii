@@ -51,7 +51,13 @@ class ProjectMemorySource(
             ?.content
     }
 
-    override fun saveMemory(name: String, description: String, content: String, triggers: List<String>?): Boolean {
+    override fun saveMemory(
+        name: String,
+        description: String,
+        content: String,
+        triggers: List<String>?,
+        kind: String?,
+    ): Boolean {
         if (projectRoot.isBlank()) return false
         return try {
             if (!memoryRoot.exists()) memoryRoot.mkdirs()
@@ -66,6 +72,12 @@ class ProjectMemorySource(
                     updatedAtMs = MemorySource.resolveUpdatedAt(
                         existing, description, content, System.currentTimeMillis()
                     ),
+                    // 全量覆盖保留既有使用信号与结晶状态（同 pinned/triggers 的保留逻辑）；
+                    // 显式传入 kind 时以传入值为准（结晶升格的写入口）。
+                    lastUsedMs = existing?.lastUsedMs ?: 0L,
+                    recallCount = existing?.recallCount ?: 0,
+                    kind = MemoryKind.fromToken(kind) ?: existing?.kind ?: MemoryKind.POLICY,
+                    crystallizedTo = existing?.crystallizedTo,
                 )
             )
             true

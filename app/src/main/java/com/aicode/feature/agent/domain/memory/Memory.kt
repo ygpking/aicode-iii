@@ -20,6 +20,14 @@ import java.io.File
  *   **不要用文件 mtime 代替它**：mtime 只说明「文件被写过」，批量格式重写（补 triggers、
  *   统一 frontmatter 风格）会把它全部刷成同一时刻，而内容年龄根本没变——09-30 那次
  *   15 个文件的时间戳被刷到同一秒，此后 mtime 不再是「内容新旧」的证据。
+ * @param lastUsedMs 召回命中后回写的最近使用时间（frontmatter `last_used`）；0 表示从未被召回。
+ *   与 [updatedAtMs] 分开：被召回不改变内容新旧，只证明「这条记忆还有用」。
+ * @param recallCount 召回命中累计次数（frontmatter `recall_count`）；0 表示从未被召回。
+ *   与时间衰减正交：衰减证明「新」，使用计数证明「常被用到」，排序可叠加。
+ * @param keyPoints 正文 `## 要点` 段的条目（L1 层，从正文派生不入 frontmatter）：
+ *   召回命中先注要点而非正文首段，模型要细节再 read 全文。存量无该段为空表。
+ * @param kind 结晶层级（frontmatter `kind`）：trace（原始证据）/ policy（归纳做法，缺省）/ skill（已升格）。
+ * @param crystallizedTo 已升格为的技能名（frontmatter `crystallized_to`）；null 表示尚未升格。
  */
 data class Memory(
     val name: String,
@@ -31,6 +39,11 @@ data class Memory(
     val triggers: List<String> = emptyList(),
     val malformed: Boolean = false,
     val updatedAtMs: Long = 0L,
+    val lastUsedMs: Long = 0L,
+    val recallCount: Int = 0,
+    val keyPoints: List<String> = emptyList(),
+    val kind: String = MemoryKind.POLICY,
+    val crystallizedTo: String? = null,
 ) {
     /**
      * 有效更新时间：优先用 frontmatter 的 `updated`（内容派生），缺失时**回退**文件 mtime。
@@ -44,4 +57,17 @@ data class Memory(
 
 enum class MemoryScope {
     GLOBAL, PROJECT
+}
+
+/** 结晶层级常量（[Memory.kind]）。 */
+object MemoryKind {
+    const val TRACE = "trace"
+    const val POLICY = "policy"
+    const val SKILL = "skill"
+
+    private val ALL = setOf(TRACE, POLICY, SKILL)
+
+    /** 宽松归一化：未知/非法值返回 null（调用方回退既有值或 POLICY）。 */
+    fun fromToken(raw: String?): String? =
+        raw?.trim()?.lowercase()?.takeIf { it in ALL }
 }

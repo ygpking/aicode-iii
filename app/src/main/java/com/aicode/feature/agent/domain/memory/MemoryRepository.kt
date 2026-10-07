@@ -67,13 +67,14 @@ class MemoryRepository @Inject constructor(
         content: String,
         scope: MemoryScope,
         projectRoot: String?,
-        triggers: List<String>? = null
+        triggers: List<String>? = null,
+        kind: String? = null,
     ): Boolean {
         return when (scope) {
-            MemoryScope.GLOBAL -> globalMemorySource.saveMemory(name, description, content, triggers)
+            MemoryScope.GLOBAL -> globalMemorySource.saveMemory(name, description, content, triggers, kind)
             MemoryScope.PROJECT -> {
                 if (projectRoot.isNullOrBlank()) false
-                else projectSource(projectRoot).saveMemory(name, description, content, triggers)
+                else projectSource(projectRoot).saveMemory(name, description, content, triggers, kind)
             }
         }
     }
@@ -86,6 +87,26 @@ class MemoryRepository @Inject constructor(
                 else projectSource(projectRoot).editMemory(name, edits)
             }
         }
+    }
+
+    /**
+     * 召回命中回写：按「项目级优先」的定位口径（与 [listMemories] 的合并口径一致）落到正确的源。
+     * 尽力而为：未找到（未选中工作区且全局也无）时静默忽略。
+     */
+    fun touchMemory(name: String, projectRoot: String?): Boolean {
+        val key = NameKey.of(name)
+        if (!projectRoot.isNullOrBlank()) {
+            val project = projectSource(projectRoot)
+            if (project.listMemories().any { NameKey.of(it.name) == key }) {
+                project.touchMemory(name)
+                return true
+            }
+        }
+        if (globalMemorySource.listMemories().any { NameKey.of(it.name) == key }) {
+            globalMemorySource.touchMemory(name)
+            return true
+        }
+        return false
     }
 
     fun deleteMemory(name: String, scope: MemoryScope, projectRoot: String?): Boolean {

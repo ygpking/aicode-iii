@@ -26,6 +26,13 @@ object MemoryParser {
         val triggers = parseTriggers(frontmatter["triggers"])
         // 内容派生的更新时间；缺失（存量文件）为 0，由 [Memory.effectiveUpdatedAtMs] 回退到 mtime。
         val updatedAtMs = (frontmatter["updated"] as? Number)?.toLong()?.takeIf { it > 0L } ?: 0L
+        // 使用信号：召回命中回写（touchMemory），缺失（存量）为 0。0 与正文无关，仅证明「被用过」。
+        val lastUsedMs = (frontmatter["last_used"] as? Number)?.toLong()?.takeIf { it > 0L } ?: 0L
+        val recallCount = (frontmatter["recall_count"] as? Number)?.toInt()?.takeIf { it > 0 } ?: 0
+        // 结晶层级：缺省 policy（存量文件零影响）；非法值回退 policy。
+        val kind = frontmatter["kind"]?.toString()?.trim()?.takeIf { it in setOf(MemoryKind.TRACE, MemoryKind.POLICY, MemoryKind.SKILL) }
+            ?: MemoryKind.POLICY
+        val crystallizedTo = frontmatter["crystallized_to"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
 
         return Memory(
             name = name,
@@ -37,7 +44,36 @@ object MemoryParser {
             triggers = triggers,
             malformed = malformed,
             updatedAtMs = updatedAtMs,
+            lastUsedMs = lastUsedMs,
+            recallCount = recallCount,
+            keyPoints = extractKeyPoints(body),
+            kind = kind,
+            crystallizedTo = crystallizedTo,
         )
+    }
+
+    /**
+     * 提取正文 `## 要点` 段下的条目（L1 层）。约定：段落内每个非空行（去掉列表符号后）
+     * 是一条要点。无该段或段内无内容返回空表——注入端回退到正文首段截断的旧行为。
+     */
+    private fun extractKeyPoints(body: String): List<String> {
+        var inSection = false
+        val points = ArrayList<String>()
+        for (rawLine in body.lineSequence()) {
+            val line = rawLine.trim()
+            if (line.startsWith("## ")) {
+                inSection = line.substring(3).trim() == "要点"
+                continue
+            }
+            if (!inSection || line.startsWith("# ")) {
+                // 离开要点段（下一个一级标题）
+                if (line.startsWith("# ")) inSection = false
+                continue
+            }
+            if (line.isEmpty()) continue
+            points += line.removePrefix("- ").removePrefix("* ").trim()
+        }
+        return points.filter { it.isNotEmpty() }
     }
 
     /**
@@ -65,6 +101,10 @@ object MemoryParser {
         pinned: Boolean = false,
         triggers: List<String> = emptyList(),
         updatedAtMs: Long = 0L,
+        lastUsedMs: Long = 0L,
+        recallCount: Int = 0,
+        kind: String = MemoryKind.POLICY,
+        crystallizedTo: String? = null,
     ): String {
         val safeName = yamlScalar(name)
         val safeDesc = yamlScalar(description)
@@ -74,7 +114,11 @@ object MemoryParser {
             "\ntriggers: [" + triggers.joinToString(", ") { yamlScalar(it) } + "]"
         // updated 同理仅在已知时输出：存量文件没有该字段，字节不变。
         val updatedLine = if (updatedAtMs > 0L) "\nupdated: $updatedAtMs" else ""
-        return "---\nname: $safeName\ndescription: $safeDesc$pinnedLine$triggersLine$updatedLine\n---\n$content"
+        val lastUsedLine = if (lastUsedMs > 0L) "\nlast_used: $lastUsedMs" else ""
+        val recallCountLine = if (recallCount > 0) "\nrecall_count: $recallCount" else ""
+        val kindLine = if (kind != MemoryKind.POLICY) "\nkind: $kind" else ""
+        val crystallizedLine = if (crystallizedTo.isNullOrBlank()) "" else "\ncrystallized_to: ${yamlScalar(crystallizedTo)}"
+        return "---\nname: $safeName\ndescription: $safeDesc$pinnedLine$triggersLine$updatedLine$lastUsedLine$recallCountLine$kindLine$crystallizedLine\n---\n$content"
     }
 
     /** 把任意字符串转成安全的 YAML 标量，避免冒号/引号/换行破坏 frontmatter。 */

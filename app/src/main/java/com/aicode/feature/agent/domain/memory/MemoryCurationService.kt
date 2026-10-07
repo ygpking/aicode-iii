@@ -49,6 +49,10 @@ class MemoryCurationService @Inject constructor(
         val written: List<String>,
         val backupDir: String?,
         val error: String? = null,
+        /** confirm 条目：素材重申了已有记忆，未写入。 */
+        val skipped: List<String> = emptyList(),
+        /** contradict 条目：与已有记忆冲突未写入，交用户显式裁决。 */
+        val conflicts: List<String> = emptyList(),
     )
 
     /**
@@ -108,6 +112,18 @@ class MemoryCurationService @Inject constructor(
      * 早期实现按 `projectRoot.isNullOrBlank()` 推导，连着工作区时 `scope=global` 被静默忽略，
      * 文件写到了项目级，用户既无法写全局也无任何提示（与 `save` 尊重 scope 的行为不对称）。
      */
+    /**
+     * 执行一份回执里的写入（**破坏性**：会覆盖同名记忆）。写前把将被覆盖的文件备份到
+     * `.curation/backup-<receiptId>/`，回执本身留在 `.curation/` 供事后核对。
+     *
+     * distilly 三分法：confirm（素材重申已有内容）不写入，归入 [ApplyResult.skipped]；
+     * contradict（与目标记忆冲突）**不覆盖目标**，归入 [ApplyResult.conflicts] 交用户裁决——
+     * 用户确认后可显式用 memory(save) 覆盖。两者的证据都随回执留档，事后可追问。
+     *
+     * [scope] 由调用方（工具参数）**显式传入**，不得由 `projectRoot` 推导——设备实测发现：
+     * 早期实现按 `projectRoot.isNullOrBlank()` 推导，连着工作区时 `scope=global` 被静默忽略，
+     * 文件写到了项目级，用户既无法写全局也无任何提示（与 `save` 尊重 scope 的行为不对称）。
+     */
     suspend fun apply(
         receiptId: String,
         scope: MemoryScope,
@@ -126,8 +142,21 @@ class MemoryCurationService @Inject constructor(
 
         val backupDir = File(receiptDir(), "backup-$receiptId").also { it.mkdirs() }
         val written = ArrayList<String>()
+        val skipped = ArrayList<String>()
+        val conflicts = ArrayList<String>()
 
         for (item in receipt.items) {
+            // 三分法：confirm 只确认不写入；contradict 不覆盖目标、交用户裁决；其余照常写入。
+            if (item.isMerge && item.relationship == MemoryExtraction.RELATIONSHIP_CONFIRM) {
+                skipped += "${item.targetName}：素材重申了已有内容，无需写入（证据已留档回执）"
+                continue
+            }
+            if (item.isMerge && item.relationship == MemoryExtraction.RELATIONSHIP_CONTRADICT) {
+                conflicts +=
+                    "候选「${item.name}」与「${item.targetName}」冲突：候选说「${item.content.take(120)}」" +
+                        "；已有记忆请用 memory(action=read) 查看。若确认以候选为准，请显式 memory(action=save) 覆盖。"
+                continue
+            }
             val name = if (item.isMerge && !item.targetName.isNullOrBlank()) item.targetName else item.name
             // 覆盖前备份：合并会改掉目标记忆的正文，出问题时能逐字节还原。
             // 必须在**目标作用域内**定位文件：仓库层 listMemories 跨作用域合并且项目级优先，
@@ -147,8 +176,12 @@ class MemoryCurationService @Inject constructor(
             )
             if (ok) written += name else FileLogger.w(TAG, "记忆写入失败: $name")
         }
-        FileLogger.i(TAG, "记忆整理已应用: receipt=$receiptId scope=${scope.name.lowercase()} written=${written.size}")
-        return ApplyResult(written, backupDir.absolutePath)
+        FileLogger.i(
+            TAG,
+            "记忆整理已应用: receipt=$receiptId scope=${scope.name.lowercase()} written=${written.size} " +
+                "skipped=${skipped.size} conflicts=${conflicts.size}",
+        )
+        return ApplyResult(written, backupDir.absolutePath, skipped = skipped, conflicts = conflicts)
     }
 
     /** 回执存放目录（持久化在 aicode 配置目录下，与记忆同域，便于一起备份/清理）。 */
@@ -162,7 +195,10 @@ class MemoryCurationService @Inject constructor(
             createdAt = System.currentTimeMillis(),
             source = source.name,
             items = proposal.items.map {
-                ReceiptItem(it.name, it.description, it.content, it.triggers, it.evidence, it.isMerge, it.targetName)
+                ReceiptItem(
+                    it.name, it.description, it.content, it.triggers, it.evidence, it.isMerge,
+                    it.targetName, it.relationship,
+                )
             },
             rejected = proposal.rejected,
         )
@@ -250,4 +286,6 @@ internal data class ReceiptItem(
     val evidence: String = "",
     val isMerge: Boolean = false,
     val targetName: String? = null,
+    /** 与目标记忆的关系（distilly 三分法）；旧回执无此字段默认 supplement，向后兼容。 */
+    val relationship: String = MemoryExtraction.RELATIONSHIP_SUPPLEMENT,
 )

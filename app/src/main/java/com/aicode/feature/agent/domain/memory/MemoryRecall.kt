@@ -91,6 +91,8 @@ internal enum class TemporalDecay(val halfLifeMs: Long) {
  * @param text 记忆正文。
  * @param pinned true 表示「必常驻」：与相关性正交，召回时直接置顶。
  * @param updatedAtMs 最近更新时间，用于同分时的稳定排序。
+ * @param keyPoints 正文 `## 要点` 段条目（L1 层）。非空时索引块优先渲染要点（结构化骨架），
+ *   让模型不读全文也能拿到内容脉络；空表回退正文首段截断。
  */
 internal data class RecallDoc(
     val id: String,
@@ -98,6 +100,7 @@ internal data class RecallDoc(
     val text: String,
     val pinned: Boolean = false,
     val updatedAtMs: Long = 0L,
+    val keyPoints: List<String> = emptyList(),
     /**
      * 该记忆声明的触发词。用于两件事：① 门控（把候选收窄到「用户真的提了这个场景」）；
      * ② 加权（门控回退全集时用于区分）。空表时两机制自动跳过，不劣化。
@@ -316,7 +319,14 @@ internal object MemoryRecall {
         val sb = StringBuilder("<recalled_memory>")
         var total = 0
         for (doc in docs) {
-            val body = doc.text.take(maxCharsPerBlock)
+            // 有 L1 要点层的记忆优先渲染要点（结构化骨架），否则回退正文首段截断。
+            val body = if (doc.keyPoints.isNotEmpty()) {
+                doc.keyPoints.take(MAX_KEY_POINTS)
+                    .joinToString("\n") { "· $it" }
+                    .take(maxCharsPerBlock)
+            } else {
+                doc.text.take(maxCharsPerBlock)
+            }
             val marker = if (doc.pinned) " pinned" else ""
             val entry = "\n[${doc.id} scope=${doc.scope.name.lowercase()}$marker]\n$body"
             if (total + entry.length > maxTotalChars) break
@@ -326,6 +336,9 @@ internal object MemoryRecall {
         sb.append("\n</recalled_memory>")
         return sb.toString()
     }
+
+    /** 单条记忆最多渲染的要点条数（L1 层宽度约束）。 */
+    private const val MAX_KEY_POINTS = 5
 
     private fun rawBm25(
         idf: Map<String, Double>,

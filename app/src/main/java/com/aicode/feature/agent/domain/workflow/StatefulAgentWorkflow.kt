@@ -1558,6 +1558,7 @@ class StatefulAgentWorkflow @Inject constructor(
                 pinned = m.pinned,
                 updatedAtMs = m.effectiveUpdatedAtMs,
                 triggers = m.triggers,
+                keyPoints = m.keyPoints,
             )
         }
         val hits = MemoryRecall.select(
@@ -1569,9 +1570,15 @@ class StatefulAgentWorkflow @Inject constructor(
         if (hits.isEmpty()) return null
         // 每轮一次的低频日志：记录本次召回注入条数，供排查「记忆该生效却没生效 / 注入过多撑大上下文」。
         FileLogger.i(TAG, "本轮注入 ${hits.size} 条记忆召回块")
+        // 使用信号回写（尽力而为的旁路，失败不影响召回）：把「该记忆刚被用到」记入文件，
+        // 供排序叠加使用证据。同步写但文件小、命中数 ≤5，开销可忽略。
+        hits.forEach { hit ->
+            runCatching { memoryRepository.touchMemory(hit.id, projectRoot) }
+                .onFailure { FileLogger.w(TAG, "召回使用信号回写失败: ${hit.id}", it) }
+        }
         // 只给「名 + 摘要」，不内联正文：召回块会成为上下文固定前缀的一部分，内联数千字符正文
         // 而多数命中只需知道「有这么一条」。需要细节时用 memory(action=read, ...) 按需拉取。
-        // select() 的挑选结果未变，只是渲染宽度收紧（见 MemoryRecall.renderIndexBlock）。
+        // 有 ## 要点 段的记忆先注要点（L1 层），无则回退正文首段截断（renderIndexBlock 内部处理）。
         return MemoryRecall.renderIndexBlock(hits) + RECALL_READ_HINT
     }
 

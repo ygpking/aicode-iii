@@ -33,6 +33,9 @@ object MemoryExtraction {
      *
      * @param evidence 支撑该记忆的**原文逐字片段**；校验不过则整条丢弃。
      * @param isMerge true 表示这是对 [targetName] 的合并建议，false 表示新建记忆。
+     * @param relationship 与目标记忆的关系（distilly 三分法）：supplement=补充（新增信息，
+     *   照常写入）/ confirm=确认（素材重申已有记忆，无需写入，归入 confirmed）/ contradict=矛盾
+     *   （与目标记忆冲突，**不覆盖目标**，进 conflicts 交用户裁决）。仅 is_merge=true 时有意义。
      */
     data class Item(
         val name: String,
@@ -42,6 +45,7 @@ object MemoryExtraction {
         val evidence: String,
         val isMerge: Boolean = false,
         val targetName: String? = null,
+        val relationship: String = RELATIONSHIP_SUPPLEMENT,
     )
 
     /**
@@ -49,10 +53,13 @@ object MemoryExtraction {
      *
      * @param items 通过逐字证据校验的条目。
      * @param rejected 因证据不成立被丢弃的条目描述（供如实向用户报告「模型编了什么」）。
+     * @param confirmed relationship=confirm 的条目：素材重申了已有记忆，无需写入，
+     *   但列入结果让用户知道「哪些记忆被本次会话再次验证」。
      */
     data class Proposal(
         val items: List<Item>,
         val rejected: List<String> = emptyList(),
+        val confirmed: List<String> = emptyList(),
     )
 
     /**
@@ -102,9 +109,13 @@ object MemoryExtraction {
                 evidence = evidence,
                 isMerge = isMerge,
                 targetName = r.targetName?.trim(),
+                relationship = r.relationship?.trim()?.takeIf { it in RELATIONSHIPS } ?: RELATIONSHIP_SUPPLEMENT,
             )
         }
-        return Proposal(items, rejected)
+        val confirmed = items.filter { it.isMerge && it.relationship == RELATIONSHIP_CONFIRM }
+            .map { "${it.targetName}：${it.description}" }
+        val actionable = items.filterNot { it.isMerge && it.relationship == RELATIONSHIP_CONFIRM }
+        return Proposal(actionable, rejected, confirmed)
     }
 
     /**
@@ -155,6 +166,11 @@ object MemoryExtraction {
             appendLine("不要另建一条高度重叠的新记忆）：")
             existingNames.forEach { appendLine("- $it") }
             appendLine()
+            appendLine("对合并条目请再标注 relationship（与目标记忆的关系，三选一）：")
+            appendLine("- supplement：素材带来了目标记忆没有的新信息（追加/改写目标）；")
+            appendLine("- confirm：素材只是重申了目标记忆已有的内容（无需写入，会记入 confirmed 清单）；")
+            appendLine("- contradict：素材与目标记忆的说法冲突（**不会覆盖目标**，会进 conflicts 交用户裁决）。")
+            appendLine()
         }
         appendLine("会话记录（`User:` 是用户原话，其余是助手回复，仅作上下文）：")
         appendLine(material)
@@ -189,7 +205,8 @@ object MemoryExtraction {
           "triggers": ["用户提问时可能用到的词", "同义词", "english"],
           "evidence": "支撑这条记忆的原文逐字片段（必须与素材中的文字完全一致，只允许空白差异）",
           "is_merge": false,
-          "target_name": "is_merge 为 true 时填要合并到的已有记忆名"
+          "target_name": "is_merge 为 true 时填要合并到的已有记忆名",
+          "relationship": "is_merge 为 true 时填：supplement / confirm / contradict"
         }]
     """.trimIndent()
 
@@ -211,5 +228,12 @@ object MemoryExtraction {
         val evidence: String? = null,
         @SerialName("is_merge") val isMerge: Boolean = false,
         @SerialName("target_name") val targetName: String? = null,
+        val relationship: String? = null,
     )
+
+    /** 与目标记忆的关系（distilly 三分法）。 */
+    const val RELATIONSHIP_SUPPLEMENT = "supplement"
+    const val RELATIONSHIP_CONFIRM = "confirm"
+    const val RELATIONSHIP_CONTRADICT = "contradict"
+    private val RELATIONSHIPS = setOf(RELATIONSHIP_SUPPLEMENT, RELATIONSHIP_CONFIRM, RELATIONSHIP_CONTRADICT)
 }

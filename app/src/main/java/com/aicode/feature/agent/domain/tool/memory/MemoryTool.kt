@@ -107,6 +107,15 @@ class MemoryTool @Inject constructor(
             enum = listOf("project", "global"),
             required = false
         ),
+        "kind" to ToolParameter(
+            name = "kind",
+            type = ParameterType.STRING,
+            description = "结晶层级（仅 save 操作）：trace=原始证据；policy=归纳后的做法（默认）；" +
+                "skill=该经验已写成 SKILL.md 技能（此时本条记忆是原始证据的存档）。" +
+                "重复出现的操作性经验建议升格为技能并在此标注。缺省保留既有值。",
+            enum = listOf("trace", "policy", "skill"),
+            required = false
+        ),
         "triggers" to ToolParameter(
             name = "triggers",
             type = ParameterType.ARRAY,
@@ -220,6 +229,10 @@ class MemoryTool @Inject constructor(
             sb.append("\n  触发词：").append(item.triggers.joinToString(", "))
             sb.append("\n  证据：").append(item.evidence.take(160))
         }
+        if (p.confirmed.isNotEmpty()) {
+            sb.append("\n\n另有 ").append(p.confirmed.size).append(" 条被素材再次确认（无需写入）：")
+            p.confirmed.forEach { sb.append("\n- ").append(it) }
+        }
         if (p.rejected.isNotEmpty()) {
             sb.append("\n\n另有 ").append(p.rejected.size).append(" 条未通过校验已丢弃：")
             p.rejected.forEach { sb.append("\n- ").append(it) }
@@ -241,9 +254,20 @@ class MemoryTool @Inject constructor(
         val result = memoryCurationService.apply(receiptId, scope, context.projectRoot, context.sessionId)
         result.error?.let { return ToolResult.Error(it, "APPLY_FAILED") }
         val backup = result.backupDir?.let { "，被覆盖的原文件已备份到 $it" } ?: ""
-        return ToolResult.Success(
-            JsonPrimitive("已写入 ${result.written.size} 条记忆：\n" + result.written.joinToString("\n") { "- $it" } + backup)
-        )
+        val sb = StringBuilder("已写入 ${result.written.size} 条记忆：\n")
+        sb.append(result.written.joinToString("\n") { "- $it" })
+        sb.append(backup)
+        if (result.skipped.isNotEmpty()) {
+            sb.append("\n\n另有 ").append(result.skipped.size).append(" 条确认重申、无需写入：")
+            result.skipped.forEach { sb.append("\n- ").append(it) }
+        }
+        if (result.conflicts.isNotEmpty()) {
+            // 矛盾条目未写入目标，必须显式呈现：模型不得自行 memory(save) 覆盖已有记忆。
+            sb.append("\n\n有 ").append(result.conflicts.size).append(" 条与已有记忆冲突、**未写入**，需用户裁决：")
+            result.conflicts.forEach { sb.append("\n- ").append(it) }
+            sb.append("\n（在用户确认前，请勿用 memory(action=save) 覆盖目标记忆。）")
+        }
+        return ToolResult.Success(JsonPrimitive(sb.toString()))
     }
 
     /**
@@ -344,11 +368,13 @@ class MemoryTool @Inject constructor(
 
         // 未传 triggers 时传 null，语义是「保留既有值」，与旧行为一致。
         val triggers = parseTriggers(args)
-        val success = memoryRepository.saveMemory(name, description, content, scope, projectRoot, triggers)
+        val kind = args["kind"]?.jsonPrimitive?.contentOrNull?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+        val success = memoryRepository.saveMemory(name, description, content, scope, projectRoot, triggers, kind)
         return if (success) {
-            FileLogger.i(TAG, "memory save: name=$name scope=${scope.name.lowercase()} triggers=${describeTriggers(triggers)}")
+            FileLogger.i(TAG, "memory save: name=$name scope=${scope.name.lowercase()} triggers=${describeTriggers(triggers)} kind=$kind")
             val triggerNote = if (triggers.isNullOrEmpty()) "" else "（含 ${triggers.size} 个触发词）"
-            ToolResult.Success(JsonPrimitive("已成功保存记忆「$name」到 ${scope.name.lowercase()} 作用域$triggerNote。它将在下一次会话启动时自动注入摘要。当前会话若需立即使用，请通过 read 操作读取。"))
+            val kindNote = if (kind.isNullOrBlank()) "" else "，结晶层级=$kind"
+            ToolResult.Success(JsonPrimitive("已成功保存记忆「$name」到 ${scope.name.lowercase()} 作用域$triggerNote$kindNote。它将在下一次会话启动时自动注入摘要。当前会话若需立即使用，请通过 read 操作读取。"))
         } else {
             ToolResult.Error("保存记忆失败，请查看日志。", "WRITE_FAILED")
         }

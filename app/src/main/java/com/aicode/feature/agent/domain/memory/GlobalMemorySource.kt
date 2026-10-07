@@ -34,7 +34,13 @@ class GlobalMemorySource @Inject constructor(
             ?.content
     }
 
-    override fun saveMemory(name: String, description: String, content: String, triggers: List<String>?): Boolean {
+    override fun saveMemory(
+        name: String,
+        description: String,
+        content: String,
+        triggers: List<String>?,
+        kind: String?,
+    ): Boolean {
         return try {
             if (!memoryRoot.exists()) memoryRoot.mkdirs()
             val file = MemorySource.resolveMemoryFile(memoryRoot, name)
@@ -42,12 +48,18 @@ class GlobalMemorySource @Inject constructor(
             val existing = listMemories().firstOrNull { NameKey.of(it.name) == NameKey.of(name) }
             val pinned = existing?.pinned ?: false
             val effectiveTriggers = triggers ?: existing?.triggers ?: emptyList()
+            val effectiveKind = MemoryKind.fromToken(kind) ?: existing?.kind ?: MemoryKind.POLICY
             file.writeText(
                 MemoryParser.format(
                     MemorySource.sanitizeName(name), description, content, pinned, effectiveTriggers,
                     updatedAtMs = MemorySource.resolveUpdatedAt(
                         existing, description, content, System.currentTimeMillis()
                     ),
+                    // 全量覆盖保留既有使用信号与结晶状态（同 pinned/triggers 的保留逻辑）。
+                    lastUsedMs = existing?.lastUsedMs ?: 0L,
+                    recallCount = existing?.recallCount ?: 0,
+                    kind = effectiveKind,
+                    crystallizedTo = existing?.crystallizedTo,
                 )
             )
             true

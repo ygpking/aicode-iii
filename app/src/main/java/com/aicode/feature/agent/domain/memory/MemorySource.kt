@@ -47,12 +47,16 @@ interface MemorySource {
      *
      * @param triggers 触发词；null 表示「保留既有值」（工具未传时行为与旧实现一致），
      *   非 null 表示设为该值（空表即清空）。
+     * @param kind 结晶层级（trace/policy/skill）；null 表示「保留既有值」（缺省 policy）。
+     *   非法值回退 policy。升级链路：trace（原始证据）→ policy（归纳做法）→ skill（已写成
+     *   SKILL.md 技能，此时本条记忆应标 skill 并用 crystallized_to 指向技能名）。
      */
     fun saveMemory(
         name: String,
         description: String,
         content: String,
-        triggers: List<String>? = null
+        triggers: List<String>? = null,
+        kind: String? = null,
     ): Boolean
 
     /**
@@ -112,6 +116,11 @@ interface MemorySource {
                     updatedAtMs = MemorySource.resolveUpdatedAt(
                         memory, memory.description, content, System.currentTimeMillis()
                     ),
+                    // 编辑不改使用信号与结晶状态：usage 是召回侧事实，kind/crystallizedTo 由升格流程管理。
+                    lastUsedMs = memory.lastUsedMs,
+                    recallCount = memory.recallCount,
+                    kind = memory.kind,
+                    crystallizedTo = memory.crystallizedTo,
                 )
             )
             MemoryEditResult.Success
@@ -122,6 +131,28 @@ interface MemorySource {
     }
 
     fun deleteMemory(name: String): Boolean
+
+    /**
+     * 召回命中回写：把「该记忆刚被用到」记入 frontmatter（last_used=now，recall_count+1），
+     * 供排序时叠加「使用信号」（与内容新旧衰减正交）。找不到记忆或写盘失败静默忽略——
+     * 回写是尽力而为的旁路，不应影响主召回流程。
+     */
+    fun touchMemory(name: String, nowMs: Long = System.currentTimeMillis()) {
+        val memory = listMemories().firstOrNull { NameKey.of(it.name) == NameKey.of(name) } ?: return
+        val file = memory.file ?: return
+        runCatching {
+            file.writeText(
+                MemoryParser.format(
+                    memory.name, memory.description, memory.content, memory.pinned, memory.triggers,
+                    updatedAtMs = memory.updatedAtMs,
+                    lastUsedMs = nowMs,
+                    recallCount = memory.recallCount + 1,
+                    kind = memory.kind,
+                    crystallizedTo = memory.crystallizedTo,
+                )
+            )
+        }.onFailure { FileLogger.w("MemorySource", "回写使用信号失败: $name", it) }
+    }
 
     companion object {
         /**
