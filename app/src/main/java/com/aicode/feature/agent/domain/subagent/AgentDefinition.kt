@@ -10,8 +10,32 @@ enum class AgentDefinitionScope { GLOBAL, PROJECT }
  *
  * BASE 与 MAIN_RULES 互斥语义上并不强制，同时写则两者都注入（MAIN_RULES 在前）。
  */
-enum class InjectPart(val token: String) {
-    /** 子代理专用精简基线（`agent/subagent-base.md`）：工具用法、路径约定、安全边界。 */
+/**
+ * 子代理的交互模式（抄 DSH 子代理规范的分型）：
+ * - [ONE_SHOT]：一次性任务，完成即结束（不能对它 task(action=send) 续聊）；
+ * - [CONTINUABLE]：可继续的子会话，完成后仍可 task(action=send) 追加。
+ * 调度方请求的模式未声明时显式拒绝（CAPABILITY_NOT_DECLARED），绝不静默降级。
+ */
+enum class SubAgentInteractionMode(val token: String) {
+    ONE_SHOT("one-shot"),
+    CONTINUABLE("continuable");
+
+    companion object {
+        val ALL: Set<SubAgentInteractionMode> = entries.toSet()
+
+        /** frontmatter 里的宽松写法映射：忽略大小写、连字符与下划线差异。 */
+        fun fromToken(token: String): SubAgentInteractionMode? {
+            val normalized = token.trim().lowercase().replace("-", "").replace("_", "")
+            return when (normalized) {
+                "oneshot", "oneshotrun", "onetime" -> ONE_SHOT
+                "continuable", "continuablesession", "resumable" -> CONTINUABLE
+                else -> null
+            }
+        }
+    }
+}
+
+enum class InjectPart(val token: String) {    /** 子代理专用精简基线（`agent/subagent-base.md`）：工具用法、路径约定、安全边界。 */
     BASE("base"),
 
     /** 主代理的完整静态规则基线（`00`~`70` 全部片段），需要子代理与主代理行为完全一致时使用。 */
@@ -55,6 +79,8 @@ enum class InjectPart(val token: String) {
  * @param disallowedTools 工具黑名单，先于白名单生效
  * @param inject 要注入的提示词片段
  * @param prompt agent 自身的系统提示词（正文）
+ * @param interactionModes 支持的交互模式；缺省 = 两者都支持（向后兼容存量定义）。
+ *   仅声明 one-shot 的定义，对已完成实例的 task(action=send) 会被显式拒绝。
  * @param filePath 定义文件的容器路径，供设置页展示与删除
  */
 data class AgentDefinition(
@@ -68,6 +94,7 @@ data class AgentDefinition(
     val disallowedTools: List<String> = emptyList(),
     val inject: Set<InjectPart> = DEFAULT_INJECT,
     val prompt: String,
+    val interactionModes: Set<SubAgentInteractionMode> = SubAgentInteractionMode.ALL,
     val filePath: String? = null
 ) {
     /**

@@ -41,9 +41,21 @@ object AgentDefinitionParser {
             allowedTools = stringList(frontmatter["tools"]),
             disallowedTools = stringList(frontmatter["disallowedTools"]),
             inject = parseInject(frontmatter["inject"]),
+            interactionModes = parseInteractionModes(frontmatter["interactionModes"]),
             prompt = prompt,
             filePath = filePath
         )
+    }
+
+    /**
+     * 交互模式解析：缺省或全部非法回退 ALL（两者都支持），向后兼容存量定义。
+     * 支持 YAML 列表与逗号分隔两种写法（复用 [stringList]）。
+     */
+    internal fun parseInteractionModes(raw: Any?): Set<SubAgentInteractionMode> {
+        val tokens = stringList(raw)
+        if (tokens.isEmpty()) return SubAgentInteractionMode.ALL
+        val parsed = tokens.mapNotNull { SubAgentInteractionMode.fromToken(it) }.toSet()
+        return parsed.ifEmpty { SubAgentInteractionMode.ALL }
     }
 
     /** 同时接受 YAML 列表与逗号分隔字符串两种写法。 */
@@ -106,7 +118,8 @@ object AgentDefinitionParser {
         allowedTools: List<String>,
         disallowedTools: List<String>,
         inject: Set<InjectPart>,
-        prompt: String
+        prompt: String,
+        interactionModes: Set<SubAgentInteractionMode> = SubAgentInteractionMode.ALL,
     ): String = buildString {
         appendLine("---")
         appendLine("name: ${quote(name)}")
@@ -124,6 +137,12 @@ object AgentDefinitionParser {
             InjectPart.entries.filter { it in inject }.joinToString(", ") { it.token }
         }
         appendLine("inject: [$injectTokens]")
+        // 仅在非全集时写出：缺省即 ALL，与解析端回退一致，存量文件字节不变。
+        if (interactionModes != SubAgentInteractionMode.ALL) {
+            val modeTokens = SubAgentInteractionMode.entries.filter { it in interactionModes }
+                .joinToString(", ") { it.token }
+            appendLine("interactionModes: [$modeTokens]")
+        }
         appendLine("---")
         appendLine(prompt.trim())
     }

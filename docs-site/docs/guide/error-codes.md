@@ -101,6 +101,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `MAX_SUBAGENTS_REACHED` | 并行子代理已达上限，需等前一个结束 |
 | `NOT_YOUR_SUBAGENT` | 尝试操作不属于本会话的子代理 |
 | `AGENT_NOT_FOUND` | 指定的子代理类型不存在 |
+| `CAPABILITY_NOT_DECLARED` | 子代理定义仅声明支持 one-shot（一次性任务），对其已完成实例的 `send`（续聊）被拒绝。重新 create 派发新任务，或改用声明支持 `continuable` 的子代理 |
 
 ### 其它工具
 

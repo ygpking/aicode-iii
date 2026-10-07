@@ -10,6 +10,7 @@ import com.aicode.feature.agent.domain.skill.SkillRepository
 import com.aicode.feature.agent.domain.subagent.AgentDefinition
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.InjectPart
+import com.aicode.feature.agent.domain.subagent.SubAgentInteractionMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
@@ -139,10 +140,17 @@ class SystemPromptProvider @Inject constructor(
             }
 
             val list = entries.joinToString("\n") { entry ->
-                "- ${entry.definition.name}: ${entry.definition.description.ifBlank { "（无描述）" }}"
+                val d = entry.definition
+                val modeNote = when (d.interactionModes) {
+                    setOf(SubAgentInteractionMode.ONE_SHOT) -> " [仅 one-shot]"
+                    setOf(SubAgentInteractionMode.CONTINUABLE) -> " [仅 continuable]"
+                    else -> ""
+                }
+                "- ${d.name}: ${d.description.ifBlank { "（无描述）" }}$modeNote"
             }
             val content = "可用子代理 (subagents)（格式为 名称: 何时派发；用 `task(action=\"create\", agent=\"名称\", ...)` 派发）：\n" +
-                "这些子代理有各自专属的提示词、模型与工具集，任务与某个 agent 对口时优先按名派发，而不是用默认通用子代理。\n$list"
+                "这些子代理有各自专属的提示词、模型与工具集，任务与某个 agent 对口时优先按名派发，而不是用默认通用子代理。\n" +
+                "未标注交互模式 = one-shot 与 continuable 都支持；仅声明 one-shot 的子代理完成后不能对其 send。\n$list"
             cachedByKey[key] = content
             trimIfNeeded()
             return content

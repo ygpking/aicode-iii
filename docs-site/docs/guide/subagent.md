@@ -109,6 +109,7 @@ inject: [base, projectRules]
 | `tools` | 否 | 工具白名单。**省略时代表开放全部可用工具** |
 | `disallowedTools` | 否 | 工具黑名单，优先级高于白名单，支持 `mcp__*` 前缀通配 |
 | `inject` | 否 | 注入的系统规则片段，详见下表 |
+| `interactionModes` | 否 | 支持的交互模式：`one-shot`（一次性任务）/ `continuable`（完成后可继续 send）。默认两者都支持；仅声明 `one-shot` 的子代理，对其已完成实例的 `send` 会被拒绝（错误码 `CAPABILITY_NOT_DECLARED`） |
 
 ### inject 规则片段
 

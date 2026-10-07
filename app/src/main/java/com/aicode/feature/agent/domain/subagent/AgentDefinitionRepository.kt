@@ -80,6 +80,13 @@ class AgentDefinitionRepository @Inject constructor(
                 it.scope == scope && it.definition.name.equals(old, ignoreCase = true)
             }?.definition?.filePath
         }
+        // 表单不含 interactionModes（设置页暂无此字段）：编辑保存时保留原定义的声明，
+        // 避免「UI 存一次盘就静默丢掉分型声明」；新建时缺省 ALL。
+        val existingDefinition = originalName?.let { old ->
+            listAll().firstOrNull {
+                it.scope == scope && it.definition.name.equals(old, ignoreCase = true)
+            }?.definition
+        }
 
         val provider = providerFor(scope)
         val root = agentsRoot(scope)
@@ -93,7 +100,8 @@ class AgentDefinitionRepository @Inject constructor(
             allowedTools = form.allowedTools,
             disallowedTools = form.disallowedTools,
             inject = form.inject,
-            prompt = form.prompt
+            prompt = form.prompt,
+            interactionModes = existingDefinition?.interactionModes ?: SubAgentInteractionMode.ALL
         )
 
         return try {

@@ -259,6 +259,40 @@ class AgentDefinitionParserTest {
         assertTrue(def.allowedTools.isEmpty())
     }
 
+    /** 交互模式：缺省=全集；仅声明一侧时只认该侧；全非法回退全集；非全集序列化后可 round-trip。 */
+    @Test
+    fun interactionModes_defaultsAndRoundTrip() {
+        // 缺省 = 两者都支持
+        val defDefault = parseFile(write("d.md", "---\nname: d\n---\n正文"))!!
+        assertEquals(SubAgentInteractionMode.ALL, defDefault.interactionModes)
+
+        // 仅声明 one-shot：serialize 写出 interactionModes，parse 回读后 ≠ ALL
+        val text = AgentDefinitionParser.serialize(
+            name = "oneshot-only",
+            description = "一次性任务",
+            providerId = null,
+            model = null,
+            reasoningEffort = null,
+            allowedTools = emptyList(),
+            disallowedTools = emptyList(),
+            inject = AgentDefinition.DEFAULT_INJECT,
+            prompt = "正文",
+            interactionModes = setOf(SubAgentInteractionMode.ONE_SHOT)
+        )
+        assertTrue(text.contains("interactionModes: [one-shot]"))
+        val def = parseFile(write("oneshot-only.md", text))!!
+        assertEquals(setOf(SubAgentInteractionMode.ONE_SHOT), def.interactionModes)
+    }
+
+    @Test
+    fun interactionModes_allInvalidValuesFallBackToAll() {
+        val def = parseFile(
+            write("i.md", "---\nname: i\ninteractionModes: [turbo, nonsense]\n---\n正文")
+        )!!
+
+        assertEquals(SubAgentInteractionMode.ALL, def.interactionModes)
+    }
+
     @Test
     fun isValidName_rejectsPathSeparatorsAndEmpty() {
         assertTrue(AgentDefinitionRepository.isValidName("researcher"))

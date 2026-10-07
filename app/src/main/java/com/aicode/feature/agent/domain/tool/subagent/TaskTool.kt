@@ -8,6 +8,7 @@ import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.domain.subagent.AgentDefinition
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
+import com.aicode.feature.agent.domain.subagent.SubAgentInteractionMode
 import com.aicode.feature.agent.domain.subagent.SubAgentEvent
 import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
 import com.aicode.feature.agent.domain.subagent.SubAgentEventType
@@ -79,7 +80,7 @@ class TaskTool @Inject constructor(
         }
     }
 
-    override val description = "管理子代理的生命周期：创建、发消息、读取结果、停止、删除、列表。子代理拥有独立上下文与完整工具能力，可并行工作。最多同时运行 5 个。子代理完成后你会收到一条后台通知，不要主动轮询。用 send 可在运行中反复向其追加指令/纠偏，或对已完成的子代理继续追问；子代理运行中也可能主动发消息给你。create 可用 agent 参数指定自定义子代理（专属提示词/模型/工具集）。"
+    override val description = "管理子代理的生命周期：创建、发消息、读取结果、停止、删除、列表。子代理拥有独立上下文与完整工具能力，可并行工作。最多同时运行 5 个。子代理完成后你会收到一条后台通知，不要主动轮询。用 send 可在运行中反复向其追加指令/纠偏，或对已完成的子代理继续追问；子代理运行中也可能主动发消息给你。create 可用 agent 参数指定自定义子代理（专属提示词/模型/工具集）。注意：自定义子代理可能仅声明支持 one-shot（一次性任务），对它 send 会被拒绝（CAPABILITY_NOT_DECLARED）；create 的响应里带 interaction_modes 供按型派发。"
 
     override val parameters: Map<String, ToolParameter> = mapOf(
         "action" to ToolParameter(
@@ -228,6 +229,12 @@ class TaskTool @Inject constructor(
             buildJsonObject {
                 put("id", subSessionId)
                 put("state", "running")
+                // 交互模式声明：调度方据此决定后续能否对该子代理 send（one-shot 会被拒）。
+                put(
+                    "interaction_modes",
+                    (definition?.interactionModes ?: SubAgentInteractionMode.ALL)
+                        .joinToString(", ") { it.token }
+                )
                 definition?.let { put("agent", it.name) }
                 if (writePaths.isNotEmpty()) put("write_paths", JsonArray(writePaths.map { JsonPrimitive(it) }))
                 put("message", "子代理已创建并开始执行，任务完成后会通知。可用 task(action=\"read\", id=...) 读取输出，task(action=\"stop\", id=...) 主动关闭。")
@@ -255,6 +262,20 @@ class TaskTool @Inject constructor(
             ?: return ToolResult.Error("子会话不存在: $subSessionId", "SESSION_NOT_FOUND")
         if (sub.parentId != parentSessionId) {
             return ToolResult.Error("只能向当前会话派生的子代理发消息", "NOT_YOUR_SUBAGENT")
+        }
+        // fail-loud 能力门：仅声明 one-shot 的定义不能续聊。解析不到定义（默认子代理）不拦。
+        val subDefinition = sub.subagentType?.takeIf { it != DEFAULT_SUBAGENT_TYPE }
+            ?.let { agentDefinitionRepository.findIncludingDisabled(it) }
+        if (subDefinition != null && SubAgentInteractionMode.CONTINUABLE !in subDefinition.interactionModes) {
+            val available = agentDefinitionRepository.listEnabled()
+                .filter { SubAgentInteractionMode.CONTINUABLE in it.definition.interactionModes }
+                .joinToString(", ") { it.definition.name }
+            val fallback = if (available.isBlank()) "或用默认子代理（未声明限制）" else "，或改用：$available"
+            return ToolResult.Error(
+                "子代理「${subDefinition.name}」仅声明支持 one-shot（一次性任务），未声明支持 continuable（续聊），" +
+                    "因此不能对其 task(action=send)。可用做法：重新 create 派发新任务$fallback。",
+                "CAPABILITY_NOT_DECLARED"
+            )
         }
 
         eventBus.emit(
