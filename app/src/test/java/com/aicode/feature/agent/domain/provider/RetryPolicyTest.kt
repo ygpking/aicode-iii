@@ -81,6 +81,10 @@ class RetryPolicyTest {
         assertEquals(false, isRetriableNetworkError(StreamApiException("insufficient_quota", "m")))
         // 流内服务端故障仍可重试
         assertEquals(true, isRetriableNetworkError(StreamApiException("server_is_overloaded", "m")))
+        // watchdog 关流后继续读抛出的 IllegalStateException("closed")：视为瞬时故障可重试
+        assertEquals(true, isRetriableNetworkError(IllegalStateException("closed")))
+        // 其它 IllegalStateException 不在宽松名单内，仍不可重试
+        assertEquals(false, isRetriableNetworkError(IllegalStateException("already executed")))
     }
 
     @Test

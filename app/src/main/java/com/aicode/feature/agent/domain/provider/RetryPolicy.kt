@@ -180,6 +180,11 @@ fun isRetriableNetworkError(t: Throwable): Boolean {
         return !NON_RETRYABLE_STREAM_CODES.contains(t.code)
     }
 
+    // 流中途被 watchdog（首字节/空闲超时）主动 close 后，阻塞中的 readLine 会抛
+    // okio 的 IllegalStateException("closed")——这正是 watchdog 的设计意图（见
+    // StreamIdleWatchdog 注释：关流让读取抛异常交给重试），必须归为可重试，
+    // 否则会以「LLM 调用失败: closed」直接终局（2026-10-07 18:04 实测案例）。
+    if (t is IllegalStateException && t.message?.lowercase() == "closed") return true
     // 兼容原生网络异常
     if (t is SocketTimeoutException || t is InterruptedIOException ||
         t is java.net.UnknownHostException || t is java.net.ConnectException ||

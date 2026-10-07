@@ -13,7 +13,7 @@ import org.junit.Test
  */
 class MemoryExtractionTest {
 
-    private val material = "User: 帮我改一下构建脚本\nAssistant: 好的\nUser: 注意以后发版都要先跑一遍全量单测，别再漏了"
+    private val material = "User: 帮我改一下构建脚本\nAssistant: 好的\nUser: 注意以后发版都要先跑一遍全量单测，别再漏了\nUser: 其实发版只需要跑冒烟就行"
 
     @Test
     fun evidenceVerbatimInMaterial_isAccepted() {
@@ -125,5 +125,27 @@ class MemoryExtractionTest {
         assertTrue(prompt.contains(wrapped))
         assertTrue("应列出已有记忆名以支持合并", prompt.contains("mem-a"))
         assertFalse("不得给素材加 <history> 之类自造容器（信封已承载边界）", prompt.contains("<history>"))
+    }
+
+    /** distilly 三分法：confirm 不进 items（归 confirmed），contradict 保留在 items 待用户裁决，非法值回退 supplement。 */
+    @Test
+    fun relationshipThreeWayClassification() {
+        val raw = """
+        [{"name":"c1","description":"重申已有","content":"发版前先跑全量单测。","triggers":[],
+          "evidence":"发版都要先跑一遍全量单测","is_merge":true,"target_name":"release-run-all-tests","relationship":"confirm"},
+         {"name":"x1","description":"与已有冲突","content":"发版只需要跑冒烟。","triggers":[],
+          "evidence":"发版只需要跑冒烟","is_merge":true,"target_name":"release-run-all-tests","relationship":"contradict"},
+         {"name":"n1","description":"新增信息","content":"新建记忆。","triggers":[],
+          "evidence":"发版都要先跑一遍全量单测","relationship":"nonsense"}]
+        """.trimIndent()
+        val p = MemoryExtraction.verify(raw, material, existingNames = setOf("release-run-all-tests"))
+
+        assertEquals(1, p.confirmed.size)
+        assertTrue(p.confirmed.first().contains("release-run-all-tests"))
+        // confirm 不进 items（不会被写入）；contradict 保留在 items 待 apply 交用户裁决
+        assertEquals(listOf("x1", "n1"), p.items.map { it.name })
+        assertEquals(MemoryExtraction.RELATIONSHIP_CONTRADICT, p.items.first { it.name == "x1" }.relationship)
+        // 非法 relationship 回退 supplement
+        assertEquals(MemoryExtraction.RELATIONSHIP_SUPPLEMENT, p.items.first { it.name == "n1" }.relationship)
     }
 }
