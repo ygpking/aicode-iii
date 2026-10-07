@@ -86,6 +86,7 @@ import com.aicode.feature.virtualscreen.presentation.VirtualScreenViewModel
 import com.aicode.feature.settings.presentation.SkillImportState
 import com.aicode.feature.settings.presentation.SkillUiEntry
 import com.aicode.feature.agent.domain.skill.SkillImportError
+import com.aicode.feature.agent.domain.extension.ExtensionScope
 import com.aicode.feature.agent.domain.skill.SkillScope
 import com.aicode.feature.settings.presentation.SubAgentUiEntry
 import compose.icons.FeatherIcons
@@ -147,6 +148,7 @@ internal enum class SettingsSection(@param:StringRes val titleRes: Int) {
     Skills(R.string.settings_skills),
     SkillDetail(R.string.settings_skills),
     SkillEditor(R.string.settings_skills),
+    Extensions(R.string.settings_extensions),
     SubAgents(R.string.settings_subagents),
     SubAgentDetail(R.string.settings_subagents),
     SubAgentEditor(R.string.settings_subagents),
@@ -205,6 +207,7 @@ fun SettingsScreen(
     val skillSaveState by viewModel.skillSaveState.collectAsStateWithLifecycle()
     val skillImportState by viewModel.skillImportState.collectAsStateWithLifecycle()
     val subAgents by viewModel.subAgents.collectAsStateWithLifecycle()
+    val extensions by viewModel.extensions.collectAsStateWithLifecycle()
     val subAgentSaveState by viewModel.subAgentSaveState.collectAsStateWithLifecycle()
     val globalRules by viewModel.globalRules.collectAsStateWithLifecycle()
     val projectRules by viewModel.projectRules.collectAsStateWithLifecycle()
@@ -344,6 +347,7 @@ fun SettingsScreen(
     }
     var selectedSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     var subAgentToDelete by remember { mutableStateOf<SubAgentUiEntry?>(null) }
+    var extensionToDelete by remember { mutableStateOf<SettingsViewModel.ExtensionUiEntry?>(null) }
     // 子代理编辑目标：null 表示新建一个；编辑现有定义时指向被编辑的条目。
     var editingSubAgent by remember { mutableStateOf<SubAgentUiEntry?>(null) }
     // 编辑页的返回目标：从详情页进就回详情页，从列表顶栏「＋」进就回列表。
@@ -389,6 +393,7 @@ fun SettingsScreen(
     LaunchedEffect(Unit) {
         viewModel.refreshSkills()
         viewModel.refreshSubAgents()
+        viewModel.refreshExtensions()
     }
 
     // 编辑保存后回详情页：等列表刷新出新快照再换，避免详情页停在保存前的旧值（改名时按新名找）。
@@ -827,6 +832,11 @@ fun SettingsScreen(
                         section = SettingsSection.SkillDetail
                     }
                 )
+                SettingsSection.Extensions -> ExtensionsSection(
+                    projectName = currentProjectName,
+                    entries = extensions,
+                    onDelete = { extensionToDelete = it }
+                )
                 SettingsSection.SkillDetail -> selectedSkill?.let { entry ->
                     SkillDetailSection(
                         entry = entry,
@@ -1152,6 +1162,23 @@ fun SettingsScreen(
         )
     }
 
+    extensionToDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { extensionToDelete = null },
+            title = { Text(stringResource(R.string.extensions_delete_confirm_title)) },
+            text = { Text(stringResource(R.string.extensions_delete_confirm_message, target.name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.deleteExtension(target.id, target.scope)
+                    extensionToDelete = null
+                }) { Text(stringResource(R.string.common_delete)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { extensionToDelete = null }) { Text(stringResource(R.string.common_cancel)) }
+            }
+        )
+    }
+
     // 「容器与镜像」使用说明公告：首次进入（或内容更新后）自动弹出，右上角 Info 按钮可随时重看。
     if (showContainerAnnouncement) {
         val dismiss = {
@@ -1355,6 +1382,12 @@ internal fun SettingsMenu(
                 icon = FeatherIcons.Book,
                 title = stringResource(SettingsSection.Skills.titleRes),
                 onClick = { onOpen(SettingsSection.Skills) }
+            )
+            SettingsDivider()
+            SettingsRow(
+                icon = FeatherIcons.Box,
+                title = stringResource(SettingsSection.Extensions.titleRes),
+                onClick = { onOpen(SettingsSection.Extensions) }
             )
             SettingsDivider()
             SettingsRow(

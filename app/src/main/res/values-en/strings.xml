@@ -1040,6 +1040,14 @@
     <string name="subagent_interaction_modes">Interaction modes</string>
     <string name="subagent_interaction_one_shot_hint">One-shot: cannot send further messages after completion</string>
     <string name="subagent_interaction_continuable_hint">Continuable: can send follow-up messages after completion</string>
+    <string name="settings_extensions">Extensions</string>
+    <string name="extensions_empty">No extensions installed</string>
+    <string name="extensions_empty_hint">Place a manifest.json under ~/.aicode/extensions/ or the project\'s .aicode/extensions/ to contribute skills, prompts and memory</string>
+    <string name="extensions_no_project">No extensions installed in the current project</string>
+    <string name="extensions_no_global">No global extensions installed</string>
+    <string name="extension_scope_project">Project</string>
+    <string name="extensions_delete_confirm_title">Delete extension</string>
+    <string name="extensions_delete_confirm_message">Delete extension “%1$s”? All resources it contributes will be removed. This cannot be undone.</string>
     <string name="subagent_prompt">Agent prompt</string>
     <string name="subagent_source_file">Definition file</string>
     <string name="subagent_inherit_parent">Inherit from parent session</string>

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import java.io.File
 import com.aicode.core.net.AppProxy
 import com.aicode.core.util.FileLogger
 import com.aicode.core.util.LogLevel
@@ -79,6 +80,9 @@ import com.aicode.feature.settings.data.repository.ImageGenModelSettingsReposito
 import com.aicode.feature.settings.data.repository.VisionModelSettingsRepository
 import com.aicode.feature.workspace.domain.model.RemoteConnection
 import com.aicode.feature.workspace.domain.repository.RemoteRepository
+import com.aicode.feature.agent.domain.extension.ExtensionRepository
+import com.aicode.feature.agent.domain.extension.ExtensionScope
+import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.settings.domain.model.AIProviderConfig
 import com.aicode.feature.settings.domain.model.DashboardContext
 import com.aicode.feature.settings.domain.model.ModelMetadata
@@ -342,7 +346,9 @@ class SettingsViewModel @Inject constructor(
     private val updateCheckService: UpdateCheckService,
     private val providerDashboardRunner: ProviderDashboardRunner,
     private val terminalSettingsRepository: TerminalSettingsRepository,
-    private val proxySettingsRepository: ProxySettingsRepository
+    private val proxySettingsRepository: ProxySettingsRepository,
+    private val extensionRepository: ExtensionRepository,
+    private val workspaceRepository: WorkspaceRepository
 ) : ViewModel() {
     private companion object {
         const val MAX_LOG_LINES = 1200
@@ -1344,6 +1350,77 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             withContext(Dispatchers.IO) { agentDefinitionRepository.delete(name, scope) }
             refreshSubAgents()
+        }
+    }
+
+    // ── 扩展管理 ──
+
+    /** 扩展管理页的数据行：manifest 摘要 + 作用域 + 解析期错误。 */
+    data class ExtensionUiEntry(
+        val id: String,
+        val name: String,
+        val version: Int,
+        val description: String,
+        val scope: ExtensionScope,
+        val errors: List<String>,
+        /** 贡献计数摘要，如 skills=1 prompts=2；仅用于展示。 */
+        val contributions: String
+    )
+
+    private val _extensions = MutableStateFlow<List<ExtensionUiEntry>>(emptyList())
+    val extensions: StateFlow<List<ExtensionUiEntry>> = _extensions.asStateFlow()
+
+    /** 重新扫描两级扩展根（进入扩展页 / 删除后调用）。 */
+    fun refreshExtensions() {
+        viewModelScope.launch {
+            _extensions.value = withContext(Dispatchers.IO) {
+                try {
+                    val projectRoot = runCatching { workspaceRepository.currentPath() }.getOrNull()
+                    extensionRepository.listExtensions(projectRoot).map { entry ->
+                        val c = entry.manifest.contributes
+                        ExtensionUiEntry(
+                            id = entry.manifest.id,
+                            name = entry.manifest.name.ifBlank { entry.manifest.id },
+                            version = entry.manifest.version,
+                            description = entry.manifest.description,
+                            scope = entry.scope,
+                            errors = entry.errors,
+                            contributions = (listOf(
+                                "skills=${c.skills.size}",
+                                "prompts=${c.prompts.size}",
+                                "memory=${c.memory.size}"
+                            ) + (c.mcp?.let { listOf("mcp=1") } ?: emptyList()))
+                                .joinToString(" ")
+                        )
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    FileLogger.w("SettingsViewModel", "刷新扩展列表失败", e)
+                    emptyList()
+                }
+            }
+        }
+    }
+
+    /** 删除整个扩展目录（不可恢复），随后立即刷新列表。 */
+    fun deleteExtension(id: String, scope: ExtensionScope) {
+        viewModelScope.launch {
+            val root = withContext(Dispatchers.IO) {
+                if (scope == ExtensionScope.GLOBAL) {
+                    extensionRepository.globalRoot()
+                } else {
+                    extensionRepository.projectRoot(
+                        runCatching { workspaceRepository.currentPath() }.getOrDefault("")
+                    )
+                }
+            }
+            val target = File(root, id)
+            // id 已在扫描期被校验为目录名；仅当解析后仍落在根内才删，防异常 id 越界。
+            if (target.canonicalPath.startsWith(root.canonicalPath + File.separator)) {
+                withContext(Dispatchers.IO) { target.deleteRecursively() }
+            }
+            refreshExtensions()
         }
     }
 
