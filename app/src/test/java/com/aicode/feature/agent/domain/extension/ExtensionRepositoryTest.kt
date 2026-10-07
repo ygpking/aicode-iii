@@ -22,8 +22,10 @@ class ExtensionRepositoryTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private val globalRoot = File(tmp.newFolder("aicode"), "extensions")
-    private val projectRoot = File(tmp.newFolder("ws"), ".aicode/extensions")
+    // 惰性 getter：属性初始化早于 Rule 生效，newFolder 在此时调用会抛 IllegalStateException；
+    // tmp.root 由 TemporaryFolder 在测试前自动创建，测试方法执行时已就绪。
+    private val globalRoot get() = File(tmp.root, "aicode/extensions")
+    private val projectRoot get() = File(tmp.root, "ws/.aicode/extensions")
 
     private fun repo(): ExtensionRepository {
         val installer = mockk<com.aicode.feature.agent.domain.container.ContainerInstaller>(relaxed = true)
