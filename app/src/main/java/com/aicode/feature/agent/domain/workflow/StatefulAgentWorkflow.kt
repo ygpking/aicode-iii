@@ -185,6 +185,9 @@ class StatefulAgentWorkflow @Inject constructor(
          */
         const val TURN_WRAP_UP_NOTICE =
             "（系统提醒：轮次预算已进入新段。若当前方向已明确，直接继续推进；仅当发现方向有误或关键信息缺失时，先停下修正再继续。不要输出进度总结或阶段性报告。）"
+        /** 模型返回空正文且无工具调用时的续写提示（空响应兜底用，注入一次）。 */
+        const val EMPTY_RESPONSE_NOTICE =
+            "（你刚才的回复为空。请基于现有上下文继续回答，不要重复之前的内容。）"
         /** 单轮工具调用数上限：超出部分当轮不执行、回写说明让模型下一轮再调，避免一次梭哈。 */
         const val MAX_TOOLS_PER_ROUND = 12
 
@@ -227,7 +230,9 @@ class StatefulAgentWorkflow @Inject constructor(
         /** 已批准、待并行执行的 toolCall */
         val approvedToolCalls: List<ToolCall> = emptyList(),
         /** 被策略/系统拒绝（非用户拒绝）的 tool 结果，key = toolCall.id */
-        val rejectedToolResults: Map<String, ToolBatchResult> = emptyMap()
+        val rejectedToolResults: Map<String, ToolBatchResult> = emptyMap(),
+        /** 空响应兜底已注入一次续写提示（防无限重试）。 */
+        val emptyResponseRetried: Boolean = false
     )
 
     /** 改变状态的动作 (Action) */
@@ -434,6 +439,14 @@ class StatefulAgentWorkflow @Inject constructor(
                     } else if (action.response.isTruncated) {
                         newState = newState.copy(
                             messages = newState.messages + AgentMessage.UserMessage(content = "你的回复因长度限制被截断了，请从截断处继续。")
+                        )
+                        effects.add(AgentSideEffect.CallLlm)
+                    } else if (action.response.content.isBlank() && !state.emptyResponseRetried) {
+                        // 空响应兜底：模型返回了空正文且无工具调用（压缩后 tail 过小常见）。
+                        // 静默结束会被 UI 当成「卡死」；注入提示续一次，避免死循环（只试一次）。
+                        newState = newState.copy(
+                            messages = newState.messages + AgentMessage.UserMessage(content = EMPTY_RESPONSE_NOTICE),
+                            emptyResponseRetried = true
                         )
                         effects.add(AgentSideEffect.CallLlm)
                     } else {

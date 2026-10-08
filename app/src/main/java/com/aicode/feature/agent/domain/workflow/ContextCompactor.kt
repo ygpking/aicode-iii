@@ -3,6 +3,7 @@ package com.aicode.feature.agent.domain.workflow
 import com.aicode.core.util.FileLogger
 import androidx.room.withTransaction
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
+import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.local.database.AgentDatabase
 import com.aicode.feature.agent.data.local.entity.AgentMessageEntity
@@ -37,7 +38,8 @@ class ContextCompactor @Inject constructor(
     private val modelMetadataService: ModelMetadataService,
     private val systemPromptProvider: SystemPromptProvider,
     private val llmCallRecordDao: LlmCallRecordDao,
-    private val generalSettingsRepository: GeneralSettingsRepository
+    private val generalSettingsRepository: GeneralSettingsRepository,
+    private val chatSessionDao: ChatSessionDao
 ) {
 
     /** 会话上次成功压缩后的消息估算 token 数（自适应阈值的增长基准）。会话级内存态即可，丢了退回固定阈值。 */
@@ -237,6 +239,14 @@ class ContextCompactor @Inject constructor(
             toolCalls = emptyList()
         )
 
+        // 事件驱动：把「本块可恢复」作为事实写进摘要尾部（而非静态工具描述），
+        // 模型每轮回放都看得到这个块 id，需要细节时自然会去调 restoreCompactedRange。
+        // 与 60-tools-and-paths.md 的静态提示互补：静态说「什么时候该用」，这里说「现在有块可用」。
+        val compactedMessageWithHint = compactedMessage.copy(
+            content = summaryText + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
+                "如摘要缺关键细节（报错原文、代码片段、精确数值），可用 restoreCompactedRange 恢复。"
+        )
+
         // 持久化压缩结果到数据库
         if (sessionId != null) {
             try {
@@ -293,7 +303,7 @@ class ContextCompactor @Inject constructor(
                             id = compactedId,
                             sessionId = sessionId,
                             role = MessageRole.ASSISTANT.name,
-                            content = compactedMessage.content,
+                            content = compactedMessageWithHint.content,
                             timestamp = insertBase + 1,
                             isContextSummary = true,
                             compactionBlockId = blockId
@@ -311,11 +321,17 @@ class ContextCompactor @Inject constructor(
         // Codex 式布局：tail（保留的最近消息）在前，摘要收尾。
         newMessages.addAll(tail)
         newMessages.add(markerMessage)
-        newMessages.add(compactedMessage)
+        newMessages.add(compactedMessageWithHint)
 
         // 记录压缩后基准，供下次触发判断计算增长速率（自适应阈值）。
         if (sessionId != null) {
-            lastCompactionSizeBySession[sessionId] = estimateTokens(newMessages)
+            val newSize = estimateTokens(newMessages)
+            lastCompactionSizeBySession[sessionId] = newSize
+            // 死循环修复：压缩成功后立即把会话的 lastInputTokens 写回压缩后大小。
+            // 否则旧大值（如 1M 窗口时代记录的 27 万）恒超 128k 阈值，每轮都触发压缩。
+            runCatchingCancellable {
+                chatSessionDao.updateLastInputTokens(sessionId, newSize)
+            }
         }
 
         return newMessages

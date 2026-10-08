@@ -206,6 +206,9 @@ class SessionUseCase @Inject constructor(
 
     suspend fun updateProviderModel(sessionId: String, providerId: String?, model: String?) {
         chatSessionDao.updateProviderModel(sessionId, providerId, model)
+        // 换模型 = 窗口基准作废：清掉 lastInputTokens（可能是旧窗口时代记录的大值），
+        // 否则新窗口阈值下会被旧值误导而立即触发压缩（实测 1M→128k 后每轮都压缩）。
+        chatSessionDao.updateLastInputTokens(sessionId, 0)
     }
 
     suspend fun updateReasoningEffort(sessionId: String, effort: String) {
