@@ -241,7 +241,7 @@ class ContextCompactor @Inject constructor(
 
         // 事件驱动：把「本块可恢复」作为事实写进摘要尾部（而非静态工具描述），
         // 模型每轮回放都看得到这个块 id，需要细节时自然会去调 restoreCompactedRange。
-        // 与 60-tools-and-paths.md 的静态提示互补：静态说「什么时候该用」，这里说「现在有块可用」。
+        // 与工具 schema description 互补：description 说「什么时候该用」，这里说「现在有块可用」。
         val compactedMessageWithHint = compactedMessage.copy(
             content = summaryText + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
                 "如摘要缺关键细节（报错原文、代码片段、精确数值），可用 restoreCompactedRange 恢复。"
