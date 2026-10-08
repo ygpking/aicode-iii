@@ -93,6 +93,13 @@ class McpManager @Inject constructor(
                 reload()
             }
         }
+        // 扩展包贡献的 server 被装/删/改：同样需要重建，否则新 server 不会连上。
+        scope.launch {
+            configRepository.extensionChanges.collect {
+                FileLogger.i(TAG, "检测到扩展包变更，重载 MCP")
+                reload()
+            }
+        }
         // 容器 profile 切换：stdio server 的进程跑在旧容器的 rootfs 上，必须重建才能用新容器；
         // HTTP server 不依赖容器，不受影响。drop(1) 跳过启动首帧（reload 已处理）。
         scope.launch {

@@ -38,6 +38,7 @@ import com.aicode.core.theme.Spacing
 import com.aicode.core.ui.AppSwitch
 import com.aicode.core.ui.SwipeToDeleteRow
 import com.aicode.core.theme.semanticColors
+import com.aicode.feature.agent.domain.mcp.McpOrigin
 import com.aicode.feature.agent.domain.mcp.McpScope
 import com.aicode.feature.agent.domain.mcp.McpServerConfig
 import com.aicode.feature.agent.domain.mcp.McpServerEntry
@@ -114,11 +115,14 @@ internal fun McpSection(
                 if (index > 0) {
                     SettingsDivider()
                 }
+                // 扩展贡献的 server 只读：左滑删除置灰、开关禁用、点击不入编辑（详情弹窗由调用方拦住）。
+                val readOnly = entry.origin == McpOrigin.EXTENSION
                 McpServerRow(
                     server = entry.server,
                     scope = entry.scope,
+                    origin = entry.origin,
                     status = statuses.firstOrNull { it.name == entry.server.name },
-                    onClick = { onEdit(entry) },
+                    onClick = { if (!readOnly) onEdit(entry) },
                     onDelete = { onDelete(entry.server.name, entry.scope) },
                     onToggle = { enabled -> onToggle(entry.server.name, enabled, entry.scope) },
                     toggling = reloading
@@ -139,8 +143,11 @@ internal fun McpServerRow(
     onClick: () -> Unit,
     onDelete: () -> Unit,
     onToggle: (Boolean) -> Unit,
-    toggling: Boolean
+    toggling: Boolean,
+    origin: McpOrigin = McpOrigin.DIRECTORY
 ) {
+    // 扩展贡献的 server 只读：左滑删除按钮置灰（详情弹窗由调用方拦住编辑入口）。
+    val readOnly = origin == McpOrigin.EXTENSION
     val isConnected = server.enabled && status?.state == McpServerStatus.State.CONNECTED
     val light = MaterialTheme.colorScheme.background.luminance() > 0.5f
 
@@ -178,7 +185,8 @@ internal fun McpServerRow(
 
     SwipeToDeleteRow(
         onDelete = onDelete,
-        onClick = onClick
+        onClick = onClick,
+        deleteEnabled = !readOnly
     ) {
         Row(
             modifier = Modifier
@@ -234,6 +242,13 @@ internal fun McpServerRow(
                         textColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         backgroundColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
                     )
+                    if (readOnly) {
+                        McpPill(
+                            text = stringResource(R.string.common_from_extension),
+                            textColor = MaterialTheme.colorScheme.tertiary,
+                            backgroundColor = MaterialTheme.colorScheme.tertiary.copy(alpha = 0.12f)
+                        )
+                    }
                     if (infoText != null) {
                         McpPill(
                             text = infoText,
@@ -248,10 +263,11 @@ internal fun McpServerRow(
             Spacer(modifier = Modifier.width(Spacing.sm))
 
             // 行内启停开关：直接切换 server 启用/禁用，无需进详情弹窗；切换期间禁用防重复点击。
+            // 扩展来源的启停只能改扩展目录里的 mcp.json，故此处不可操作。
             AppSwitch(
                 checked = server.enabled,
                 onCheckedChange = { onToggle(it) },
-                enabled = !toggling
+                enabled = !toggling && !readOnly
             )
             Spacer(modifier = Modifier.width(Spacing.sm))
 

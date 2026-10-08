@@ -36,6 +36,7 @@ import com.aicode.core.theme.Radius
 import com.aicode.core.theme.Spacing
 import com.aicode.core.theme.semanticColors
 import com.aicode.core.ui.SwipeToDeleteRow
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionOrigin
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
 import com.aicode.feature.settings.presentation.SubAgentUiEntry
 import compose.icons.FeatherIcons
@@ -184,8 +185,10 @@ private fun SubAgentRow(
     onClick: () -> Unit
 ) {
     val rowBackground = MaterialTheme.semanticColors.cardSurface
+    // 扩展贡献的定义改不了（要改得改扩展目录），左滑删除对它无效，只保留点击进详情。
+    val readOnly = entry.origin == AgentDefinitionOrigin.EXTENSION
 
-    SwipeToDeleteRow(onDelete = onDelete, onClick = onClick) {
+    SwipeToDeleteRow(onDelete = onDelete, onClick = onClick, deleteEnabled = !readOnly) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -236,6 +239,13 @@ private fun SubAgentRow(
                     if (entry.disabled) {
                         McpPill(
                             text = stringResource(R.string.common_disabled),
+                            textColor = MaterialTheme.colorScheme.outline,
+                            backgroundColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
+                        )
+                    }
+                    if (readOnly) {
+                        McpPill(
+                            text = stringResource(R.string.common_from_extension),
                             textColor = MaterialTheme.colorScheme.outline,
                             backgroundColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f)
                         )

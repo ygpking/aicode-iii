@@ -2,8 +2,9 @@ package com.aicode.feature.agent.domain.skill
 
 import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
-import com.aicode.core.watch.FileChange
 import com.aicode.core.watch.FileChangeHub
+import com.aicode.core.watch.canonicalHostPath
+import com.aicode.core.watch.isUnderPath
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.workspace.domain.ProjectAicodeRoot
 import java.io.File
@@ -82,20 +83,30 @@ class SkillConfigRepository @Inject constructor(
         fileChangeHub.watchWorkspace("${FileChangeHub.CONTAINER_ROOT}/$AICODE_DIR/$SKILLS_DIR", recursive = true),
         fileChangeHub.watchWorkspace("${FileChangeHub.CONTAINER_ROOT}/$AICODE_DIR")
     ).mapNotNull { batch ->
-        if (!batch.changes.any(::isSkillChange)) return@mapNotNull null
+        // 前缀每批算一次（canonicalFile 有 IO 开销），不逐条重算。
+        val globalConfig = canonicalHostPath(globalFile().absolutePath)
+        val projectConfig = canonicalHostPath(projectFile().absolutePath)
+        val globalSkills = canonicalHostPath(File(containerInstaller.aicodeDir, SKILLS_DIR).absolutePath)
+        val projectSkills = canonicalHostPath(File(projectAicodeRoot.current(), SKILLS_DIR).absolutePath)
+        if (!batch.changes.any {
+                isSkillChange(it.hostPath, globalConfig, projectConfig, globalSkills, projectSkills)
+            }
+        ) return@mapNotNull null
         FileLogger.i(TAG, "检测到技能目录或配置变化，已通知刷新")
         Unit
     }.shareIn(watchScope, SharingStarted.WhileSubscribed(), replay = 0)
 
     /** 技能相关变更：两个 skills.json，或全局/项目技能目录自身及其下的任何文件。 */
-    private fun isSkillChange(change: FileChange): Boolean {
-        val path = change.hostPath
-        if (path == globalFile().absolutePath) return true
-        if (path == projectFile().absolutePath) return true
-        val globalSkills = File(containerInstaller.aicodeDir, SKILLS_DIR).absolutePath
-        if (path == globalSkills || path.startsWith("$globalSkills/")) return true
-        val projectSkills = File(projectAicodeRoot.current(), SKILLS_DIR).absolutePath
-        return path == projectSkills || path.startsWith("$projectSkills/")
+    private fun isSkillChange(
+        path: String,
+        globalConfig: String,
+        projectConfig: String,
+        globalSkills: String,
+        projectSkills: String
+    ): Boolean {
+        val p = canonicalHostPath(path)
+        return isUnderPath(p, globalConfig) || isUnderPath(p, projectConfig) ||
+            isUnderPath(p, globalSkills) || isUnderPath(p, projectSkills)
     }
 
     companion object {

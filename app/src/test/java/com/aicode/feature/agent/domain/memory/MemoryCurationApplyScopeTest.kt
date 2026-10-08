@@ -46,7 +46,7 @@ class MemoryCurationApplyScopeTest {
         projectAicodeRoot = projectAicodeRoot,
         // 扩展仓库：aicodeDir 指向临时目录且无 extensions 子目录 → listExtensions 为空集，
         // 本测试不受扩展机制影响（空扩展 = 恒等变换，正是新合并逻辑要锁定的行为）。
-        extensionRepository = ExtensionRepository(containerInstaller, projectAicodeRoot),
+        extensionRepository = ExtensionRepository(containerInstaller, projectAicodeRoot, mockk(relaxed = true)),
     )
 
     private val service = MemoryCurationService(

@@ -49,6 +49,7 @@ import com.aicode.feature.agent.domain.skill.SkillSaveError
 import com.aicode.feature.agent.domain.skill.SkillScope
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionConfigRepository
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionForm
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionOrigin
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionRepository
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
 import com.aicode.feature.agent.domain.subagent.AgentSaveError
@@ -253,6 +254,8 @@ data class SubAgentUiEntry(
     val name: String,
     val description: String,
     val scope: AgentDefinitionScope,
+    /** 承载方式：扩展贡献的定义在设置页只读（改它得改扩展目录）。 */
+    val origin: AgentDefinitionOrigin = AgentDefinitionOrigin.DIRECTORY,
     val disabled: Boolean,
     val providerId: String?,
     val model: String?,
@@ -941,6 +944,16 @@ class SettingsViewModel @Inject constructor(
                 }
             }
 
+            // 扩展包可同时贡献子代理/技能/记忆，故一处变更刷新这四类列表。
+            launch {
+                extensionRepository.changes.collectLatest {
+                    refreshSubAgents()
+                    refreshSkills()
+                    refreshMemories()
+                    refreshExtensions()
+                }
+            }
+
             launch {
                 refreshSkills()
             }
@@ -1068,7 +1081,12 @@ class SettingsViewModel @Inject constructor(
         viewModelScope.launch {
             // 名称归一（trim + lowercase）与作用域迁移均收敛到 McpConfigRepository.upsertServer 单一入口，
             // 此处不再手写 filterNot/remove——原先精确匹配导致「仅大小写变化」时旧条目残留。
-            mcpConfigRepository.upsertServer(config, scope, originalName, initialScope)
+            // 返回 false = 目标是扩展包贡献的 server（只读）或同名条目会被扩展遮蔽，不应继续重连。
+            // UI 已拦住入口，这里只防绕过；与删除/启停一样静默拒绝（MCP 侧无错误状态通道）。
+            if (!mcpConfigRepository.upsertServer(config, scope, originalName, initialScope)) {
+                FileLogger.w("SettingsViewModel", "拒绝写入扩展包贡献的 MCP server: ${config.name}")
+                return@launch
+            }
             _mcpReloading.value = true
             try {
                 // 仅重连被改动的 server；重命名（含仅大小写变化）时先断开旧名。
@@ -1278,6 +1296,7 @@ class SettingsViewModel @Inject constructor(
                             name = entry.definition.name,
                             description = entry.definition.description,
                             scope = entry.scope,
+                            origin = entry.origin,
                             disabled = entry.definition.name.lowercase() in disabled,
                             providerId = entry.definition.providerId,
                             model = entry.definition.model,
@@ -1382,6 +1401,7 @@ class SettingsViewModel @Inject constructor(
         val skillDirs: List<String>,
         val promptDirs: List<String>,
         val memoryDirs: List<String>,
+        val agentDirs: List<String>,
         val mcpFile: String?,
         val rootPath: String
     )
@@ -1407,12 +1427,14 @@ class SettingsViewModel @Inject constructor(
                             contributions = (listOf(
                                 "skills=${c.skills.size}",
                                 "prompts=${c.prompts.size}",
-                                "memory=${c.memory.size}"
+                                "memory=${c.memory.size}",
+                                "agents=${c.agents.size}"
                             ) + (c.mcp?.let { listOf("mcp=1") } ?: emptyList()))
                                 .joinToString(" "),
                             skillDirs = c.skills,
                             promptDirs = c.prompts,
                             memoryDirs = c.memory,
+                            agentDirs = c.agents,
                             mcpFile = c.mcp,
                             rootPath = entry.root.path
                         )

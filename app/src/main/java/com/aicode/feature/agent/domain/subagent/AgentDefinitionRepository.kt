@@ -4,6 +4,7 @@ import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.feature.workspace.domain.FileAccessProvider
 import com.aicode.feature.workspace.domain.LocalFileAccess
+import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -14,6 +15,10 @@ import javax.inject.Singleton
  *
  * 全局定义固定在 App 私有目录（始终本地），项目级定义随工作区（本地宿主目录或远程 SSH 工作区），
  * 读写都经 [FileAccessProvider] 以容器路径完成。
+ *
+ * 除上述两个目录来源外，还聚合**扩展包贡献的定义**（manifest 的 `agents`）——
+ * 扩展目录是宿主 [java.io.File]，不经 [FileAccessProvider]（宿主绝对路径会被路径映射兜底进 rootfs，
+ * 扫出空目录），与 [com.aicode.feature.agent.domain.skill.SkillRepository] 的扩展技能同一姿势。
  */
 @Singleton
 class AgentDefinitionRepository @Inject constructor(
@@ -21,11 +26,59 @@ class AgentDefinitionRepository @Inject constructor(
     private val projectSource: ProjectDirectoryAgentSource,
     private val configRepository: AgentDefinitionConfigRepository,
     private val localFileAccess: LocalFileAccess,
-    private val fileAccess: FileAccessProvider
+    private val fileAccess: FileAccessProvider,
+    private val extensionRepository: com.aicode.feature.agent.domain.extension.ExtensionRepository
 ) {
-    /** 全部定义（含来源作用域），未过滤禁用，按名称排序。 */
+    /**
+     * 全部定义（含来源作用域与承载方式），未过滤禁用，按名称排序。
+     * 同作用域内扩展贡献优先于目录定义（与技能/记忆「扩展 > 内置」一致）。
+     */
     fun listAll(): List<AgentDefinitionEntry> =
-        mergeAll(localSource.listDefinitions(), projectSource.listDefinitions())
+        mergeEntries(
+            localSource.listDefinitions().map { it to AgentDefinitionOrigin.DIRECTORY } +
+                extensionDefinitions(globalAgentDirs()).map { it to AgentDefinitionOrigin.EXTENSION },
+            projectSource.listDefinitions().map { it to AgentDefinitionOrigin.DIRECTORY } +
+                extensionDefinitions(projectAgentDirs()).map { it to AgentDefinitionOrigin.EXTENSION }
+        )
+
+    private fun globalAgentDirs(): List<File> =
+        runCatching { extensionRepository.globalAgentDirs() }.getOrElse {
+            FileLogger.w(TAG, "读取全局扩展子代理目录失败", it)
+            emptyList()
+        }
+
+    private fun projectAgentDirs(): List<File> =
+        runCatching { extensionRepository.projectAgentDirs() }.getOrElse {
+            FileLogger.w(TAG, "读取项目扩展子代理目录失败", it)
+            emptyList()
+        }
+
+    /**
+     * 扫描扩展贡献目录的**顶层** `*.md`（与 [AgentDefinitionDirectoryScanner] 同一口径）。
+     * 单个坏定义只跳过自己；目录不存在/不可读返回空表，不向上抛——扫盘失败会同时打掉
+     * 子代理列表与可派发清单。宿主 `java.io.File` 直读，不经 FileAccessProvider。
+     */
+    internal fun extensionDefinitions(dirs: List<File>): List<AgentDefinition> =
+        dirs.flatMap { dir ->
+            runCatching {
+                dir.listFiles { f -> f.isFile && f.name.endsWith(".md", ignoreCase = true) }
+                    ?.sortedBy { it.name.lowercase() }
+                    ?.mapNotNull { file ->
+                        runCatching {
+                            AgentDefinitionParser.parseText(
+                                file.readText(),
+                                fallbackName = file.name.substringBeforeLast('.'),
+                                filePath = file.path
+                            )
+                        }.onFailure { FileLogger.w(TAG, "解析扩展子代理定义失败，已跳过: ${file.name}", it) }
+                            .getOrNull()
+                    }
+                    .orEmpty()
+            }.getOrElse {
+                FileLogger.w(TAG, "扫描扩展子代理目录失败: $dir", it)
+                emptyList()
+            }
+        }
 
     /** 已启用的定义（注入主代理的可派发清单用）。 */
     fun listEnabled(): List<AgentDefinitionEntry> {
@@ -68,15 +121,24 @@ class AgentDefinitionRepository @Inject constructor(
         if (form.prompt.isBlank()) return AgentSaveError.EMPTY_PROMPT
 
         val overwritingSelf = originalName != null && originalName.equals(name, ignoreCase = true)
+        val all = listAll()
+        // 扩展包贡献的定义只读：设置页已隐藏编辑入口，这里对绕过 UI 的调用也一并拒绝，
+        // 否则会按扩展目录的宿主路径拼出容器路径去写，静默落到 rootfs 影子文件。
+        if (originalName != null) {
+            val editing = all.firstOrNull {
+                it.scope == scope && it.definition.name.equals(originalName, ignoreCase = true)
+            }
+            if (editing?.origin == AgentDefinitionOrigin.EXTENSION) return AgentSaveError.READ_ONLY_EXTENSION
+        }
         if (!overwritingSelf) {
-            val taken = listAll().any {
+            val taken = all.any {
                 it.scope == scope && it.definition.name.equals(name, ignoreCase = true)
             }
             if (taken) return AgentSaveError.NAME_CONFLICT
         }
 
         val existingFile = originalName?.let { old ->
-            listAll().firstOrNull {
+            all.firstOrNull {
                 it.scope == scope && it.definition.name.equals(old, ignoreCase = true)
             }?.definition?.filePath
         }
@@ -121,6 +183,8 @@ class AgentDefinitionRepository @Inject constructor(
         val entry = listAll().firstOrNull {
             it.definition.name.equals(name, ignoreCase = true) && it.scope == scope
         } ?: return false
+        // 扩展包贡献的定义只读，删它得卸载整个扩展（与 save 同一道拦截）。
+        if (entry.origin == AgentDefinitionOrigin.EXTENSION) return false
         val filePath = entry.definition.filePath ?: return false
         val provider = providerFor(scope)
         if (!provider.isFile(filePath)) return false
@@ -148,14 +212,31 @@ class AgentDefinitionRepository @Inject constructor(
         private const val MAX_NAME_LENGTH = 40
         private val ILLEGAL_NAME_CHARS = charArrayOf('/', '\\', ':', '*', '?', '"', '<', '>', '|')
 
-        /** 合并两级来源：同名项目级覆盖全局，按名称排序。 */
+        /** 合并两级来源：同名项目级覆盖全局，按名称排序。（目录来源专用；扩展来源走 [mergeEntries]。） */
         internal fun mergeAll(
             global: List<AgentDefinition>,
             project: List<AgentDefinition>
+        ): List<AgentDefinitionEntry> =
+            mergeEntries(
+                global.map { it to AgentDefinitionOrigin.DIRECTORY },
+                project.map { it to AgentDefinitionOrigin.DIRECTORY }
+            )
+
+        /**
+         * 合并两级来源（带承载方式）：同名项目级覆盖全局，同作用域内后者覆盖前者，按名称排序。
+         * 调用方把扩展贡献排在目录定义之后，即可实现「同作用域内扩展 > 目录」。
+         */
+        internal fun mergeEntries(
+            global: List<Pair<AgentDefinition, AgentDefinitionOrigin>>,
+            project: List<Pair<AgentDefinition, AgentDefinitionOrigin>>
         ): List<AgentDefinitionEntry> {
             val byName = LinkedHashMap<String, AgentDefinitionEntry>()
-            global.forEach { byName[NameKey.of(it.name)] = AgentDefinitionEntry(it, AgentDefinitionScope.GLOBAL) }
-            project.forEach { byName[NameKey.of(it.name)] = AgentDefinitionEntry(it, AgentDefinitionScope.PROJECT) }
+            global.forEach { (def, origin) ->
+                byName[NameKey.of(def.name)] = AgentDefinitionEntry(def, AgentDefinitionScope.GLOBAL, origin)
+            }
+            project.forEach { (def, origin) ->
+                byName[NameKey.of(def.name)] = AgentDefinitionEntry(def, AgentDefinitionScope.PROJECT, origin)
+            }
             return byName.values.sortedBy { NameKey.of(it.definition.name) }
         }
     }

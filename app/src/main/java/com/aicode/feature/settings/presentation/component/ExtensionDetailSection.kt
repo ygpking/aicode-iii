@@ -86,6 +86,11 @@ internal fun ExtensionDetailSection(
                 label = stringResource(R.string.extension_contrib_memory),
                 items = entry.memoryDirs
             )
+            if (entry.agentDirs.isNotEmpty()) SettingsDivider()
+            ContributionLines(
+                label = stringResource(R.string.extension_contrib_agents),
+                items = entry.agentDirs
+            )
             if (entry.mcpFile != null) SettingsDivider()
             ContributionLines(
                 label = stringResource(R.string.extension_contrib_mcp),

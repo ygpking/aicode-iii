@@ -20,14 +20,21 @@ object AgentDefinitionParser {
             FileLogger.w(TAG, "读取子代理定义失败: $filePath", it)
             return null
         }
+        val fileName = filePath.substringAfterLast('/')
+        return parseText(text, fallbackName = fileName.substringBeforeLast('.'), filePath = filePath)
+    }
 
+    /**
+     * 从原始文本解析定义（不依赖盘上读取），供宿主 `java.io.File` 直读的扩展源使用。
+     * [fallbackName] 为 frontmatter 缺 name 时的兜底（通常传文件去扩展名后的名字）。
+     */
+    fun parseText(text: String, fallbackName: String, filePath: String? = null): AgentDefinition? {
         val (frontmatter, body) = splitAndParseFrontmatter(text)
         val prompt = body.trim()
         if (prompt.isEmpty()) return null
 
-        val fileName = filePath.substringAfterLast('/')
         val name = frontmatter["name"]?.toString()?.trim()?.takeIf { it.isNotBlank() }
-            ?: fileName.substringBeforeLast('.')
+            ?: fallbackName
         val description = (frontmatter["description"]?.toString() ?: "").take(MAX_DESC_CHARS)
 
         return AgentDefinition(

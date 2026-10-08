@@ -28,6 +28,8 @@ data class ExtensionManifest(
         val prompts: List<String> = emptyList(),
         /** 记忆目录（内含 `<name>.md`），可多个。 */
         val memory: List<String> = emptyList(),
+        /** 子代理定义目录（内含 `<name>.md`，顶层 `*.md` 每个一个定义），可多个。 */
+        val agents: List<String> = emptyList(),
         /** MCP server 配置文件（`{ "server-name": {McpServerConfig} }`）。 */
         val mcp: String? = null
     )

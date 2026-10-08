@@ -66,6 +66,29 @@ class IgnoreRules internal constructor(
     }
 }
 
+/**
+ * 订阅侧路径匹配的归一化：**事件路径与判定前缀两侧都要过这里**。
+ *
+ * 事件路径来源不统一：[FileChangeHub.watchWorkspace] 的目录经
+ * [com.aicode.feature.workspace.domain.WorkspacePathMapper.confineTo] 返回 `canonicalFile`，
+ * 而 [FileChangeHub.watchAicode] 的事件路径是 `File(dir, name).absolutePath`（未 canonical）。
+ * 若判定侧只归一前缀而放事件路径原样比，工作区路径含符号链接段（`/sdcard/...` 风格的选择器路径、
+ * 手输含 `..`）时会 `startsWith` 静默失配，表现为「**永不刷新**」而非报错。
+ * canonical 幂等，两种事件形态归一后都能正确比对。
+ *
+ * 前缀有 IO 开销，应在每批事件里**算一次**后复用，不要逐条重算。
+ */
+fun canonicalHostPath(path: String): String =
+    runCatching { File(path).canonicalFile.absolutePath }.getOrElse {
+        // 失败极罕见，但退化为原样比较会静默回到失配行为，留痕便于远程诊断。
+        com.aicode.core.util.FileLogger.w("FileChangePath", "路径归一失败，退化为原样比较: $path")
+        path
+    }
+
+/** [path] 是否等于 [prefix] 或位于其下。两侧须已由 [canonicalHostPath] 归一。 */
+fun isUnderPath(path: String, prefix: String): Boolean =
+    path == prefix || path.startsWith("$prefix/")
+
 /** 仅需「有变更」这一信号的 UI 订阅用；批量窗口已把同一目录的密集变更合并为一次。 */
 fun Flow<FileChangeBatch>.asDirtySignal(): Flow<Unit> = map { }
 

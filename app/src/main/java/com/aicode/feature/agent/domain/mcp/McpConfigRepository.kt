@@ -4,6 +4,8 @@ import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
 import com.aicode.core.watch.FileChangeHub
 import com.aicode.feature.agent.domain.container.ContainerInstaller
+import com.aicode.feature.agent.domain.extension.ExtensionRepository
+import com.aicode.feature.agent.domain.extension.ExtensionScope
 import com.aicode.feature.workspace.data.repository.WorkspaceRepository
 import com.aicode.feature.workspace.domain.ProjectAicodeRoot
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +24,7 @@ import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.onStart
 import kotlinx.coroutines.flow.shareIn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -46,10 +49,17 @@ import javax.inject.Singleton
 /** MCP server 的配置作用域：全局（跨项目共享）或项目级（仅当前工作区生效）。 */
 enum class McpScope { GLOBAL, PROJECT }
 
-/** 一个生效的 MCP 条目：配置 + 其来源作用域，供 UI 标注「全局/项目」。 */
+/**
+ * 条目的承载方式：磁盘上的 mcp.json，或扩展包贡献的 mcp.json。
+ * 扩展来源在设置页只读（改它得改扩展目录），且随扩展包增删。
+ */
+enum class McpOrigin { DIRECTORY, EXTENSION }
+
+/** 一个生效的 MCP 条目：配置 + 来源作用域与承载方式，供 UI 标注「全局/项目」与「来自扩展」。 */
 data class McpServerEntry(
     val server: McpServerConfig,
-    val scope: McpScope
+    val scope: McpScope,
+    val origin: McpOrigin = McpOrigin.DIRECTORY
 )
 
 /**
@@ -66,7 +76,8 @@ class McpConfigRepository @Inject constructor(
     private val containerInstaller: ContainerInstaller,
     private val workspaceRepository: WorkspaceRepository,
     private val projectAicodeRoot: ProjectAicodeRoot,
-    private val fileChangeHub: FileChangeHub
+    private val fileChangeHub: FileChangeHub,
+    private val extensionRepository: ExtensionRepository
 ) {
     private companion object {
         const val TAG = "McpConfigRepository"
@@ -186,10 +197,28 @@ class McpConfigRepository @Inject constructor(
             val path = workspaceRepository.currentPath()
             ensureGlobalLoaded()
             ensureProjectLoaded(path)
-            combine(globalState, getProjectState(path)) { g, p ->
-                merge(parse(g ?: DEFAULT_JSON), parse(p ?: DEFAULT_JSON))
+            // 第三路是扩展包变更触发：扩展贡献的 server 不在两个 state 里，
+            // 不并入就得等下次配置文件变动才会出现在列表上。onStart 补首帧，保持原有“立即发一次”语义。
+            combine(
+                globalState,
+                getProjectState(path),
+                extensionRepository.changes.onStart { emit(Unit) }
+            ) { g, p, _ ->
+                val (globalExt, projectExt) = extensionServers(path)
+                merge(
+                    parse(g ?: DEFAULT_JSON),
+                    parse(p ?: DEFAULT_JSON),
+                    globalExt,
+                    projectExt
+                )
             }
         }
+
+    /**
+     * 扩展包贡献的 MCP 配置发生变化（装/删/改扩展包）时广播一次，供 [McpManager] 重建连接。
+     * 与 [externalChanges] 分开：后者语义是「磁盘 mcp.json 内容真变了」，扩展变更不属于它。
+     */
+    val extensionChanges: Flow<Unit> = extensionRepository.changes
 
     suspend fun getGlobalServers(): List<McpServerConfig> {
         ensureGlobalLoaded()
@@ -227,6 +256,9 @@ class McpConfigRepository @Inject constructor(
     /** 名称主键的归一键。 */
     private fun keyOf(name: String): String = NameKey.of(name)
 
+    private fun ExtensionScope.toMcpScope(): McpScope =
+        if (this == ExtensionScope.GLOBAL) McpScope.GLOBAL else McpScope.PROJECT
+
     private suspend fun readScoped(scope: McpScope): List<McpServerConfig> =
         if (scope == McpScope.GLOBAL) getGlobalServers() else getProjectServers()
 
@@ -247,7 +279,13 @@ class McpConfigRepository @Inject constructor(
         scope: McpScope,
         originalName: String? = null,
         originalScope: McpScope? = null
-    ) {
+    ): Boolean {
+        // 扩展来源只读：既不能改它，也不能用同名条目去遮它——
+        // 扩展在 merge 中胜出，写进去的目录条目会既不可见也不生效（静默失败）。
+        if (originalName != null && originalScope != null && isExtensionServer(originalName, originalScope)) {
+            return false
+        }
+        if (isExtensionServer(config.name, scope)) return false
         if (originalName != null && originalScope != null && originalScope != scope) {
             removeServer(originalName, originalScope)
         }
@@ -258,10 +296,27 @@ class McpConfigRepository @Inject constructor(
         val keysToDrop = setOfNotNull(originalName?.let(::keyOf), keyOf(config.name))
         val base = readScoped(scope).filterNot { keyOf(it.name) in keysToDrop }
         writeScoped(scope, base + config)
+        return true
+    }
+
+    /** 该名字是否是扩展包贡献的 server（只读，改它得改扩展目录）。 */
+    /**
+     * 该名字在同一作用域是否已被扩展包贡献（此类 server 只读，且会遮蔽同名目录条目）。
+     *
+     * 写成 internal 供 [com.aicode.feature.agent.domain.tool.mcp.ManageMcpTool] 复用：
+     * 工具新增同名 server 时会落进目录配置被扩展遮住，必须与 UI 同一判定。
+     */
+    internal fun isExtensionServer(name: String, scope: McpScope): Boolean {
+        val path = runCatching { workspaceRepository.currentPath() }.getOrNull()
+        return extensionRepository.mcpServers(path).any {
+            keyOf(it.name) == keyOf(name) && it.scope.toMcpScope() == scope
+        }
     }
 
     /** 按名称（忽略大小写与首尾空白）从指定作用域删除；返回是否真的删掉了。 */
     suspend fun removeServer(name: String, scope: McpScope): Boolean {
+        // 扩展来源只读：它们在 mcp.json 里本就不存在，写路径只会落在目录配置上而改不动它。
+        if (isExtensionServer(name, scope)) return false
         val base = readScoped(scope)
         val kept = base.filterNot { keyOf(it.name) == keyOf(name) }
         if (kept.size == base.size) return false
@@ -271,6 +326,7 @@ class McpConfigRepository @Inject constructor(
 
     /** 按名称（忽略大小写与首尾空白）设置启用位；返回是否命中。 */
     suspend fun setServerEnabled(name: String, enabled: Boolean, scope: McpScope): Boolean {
+        if (isExtensionServer(name, scope)) return false
         val target = keyOf(name)
         var hit = false
         val updated = readScoped(scope).map {
@@ -294,9 +350,12 @@ class McpConfigRepository @Inject constructor(
         val path = workspaceRepository.currentPath()
         ensureGlobalLoaded()
         ensureProjectLoaded(path)
+        val (globalExt, projectExt) = extensionServers(path)
         return merge(
             parse(globalState.value ?: DEFAULT_JSON),
-            parse(getProjectState(path).value ?: DEFAULT_JSON)
+            parse(getProjectState(path).value ?: DEFAULT_JSON),
+            globalExt,
+            projectExt
         )
     }
 
@@ -342,62 +401,87 @@ class McpConfigRepository @Inject constructor(
 
         return servers.mapNotNull { (name, element) ->
             val obj = element as? JsonObject ?: return@mapNotNull null
-            val enabled = (obj["enabled"] as? JsonPrimitive)?.booleanOrNull ?: true
+            parseOne(name, obj)
+        }
+    }
 
-            val command = (obj["command"] as? JsonPrimitive)?.contentOrNull
-            val url = (obj["url"] as? JsonPrimitive)?.contentOrNull
+    /** 解析单个 server 配置（`{name: {...}}` 里的一项）；既无 url 也无 command 时返回 null。 */
+    internal fun parseOne(name: String, obj: JsonObject): McpServerConfig? {
+        val enabled = (obj["enabled"] as? JsonPrimitive)?.booleanOrNull ?: true
 
-            val disabledTools = (obj["disabledTools"] as? JsonArray)?.mapNotNull {
-                (it as? JsonPrimitive)?.contentOrNull
-            }?.toSet() ?: emptySet()
+        val command = (obj["command"] as? JsonPrimitive)?.contentOrNull
+        val url = (obj["url"] as? JsonPrimitive)?.contentOrNull
 
-            when {
-                !command.isNullOrBlank() -> {
-                    val args = (obj["args"] as? JsonArray)?.mapNotNull {
-                        (it as? JsonPrimitive)?.contentOrNull
-                    } ?: emptyList()
-                    val env = (obj["env"] as? JsonObject)?.mapNotNull { (k, v) ->
-                        (v as? JsonPrimitive)?.contentOrNull?.let { k to it }
-                    }?.toMap() ?: emptyMap()
-                    McpServerConfig(
-                        name = name,
-                        command = command,
-                        args = args,
-                        env = env,
-                        enabled = enabled,
-                        disabledTools = disabledTools
-                    )
-                }
-                !url.isNullOrBlank() -> {
-                    val headers = (obj["headers"] as? JsonObject)?.mapNotNull { (k, v) ->
-                        (v as? JsonPrimitive)?.contentOrNull?.let { k to it }
-                    }?.toMap() ?: emptyMap()
-                    McpServerConfig(
-                        name = name,
-                        url = url,
-                        headers = headers,
-                        enabled = enabled,
-                        disabledTools = disabledTools
-                    )
-                }
-                else -> {
-                    // 既无 url 也无 command，无法识别，跳过。
-                    FileLogger.i(TAG, "跳过无法识别的 MCP server（缺 url/command）: $name")
-                    null
-                }
+        val disabledTools = (obj["disabledTools"] as? JsonArray)?.mapNotNull {
+            (it as? JsonPrimitive)?.contentOrNull
+        }?.toSet() ?: emptySet()
+
+        return when {
+            !command.isNullOrBlank() -> {
+                val args = (obj["args"] as? JsonArray)?.mapNotNull {
+                    (it as? JsonPrimitive)?.contentOrNull
+                } ?: emptyList()
+                val env = (obj["env"] as? JsonObject)?.mapNotNull { (k, v) ->
+                    (v as? JsonPrimitive)?.contentOrNull?.let { k to it }
+                }?.toMap() ?: emptyMap()
+                McpServerConfig(
+                    name = name,
+                    command = command,
+                    args = args,
+                    env = env,
+                    enabled = enabled,
+                    disabledTools = disabledTools
+                )
+            }
+            !url.isNullOrBlank() -> {
+                val headers = (obj["headers"] as? JsonObject)?.mapNotNull { (k, v) ->
+                    (v as? JsonPrimitive)?.contentOrNull?.let { k to it }
+                }?.toMap() ?: emptyMap()
+                McpServerConfig(
+                    name = name,
+                    url = url,
+                    headers = headers,
+                    enabled = enabled,
+                    disabledTools = disabledTools
+                )
+            }
+            else -> {
+                // 既无 url 也无 command，无法识别，跳过。
+                FileLogger.i(TAG, "跳过无法识别的 MCP server（缺 url/command）: $name")
+                null
             }
         }
+    }
+
+    /** 扩展包贡献的 MCP server，按作用域分两组；单个配置非法只跳过自己。 */
+    private fun extensionServers(
+        projectRoot: String?
+    ): Pair<List<McpServerConfig>, List<McpServerConfig>> {
+        val global = ArrayList<McpServerConfig>()
+        val project = ArrayList<McpServerConfig>()
+        for (item in extensionRepository.mcpServers(projectRoot)) {
+            runCatching { parseOne(item.name, item.config) }
+                .onFailure { FileLogger.w(TAG, "扩展 ${item.extensionId} 的 MCP server 解析失败: ${it.message}") }
+                .getOrNull()
+                ?.let { if (item.scope == ExtensionScope.GLOBAL) global += it else project += it }
+        }
+        return global to project
     }
 
     /** 合并全局与项目配置：全局按序在前，项目项覆盖同名，顺序 = 全局序 + 项目新增项。 */
     private fun merge(
         global: List<McpServerConfig>,
-        project: List<McpServerConfig>
+        project: List<McpServerConfig>,
+        globalExt: List<McpServerConfig> = emptyList(),
+        projectExt: List<McpServerConfig> = emptyList()
     ): List<McpServerEntry> {
         val byName = LinkedHashMap<String, McpServerEntry>()
         // 小写作 key：与 skill/agent 两级合并一致。否则 `Foo`/`foo` 同时生效，且全局项不被项目项覆盖。
-        global.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.GLOBAL) }
-        project.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.PROJECT) }
+        // 次序即优先级：先作用域（项目 > 全局），同作用域内扩展 > 目录。
+        global.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.GLOBAL, McpOrigin.DIRECTORY) }
+        globalExt.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.GLOBAL, McpOrigin.EXTENSION) }
+        project.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.PROJECT, McpOrigin.DIRECTORY) }
+        projectExt.forEach { byName[keyOf(it.name)] = McpServerEntry(it, McpScope.PROJECT, McpOrigin.EXTENSION) }
         return byName.values.toList()
     }
 }

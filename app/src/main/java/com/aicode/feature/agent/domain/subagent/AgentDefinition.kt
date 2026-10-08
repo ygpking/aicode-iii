@@ -6,6 +6,12 @@ import com.aicode.feature.agent.domain.model.AgentMode
 enum class AgentDefinitionScope { GLOBAL, PROJECT }
 
 /**
+ * 定义的承载方式：磁盘上的定义文件，或扩展包贡献的定义。
+ * 扩展来源在设置页只读（改它得改扩展目录），且随扩展包增删。
+ */
+enum class AgentDefinitionOrigin { DIRECTORY, EXTENSION }
+
+/**
  * 子代理系统提示词的可注入片段。省略 `inject` 时使用 [AgentDefinition.DEFAULT_INJECT]。
  *
  * BASE 与 MAIN_RULES 互斥语义上并不强制，同时写则两者都注入（MAIN_RULES 在前）。
@@ -137,10 +143,11 @@ data class AgentDefinition(
     }
 }
 
-/** 一个生效的子代理定义条目：定义本体 + 其来源作用域，供 UI 标注「全局/项目」。 */
+/** 一个生效的子代理定义条目：定义本体 + 其来源作用域与承载方式。 */
 data class AgentDefinitionEntry(
     val definition: AgentDefinition,
-    val scope: AgentDefinitionScope
+    val scope: AgentDefinitionScope,
+    val origin: AgentDefinitionOrigin = AgentDefinitionOrigin.DIRECTORY
 )
 
 /** 设置页新建/编辑子代理时提交的表单快照。 */
@@ -168,6 +175,9 @@ enum class AgentSaveError {
 
     /** 同作用域已有同名子代理。 */
     NAME_CONFLICT,
+
+    /** 目标是扩展包贡献的定义：只读（改它得改扩展目录或卸载扩展）。 */
+    READ_ONLY_EXTENSION,
 
     /** 写盘失败。 */
     IO_FAILED

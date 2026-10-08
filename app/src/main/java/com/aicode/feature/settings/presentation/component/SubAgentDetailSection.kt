@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.aicode.R
 import com.aicode.core.theme.Spacing
 import com.aicode.core.ui.AppSwitch
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionOrigin
 import com.aicode.feature.agent.domain.subagent.InjectPart
 import com.aicode.feature.agent.presentation.component.MarkdownContent
 import com.aicode.feature.agent.presentation.component.MarkdownRenderCache
@@ -85,6 +86,13 @@ internal fun SubAgentDetailSection(
         }
 
         SettingsGroup {
+            if (entry.origin == AgentDefinitionOrigin.EXTENSION) {
+                InfoRow(
+                    label = stringResource(R.string.subagent_origin),
+                    value = stringResource(R.string.common_from_extension)
+                )
+                SettingsDivider()
+            }
             InfoRow(
                 label = stringResource(R.string.subagent_model),
                 value = modelText(entry)

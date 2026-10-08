@@ -2,9 +2,10 @@
   "id": "extension-starter",
   "name": "入门示例扩展",
   "version": 1,
-  "description": "官方示例：演示扩展如何贡献技能与记忆，内含给 AI 看的扩展编写指南（extension-guide 技能）。可整包删除，删除后不会重新出现。",
+  "description": "官方示例：演示扩展如何贡献技能、记忆与子代理（example-reader 只读示例），内含给 AI 看的扩展编写指南（extension-guide 技能）。可整包删除，删除后不会重新出现。",
   "contributes": {
     "skills": ["skills"],
-    "memory": ["memory"]
+    "memory": ["memory"],
+    "agents": ["agents"]
   }
 }

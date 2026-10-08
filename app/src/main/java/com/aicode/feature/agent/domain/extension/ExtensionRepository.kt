@@ -1,8 +1,19 @@
 package com.aicode.feature.agent.domain.extension
 
 import com.aicode.core.util.FileLogger
+import com.aicode.core.watch.FileChangeHub
+import com.aicode.core.watch.canonicalHostPath
+import com.aicode.core.watch.isUnderPath
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.workspace.domain.ProjectAicodeRoot
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.flow.shareIn
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import java.io.File
@@ -11,6 +22,14 @@ import javax.inject.Singleton
 
 /** 扩展作用域：全局（跨项目）或项目级（随工作区，可 git 化）。 */
 enum class ExtensionScope { GLOBAL, PROJECT }
+
+/** 扩展贡献的一个 MCP server 条目：名称 + 原始配置 JSON + 来源扩展 id + 该扩展的作用域。 */
+data class ExtensionMcpServer(
+    val name: String,
+    val config: JsonObject,
+    val extensionId: String,
+    val scope: ExtensionScope
+)
 
 /**
  * 一个已解析的扩展：清单 + 根目录 + 作用域 + 解析期错误（非致命，逐条记录供诊断）。
@@ -53,14 +72,53 @@ data class ExtensionEntry(
 @Singleton
 class ExtensionRepository @Inject constructor(
     private val containerInstaller: ContainerInstaller,
-    private val projectAicodeRoot: ProjectAicodeRoot
+    private val projectAicodeRoot: ProjectAicodeRoot,
+    private val fileChangeHub: FileChangeHub
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    /** 扩展根目录（全局/项目）；由消费端经仓库统一读取，不自行拼路径。 */
-    fun globalRoot(): File = File(containerInstaller.aicodeDir, "extensions")
+    // ── 外部变更监听：手工放置 / 容器内解压扩展包后，数秒内通知 UI 刷新 ──
 
-    fun projectRoot(projectRoot: String): File = File(projectAicodeRoot.forPath(projectRoot), "extensions")
+    private val watchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 两级扩展根被增删改时广播一次。
+     *
+     * **实际是全程常驻监听**：虽然 [shareIn] 用的是 `WhileSubscribed`，但 [McpManager] 在
+     * Singleton 作用域里长驻 collect（构造时启动、永不取消），订阅者不消失，因此
+     * [FileChangeHub] 对本仓的 5 路 watch（含整棵 projects 树的递归监听）在 app 全生命
+     * 周期都挂着，并非「只在设置页打开时才有开销」。改动订阅方前先确认其 scope 生命周期。
+     *
+     * 订阅方据此刷新的是**所有**消费扩展的列表（子代理/技能/记忆/MCP/扩展本身），
+     * 因为一个扩展包可同时贡献这几类资源。
+     */
+    val changes: SharedFlow<Unit> = merge(
+        fileChangeHub.watchAicode(EXTENSIONS_DIR, recursive = true),
+        fileChangeHub.watchAicode(),
+        // 远程模式下项目级扩展根落在 filesDir/aicode/projects/<key>/extensions，
+        // 而 watchWorkspace 在远程模式下退化为空流，故这条路是远程唯一的项目级事件源。
+        fileChangeHub.watchAicode(PROJECTS_DIR, recursive = true),
+        fileChangeHub.watchWorkspace("${FileChangeHub.CONTAINER_ROOT}/$AICODE_DIR/$EXTENSIONS_DIR", recursive = true),
+        fileChangeHub.watchWorkspace("${FileChangeHub.CONTAINER_ROOT}/$AICODE_DIR")
+    ).mapNotNull { batch ->
+        // 前缀每批算一次（canonicalFile 有 IO 开销），不逐条重算。
+        val global = canonicalHostPath(File(containerInstaller.aicodeDir, EXTENSIONS_DIR).absolutePath)
+        val project = canonicalHostPath(File(projectAicodeRoot.current(), EXTENSIONS_DIR).absolutePath)
+        if (!batch.changes.any { isExtensionChange(it.hostPath, global, project) }) return@mapNotNull null
+        FileLogger.i(TAG, "检测到扩展目录变化，已通知刷新")
+        Unit
+    }.shareIn(watchScope, SharingStarted.WhileSubscribed(), replay = 0)
+
+    /** 扩展相关变更：全局/项目扩展根自身及其下的任何文件。 */
+    private fun isExtensionChange(path: String, globalPrefix: String, projectPrefix: String): Boolean {
+        val p = canonicalHostPath(path)
+        return isUnderPath(p, globalPrefix) || isUnderPath(p, projectPrefix)
+    }
+
+    /** 扩展根目录（全局/项目）；由消费端经仓库统一读取，不自行拼路径。 */
+    fun globalRoot(): File = File(containerInstaller.aicodeDir, EXTENSIONS_DIR)
+
+    fun projectRoot(projectRoot: String): File = File(projectAicodeRoot.forPath(projectRoot), EXTENSIONS_DIR)
 
     /**
      * 扫描两级扩展根。全局在前、项目在后（消费端合并时后者覆盖前者）。
@@ -85,30 +143,42 @@ class ExtensionRepository @Inject constructor(
     fun memoryDirs(projectRoot: String?): List<File> =
         listExtensions(projectRoot).flatMap { it.resolveDirs(it.manifest.contributes.memory) }
 
+    fun agentDirs(projectRoot: String?): List<File> =
+        listExtensions(projectRoot).flatMap { it.resolveDirs(it.manifest.contributes.agents) }
+
     /** 当前工作区作用域的两组目录：全局扩展在前、项目扩展在后（消费端按序合并即「近者胜」）。 */
     fun globalSkillDirs(): List<File> =
         scanDir(globalRoot(), ExtensionScope.GLOBAL).flatMap { it.resolveDirs(it.manifest.contributes.skills) }
 
     fun projectSkillDirs(): List<File> =
-        scanDir(currentProjectRoot(), ExtensionScope.PROJECT).flatMap { it.resolveDirs(it.manifest.contributes.skills) }
+        scanDir(currentExtensionsRoot(), ExtensionScope.PROJECT).flatMap { it.resolveDirs(it.manifest.contributes.skills) }
 
     fun globalPromptDirs(): List<File> =
         scanDir(globalRoot(), ExtensionScope.GLOBAL).flatMap { it.resolveDirs(it.manifest.contributes.prompts) }
 
     fun projectPromptDirs(): List<File> =
-        scanDir(currentProjectRoot(), ExtensionScope.PROJECT).flatMap { it.resolveDirs(it.manifest.contributes.prompts) }
+        scanDir(currentExtensionsRoot(), ExtensionScope.PROJECT).flatMap { it.resolveDirs(it.manifest.contributes.prompts) }
 
     fun globalMemoryDirs(): List<File> =
         scanDir(globalRoot(), ExtensionScope.GLOBAL).flatMap { it.resolveDirs(it.manifest.contributes.memory) }
 
     fun projectMemoryDirs(): List<File> =
-        scanDir(currentProjectRoot(), ExtensionScope.PROJECT).flatMap { it.resolveDirs(it.manifest.contributes.memory) }
+        scanDir(currentExtensionsRoot(), ExtensionScope.PROJECT).flatMap { it.resolveDirs(it.manifest.contributes.memory) }
 
-    private fun currentProjectRoot(): File = projectAicodeRoot.current()
+    fun globalAgentDirs(): List<File> =
+        scanDir(globalRoot(), ExtensionScope.GLOBAL).flatMap { it.resolveDirs(it.manifest.contributes.agents) }
 
-    /** 扩展贡献的 MCP 配置：`(serverName, 配置 JSON, 来源扩展 id)`；格式不合法的 server 逐条跳过。 */
-    fun mcpServers(projectRoot: String?): List<Triple<String, JsonObject, String>> {
-        val out = ArrayList<Triple<String, JsonObject, String>>()
+    fun projectAgentDirs(): List<File> =
+        scanDir(currentExtensionsRoot(), ExtensionScope.PROJECT).flatMap { it.resolveDirs(it.manifest.contributes.agents) }
+
+    /** 当前工作区的扩展根（`<.aicode>/extensions`）；与 [projectRoot] 同一落点，供无参调用方用。 */
+    private fun currentExtensionsRoot(): File = File(projectAicodeRoot.current(), "extensions")
+
+    /**
+     * 扩展贡献的 MCP 配置：`(serverName, 配置 JSON, 来源扩展 id, 作用域)`；格式不合法的 server 逐条跳过。
+     */
+    fun mcpServers(projectRoot: String?): List<ExtensionMcpServer> {
+        val out = ArrayList<ExtensionMcpServer>()
         for (entry in listExtensions(projectRoot)) {
             val rel = entry.manifest.contributes.mcp ?: continue
             val f = entry.resolveFile(rel) ?: continue
@@ -116,7 +186,9 @@ class ExtensionRepository @Inject constructor(
             runCatching {
                 val obj = json.decodeFromString<JsonObject>(f.readText())
                 for ((name, cfg) in obj) {
-                    if (cfg is JsonObject) out += Triple(name, cfg, entry.manifest.id)
+                    if (cfg is JsonObject) {
+                        out += ExtensionMcpServer(name, cfg, entry.manifest.id, entry.scope)
+                    }
                 }
             }.onFailure { FileLogger.w(TAG, "扩展 ${entry.manifest.id} 的 mcp.json 解析失败: ${it.message}") }
         }
@@ -153,6 +225,7 @@ class ExtensionRepository @Inject constructor(
                 skills = checkPaths(manifest.contributes.skills),
                 prompts = checkPaths(manifest.contributes.prompts),
                 memory = checkPaths(manifest.contributes.memory),
+                agents = checkPaths(manifest.contributes.agents),
                 mcp = manifest.contributes.mcp?.takeIf { rel ->
                     val ok = safeResolve(extDir, rel) != null
                     if (!ok) contributionErrors = contributionErrors + "贡献路径越界被拒绝: $rel"
@@ -181,6 +254,9 @@ class ExtensionRepository @Inject constructor(
 
     private companion object {
         const val TAG = "ExtensionRepo"
+        const val EXTENSIONS_DIR = "extensions"
+        const val AICODE_DIR = ".aicode"
+        const val PROJECTS_DIR = "projects"
         val ID_REGEX = Regex("""^[a-z0-9-]+$""")
     }
 }

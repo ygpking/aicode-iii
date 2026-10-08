@@ -1068,6 +1068,7 @@
     <string name="extension_contrib_skills">技能目录</string>
     <string name="extension_contrib_prompts">提示词目录</string>
     <string name="extension_contrib_memory">记忆目录</string>
+    <string name="extension_contrib_agents">子代理目录</string>
     <string name="extension_contrib_mcp">MCP 配置文件</string>
     <string name="extension_contrib_none">（无）</string>
     <string name="extension_root_header">扩展根路径</string>
@@ -1076,6 +1077,8 @@
     <string name="memory_content_unavailable">（正文不可用：文件缺失或解析失败）</string>
     <string name="subagent_prompt">agent 提示词</string>
     <string name="subagent_source_file">定义文件</string>
+    <string name="subagent_origin">来源</string>
+    <string name="common_from_extension">来自扩展</string>
     <string name="subagent_inherit_parent">继承父会话</string>
     <string name="subagent_all_tools">继承全量工具（不含 task）</string>
     <string name="subagent_tools_allow">仅允许：%1$s</string>
@@ -1110,6 +1113,7 @@
     <string name="subagent_editor_error_invalid_name">名称不合法：不能为空，也不能包含路径分隔符等特殊字符</string>
     <string name="subagent_editor_error_empty_prompt">提示词正文不能为空</string>
     <string name="subagent_editor_error_name_conflict">该作用域下已存在同名子代理</string>
+    <string name="subagent_editor_error_read_only_extension">该子代理由扩展包提供，只读：请改扩展目录里的定义文件或卸载该扩展</string>
     <string name="subagent_editor_error_io">写入定义文件失败，请稍后重试</string>
     <string name="subagent_inject_base">子代理基线</string>
     <string name="subagent_inject_base_hint">工具用法与路径约定，轻量、节省 Token</string>

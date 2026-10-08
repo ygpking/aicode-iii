@@ -2,8 +2,9 @@ package com.aicode.feature.agent.domain.subagent
 
 import com.aicode.core.text.NameKey
 import com.aicode.core.util.FileLogger
-import com.aicode.core.watch.FileChange
 import com.aicode.core.watch.FileChangeHub
+import com.aicode.core.watch.canonicalHostPath
+import com.aicode.core.watch.isUnderPath
 import com.aicode.feature.agent.domain.container.ContainerInstaller
 import com.aicode.feature.workspace.domain.ProjectAicodeRoot
 import java.io.File
@@ -59,20 +60,30 @@ class AgentDefinitionConfigRepository @Inject constructor(
         fileChangeHub.watchWorkspace("${FileChangeHub.CONTAINER_ROOT}/$AICODE_DIR/$AGENTS_DIR", recursive = true),
         fileChangeHub.watchWorkspace("${FileChangeHub.CONTAINER_ROOT}/$AICODE_DIR")
     ).mapNotNull { batch ->
-        if (!batch.changes.any(::isAgentChange)) return@mapNotNull null
+        // 前缀每批算一次（canonicalFile 有 IO 开销），不逐条重算。
+        val globalConfig = canonicalHostPath(globalFile().absolutePath)
+        val projectConfig = canonicalHostPath(projectFile().absolutePath)
+        val globalAgents = canonicalHostPath(File(containerInstaller.aicodeDir, AGENTS_DIR).absolutePath)
+        val projectAgents = canonicalHostPath(File(projectAicodeRoot.current(), AGENTS_DIR).absolutePath)
+        if (!batch.changes.any {
+                isAgentChange(it.hostPath, globalConfig, projectConfig, globalAgents, projectAgents)
+            }
+        ) return@mapNotNull null
         FileLogger.i(TAG, "检测到子代理目录或配置变化，已通知刷新")
         Unit
     }.shareIn(watchScope, SharingStarted.WhileSubscribed(), replay = 0)
 
     /** 子代理相关变更：两个 agents.json，或全局/项目子代理目录自身及其下的任何文件。 */
-    private fun isAgentChange(change: FileChange): Boolean {
-        val path = change.hostPath
-        if (path == globalFile().absolutePath) return true
-        if (path == projectFile().absolutePath) return true
-        val globalAgents = File(containerInstaller.aicodeDir, AGENTS_DIR).absolutePath
-        if (path == globalAgents || path.startsWith("$globalAgents/")) return true
-        val projectAgents = File(projectAicodeRoot.current(), AGENTS_DIR).absolutePath
-        return path == projectAgents || path.startsWith("$projectAgents/")
+    private fun isAgentChange(
+        path: String,
+        globalConfig: String,
+        projectConfig: String,
+        globalAgents: String,
+        projectAgents: String
+    ): Boolean {
+        val p = canonicalHostPath(path)
+        return isUnderPath(p, globalConfig) || isUnderPath(p, projectConfig) ||
+            isUnderPath(p, globalAgents) || isUnderPath(p, projectAgents)
     }
 
     /** 当前生效的禁用子代理名集合（全局 + 项目并集，归一化为小写）。 */

@@ -88,6 +88,7 @@ import com.aicode.feature.settings.presentation.SkillUiEntry
 import com.aicode.feature.agent.domain.skill.SkillImportError
 import com.aicode.feature.agent.domain.extension.ExtensionScope
 import com.aicode.feature.agent.domain.skill.SkillScope
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionOrigin
 import com.aicode.feature.settings.presentation.SubAgentUiEntry
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowLeft
@@ -720,7 +721,9 @@ fun SettingsScreen(
                                 modifier = Modifier.size(22.dp)
                             )
                         }
-                        SettingsSection.SubAgentDetail -> selectedSubAgent?.let { entry ->
+                        SettingsSection.SubAgentDetail -> selectedSubAgent
+                            ?.takeIf { it.origin == AgentDefinitionOrigin.DIRECTORY }
+                            ?.let { entry ->
                             IconButton(onClick = {
                                 editingSubAgent = entry
                                 subAgentEditorReturn = SettingsSection.SubAgentDetail

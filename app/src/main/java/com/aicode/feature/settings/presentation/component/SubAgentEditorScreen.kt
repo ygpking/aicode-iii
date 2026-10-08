@@ -665,6 +665,7 @@ private fun AgentSaveError.messageRes(): Int = when (this) {
     AgentSaveError.INVALID_NAME -> R.string.subagent_editor_error_invalid_name
     AgentSaveError.EMPTY_PROMPT -> R.string.subagent_editor_error_empty_prompt
     AgentSaveError.NAME_CONFLICT -> R.string.subagent_editor_error_name_conflict
+    AgentSaveError.READ_ONLY_EXTENSION -> R.string.subagent_editor_error_read_only_extension
     AgentSaveError.IO_FAILED -> R.string.subagent_editor_error_io
 }
 

@@ -1067,6 +1067,7 @@
     <string name="extension_contrib_skills">Skill directories</string>
     <string name="extension_contrib_prompts">Prompt directories</string>
     <string name="extension_contrib_memory">Memory directories</string>
+    <string name="extension_contrib_agents">Subagent directories</string>
     <string name="extension_contrib_mcp">MCP config file</string>
     <string name="extension_contrib_none">(none)</string>
     <string name="extension_root_header">Extension root path</string>
@@ -1075,6 +1076,8 @@
     <string name="memory_content_unavailable">(Content unavailable: file missing or failed to parse)</string>
     <string name="subagent_prompt">Agent prompt</string>
     <string name="subagent_source_file">Definition file</string>
+    <string name="subagent_origin">Origin</string>
+    <string name="common_from_extension">From extension</string>
     <string name="subagent_inherit_parent">Inherit from parent session</string>
     <string name="subagent_all_tools">All tools except task</string>
     <string name="subagent_tools_allow">Allowed only: %1$s</string>
@@ -1109,6 +1112,7 @@
     <string name="subagent_editor_error_invalid_name">Invalid name: it cannot be empty or contain path separators and other special characters</string>
     <string name="subagent_editor_error_empty_prompt">The agent prompt cannot be empty</string>
     <string name="subagent_editor_error_name_conflict">A subagent with this name already exists in this scope</string>
+    <string name="subagent_editor_error_read_only_extension">This subagent is provided by an extension and is read-only: edit the definition in the extension directory or uninstall the extension</string>
     <string name="subagent_editor_error_io">Failed to write the definition file, please try again</string>
     <string name="subagent_inject_base">Subagent baseline</string>
     <string name="subagent_inject_base_hint">Tool usage and path conventions, lightweight</string>

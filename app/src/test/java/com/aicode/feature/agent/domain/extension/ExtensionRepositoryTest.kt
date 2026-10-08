@@ -32,7 +32,9 @@ class ExtensionRepositoryTest {
         val paicode = mockk<com.aicode.feature.workspace.domain.ProjectAicodeRoot>(relaxed = true)
         every { installer.aicodeDir } returns File(tmp.root, "aicode")
         every { paicode.forPath(any()) } returns File(tmp.root, "ws/.aicode")
-        return ExtensionRepository(installer, paicode)
+        // 无参版走 current()，与 forPath 同一落点；不桩它 relaxed mock 会给出无内容的 File 替身。
+        every { paicode.current() } returns File(tmp.root, "ws/.aicode")
+        return ExtensionRepository(installer, paicode, mockk(relaxed = true))
     }
 
     private fun writeExtension(root: File, extId: String, manifest: String, vararg files: Pair<String, String>) {
@@ -115,6 +117,70 @@ class ExtensionRepositoryTest {
     }
 
     @Test
+    fun agentsContribution_parsedAndAggregated() {
+        writeExtension(
+            globalRoot, "agent-pack",
+            """{"id":"agent-pack","contributes":{"agents":["agents"]}}""",
+            "agents/reviewer.md" to "---\nname: reviewer\ndescription: 复核\n---\n复核正文"
+        )
+        val repo = repo()
+        val dirs = repo.agentDirs(null)
+        assertEquals(1, dirs.size)
+        assertTrue(dirs[0].path.endsWith("agent-pack/agents"))
+        assertEquals(1, repo.globalAgentDirs().size)
+    }
+
+    @Test
+    fun agentsPathTraversal_isRejected() {
+        writeExtension(
+            globalRoot, "evil-agent",
+            """{"id":"evil-agent","contributes":{"agents":["../../../etc"]}}"""
+        )
+        val repo = repo()
+        assertEquals(emptyList<File>(), repo.globalAgentDirs())
+        assertTrue(repo.listExtensions(null).single().errors.isNotEmpty())
+    }
+
+    @Test
+    fun projectAgentDirs_areScopedSeparately() {
+        writeExtension(
+            globalRoot, "g", """{"id":"g","contributes":{"agents":["agents"]}}""",
+            "agents/g.md" to "---\nname: g\n---\n正"
+        )
+        writeExtension(
+            projectRoot, "p", """{"id":"p","contributes":{"agents":["agents"]}}""",
+            "agents/p.md" to "---\nname: p\n---\n正"
+        )
+        val repo = repo()
+        // 两级分开取：消费端按「项目 > 全局」合并，仓库层不预幂等
+        assertEquals(1, repo.globalAgentDirs().size)
+        assertEquals(1, repo.projectAgentDirs().size)
+        assertTrue(repo.globalAgentDirs()[0].path.contains("aicode/extensions"))
+        assertTrue(repo.projectAgentDirs()[0].path.contains(".aicode/extensions"))
+        // 兼容旧包：manifest 不带 agents 字段时不贡献该类，且不影响其它贡献解析
+        assertEquals(2, repo.agentDirs("/ws/a").size)
+    }
+
+    /**
+     * 回归护栏：项目级扩展根必须是 `<.aicode>/extensions`，不能直接拿 `<.aicode>` 当扩展根。
+     * 曾经的 `currentProjectRoot()` 少了 extensions 后缀，导致项目级扩展的技能/提示词/记忆全扫不到。
+     */
+    @Test
+    fun projectDirAccessors_useExtensionsSuffix() {
+        writeExtension(
+            projectRoot, "p",
+            """{"id":"p","contributes":{"skills":["skills"],"memory":["memory"]}}""",
+            "skills/s/SKILL.md" to "---\nname: s\n---\n正"
+        )
+        val repo = repo()
+        val skillDirs = repo.projectSkillDirs()
+        assertEquals(1, skillDirs.size)
+        assertTrue(skillDirs[0].path.endsWith(".aicode/extensions/p/skills"))
+        assertEquals(1, repo.projectMemoryDirs().size)
+        assertTrue(repo.projectMemoryDirs()[0].path.endsWith(".aicode/extensions/p/memory"))
+    }
+
+    @Test
     fun mcpServers_parsedPerExtension() {
         writeExtension(
             globalRoot, "mcp-pack",
@@ -124,9 +190,10 @@ class ExtensionRepositoryTest {
         val repo = repo()
         val servers = repo.mcpServers(null)
         assertEquals(1, servers.size)
-        assertEquals("srv", servers[0].first)
-        val cfg = servers[0].second as JsonObject
-        assertEquals(JsonPrimitive("python3"), cfg["command"])
+        assertEquals("srv", servers[0].name)
+        assertEquals(JsonPrimitive("python3"), servers[0].config["command"])
+        // 作用域跟着扩展走，供消费端标注与只读判定。
+        assertEquals(ExtensionScope.GLOBAL, servers[0].scope)
     }
 
     @Test
@@ -134,6 +201,7 @@ class ExtensionRepositoryTest {
         val repo = repo()
         assertTrue(repo.listExtensions(null).isEmpty())
         assertTrue(repo.skillDirs(null).isEmpty())
+        assertTrue(repo.agentDirs(null).isEmpty())
         assertTrue(repo.mcpServers(null).isEmpty())
     }
 }

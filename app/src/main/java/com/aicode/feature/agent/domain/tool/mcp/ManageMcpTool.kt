@@ -111,6 +111,18 @@ class ManageMcpTool @Inject constructor(
         val scope = resolveScope(args)
         val scopeLabel = if (scope == McpScope.PROJECT) "当前项目" else "全局"
 
+        // 扩展包贡献的同名 server 会遮蔽本作用域的目录条目（同作用域内扩展胜出），
+        // 新增/删除同名条目既不可见也不生效，属静默失效，故与 UI 同一判定直接拒绝。
+        fun extensionConflict(name: String): ToolResult.Error? = if (mcpConfigRepository.isExtensionServer(name, scope)) {
+            ToolResult.Error(
+                "$scopeLabel 的 MCP server「$name」由扩展包提供，不能通过工具修改。" +
+                    "请改动扩展包自身配置，或换一个名字。",
+                "MCP_SERVER_FROM_EXTENSION"
+            )
+        } else {
+            null
+        }
+
         suspend fun readServers(): List<McpServerConfig> =
             if (scope == McpScope.PROJECT) mcpConfigRepository.getProjectServers() else mcpConfigRepository.getGlobalServers()
 
@@ -126,6 +138,7 @@ class ManageMcpTool @Inject constructor(
                 }
                 "remove" -> {
                     val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("remove 缺少 server_name", "MISSING_SERVER_NAME")
+                    extensionConflict(name)?.let { return it }
                     val servers = readServers().toMutableList()
                     // ignoreCase：与合并（小写作 key）及 UI 的忽略大小写匹配一致，否则大小写不一致时删不掉。
                     val removed = servers.removeIf { it.name.equals(name, ignoreCase = true) }
@@ -140,6 +153,7 @@ class ManageMcpTool @Inject constructor(
                 "add_stdio" -> {
                     val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_stdio 缺少 server_name", "MISSING_SERVER_NAME")
                     if (!McpServerConfig.isValidName(name)) return ToolResult.Error(invalidNameMessage(name), "INVALID_SERVER_NAME")
+                    extensionConflict(name)?.let { return it }
                     val command = args["command"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_stdio 缺少 command", "MISSING_COMMAND")
                     val commandArgs = args["args"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
                     
@@ -162,6 +176,7 @@ class ManageMcpTool @Inject constructor(
                 "add_http" -> {
                     val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_http 缺少 server_name", "MISSING_SERVER_NAME")
                     if (!McpServerConfig.isValidName(name)) return ToolResult.Error(invalidNameMessage(name), "INVALID_SERVER_NAME")
+                    extensionConflict(name)?.let { return it }
                     val url = args["url"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("add_http 缺少 url", "MISSING_URL")
                     
                     val newServer = McpServerConfig(
