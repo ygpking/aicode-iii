@@ -121,6 +121,9 @@ interface AgentMessageDao {
      * 这里必须包含：压缩只是把 head 标记为不回放，原文仍在库里；排除它们就等于把被折叠的信息
      * 永久对模型隐藏（压缩后「丢信息」的根因）。
      *
+     * 但排除压缩内务消息（marker/summary）：它们不是对话内容，返回给模型只会当噪音读——
+     * 尤其 marker 是 USER 角色，模型会误以为用户说了什么（browse 乱象的根因之一）。
+     *
      * 关键词为空时返回时间窗内的全部消息；否则在 role/content 上做 LIKE 匹配。
      * 按 timestamp DESC 取最近 [limit] 条，让一次调用尽可能落在有价值的近处。
      */
@@ -130,6 +133,7 @@ interface AgentMessageDao {
         WHERE sessionId = :sessionId
           AND (:keyword = '' OR content LIKE '%' || :keyword || '%' ESCAPE '!')
           AND (:beforeTimestamp <= 0 OR timestamp < :beforeTimestamp)
+          AND isContextSummary = 0 AND isCompactionMarker = 0
         ORDER BY timestamp DESC
         LIMIT :limit
         """
@@ -141,12 +145,13 @@ interface AgentMessageDao {
         limit: Int
     ): List<AgentMessageEntity>
 
-    /** 会话内可翻阅消息总数（含已压缩），供工具向模型说明剩余量。 */
+    /** 会话内可翻阅消息总数（含已压缩，排除内务消息），供工具向模型说明剩余量。 */
     @Query(
         """
         SELECT COUNT(*) FROM agent_messages
         WHERE sessionId = :sessionId
           AND (:keyword = '' OR content LIKE '%' || :keyword || '%' ESCAPE '!')
+          AND isContextSummary = 0 AND isCompactionMarker = 0
         """
     )
     suspend fun countSessionHistory(sessionId: String, keyword: String): Int

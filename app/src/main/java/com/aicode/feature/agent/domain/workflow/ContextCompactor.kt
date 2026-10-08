@@ -244,7 +244,9 @@ class ContextCompactor @Inject constructor(
         // 与工具 schema description 互补：description 说「什么时候该用」，这里说「现在有块可用」。
         val compactedMessageWithHint = compactedMessage.copy(
             content = summaryText + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
-                "如摘要缺关键细节（报错原文、代码片段、精确数值），可用 restoreCompactedRange 恢复。"
+                "如摘要缺关键细节（报错原文、代码片段、精确数值）：先用 restoreCompactedRange 的 preview 模式" +
+                "检索定位（返回截断预览，省 token），确认需要完整原文再以 action=restore 恢复整块；" +
+                "不要为复核上下文而无谓恢复。"
         )
 
         // 持久化压缩结果到数据库

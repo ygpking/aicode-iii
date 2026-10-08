@@ -54,7 +54,6 @@ import com.aicode.core.net.AppProxy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
 import com.aicode.feature.agent.domain.tool.ToolOutputStore
 import com.aicode.feature.agent.domain.tool.RetrieveToolResultTool
-import com.aicode.feature.agent.domain.tool.BrowseHistoryTool
 import com.aicode.feature.agent.domain.tool.RestoreCompactedRangeTool
 import com.aicode.feature.agent.domain.tool.DiagnosticsTool
 import com.aicode.feature.settings.data.remote.ModelMetadataService
@@ -310,7 +309,6 @@ object AgentModule {
         messageParentTool: MessageParentTool,
         browserTool: BrowserTool,
         virtualScreenTool: VirtualScreenTool,
-        browseHistoryTool: BrowseHistoryTool,
         restoreCompactedRangeTool: RestoreCompactedRangeTool,
         diagnosticsTool: DiagnosticsTool
     ): ToolRegistry {
@@ -339,7 +337,6 @@ object AgentModule {
             register("messageParent", messageParentTool)
             register("browser", browserTool)
             register("virtualScreen", virtualScreenTool)
-            register("browseHistory", browseHistoryTool)
             register("restoreCompactedRange", restoreCompactedRangeTool)
             register("diagnostics", diagnosticsTool)
         }

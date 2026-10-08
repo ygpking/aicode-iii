@@ -51,7 +51,7 @@ import javax.inject.Inject
  * （含其轮转归档，不暴露其它会话的文件名）；不提供 `session_id` 参数，缺 sessionId 时直接报错而不
  * 回退到别的会话。`read`/`search` 会把轮转归档与当前文件**按时间顺序合并为一条流**（行号连续），
  * 因为 [com.aicode.core.util.AILogger] 轮转的目的正是让「当前 + 上一轮」两段历史都可用于回溯。
- * 与 [BrowseHistoryTool] 同一口径，不让模型翻阅其它会话。
+ * 与 [RestoreCompactedRangeTool] 同一口径，不让模型翻阅其它会话。
  */
 class DiagnosticsTool @Inject constructor(
     @param:ApplicationContext private val context: Context
