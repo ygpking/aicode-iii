@@ -702,11 +702,14 @@ internal fun ReasoningBubble(
     val renderText = if (preRendered) text else rememberThrottledStreamingText(text)
     // 折叠行预览直接用实时文本：节流后的文本会让「快速滚动」慢半拍
     val previewLine = reasoningPreviewLine(text, live)
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.Start
+    // 过程块：与过渡说明共用 chatMutedPanel 浅底，弱化呈现；
+    // 靠底色与正文的无底文档流区分层级（收起态是一行预览 + 箭头，展开态灰字全文）。
+    // 注：外层 Box 的子元素默认叠加排列——当前只有一个 Column，若未来加第二个子元素需另作布局。
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .chatMutedPanel()
     ) {
-        // 扁平化：思考不再是染色/描边卡片，只是一段弱化的灰色小字（靠色阶与字号与正文区分）
         Column(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(

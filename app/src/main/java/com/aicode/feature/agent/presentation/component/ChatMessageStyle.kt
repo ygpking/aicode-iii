@@ -97,6 +97,19 @@ internal fun chatHairlineColor(): Color = MaterialTheme.colorScheme.outlineVaria
 internal fun chatMutedSurfaceColor(): Color =
     MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
 
+/**
+ * 过程信息浅底块（思考收起行、过渡说明共用）：弱化背景 + 圆角 + 内边距，
+ * 与正文的无底文档流区分层级——「正在发生的事」是弱底块，回复正文才是主角。
+ */
+@Composable
+internal fun Modifier.chatMutedPanel(
+    horizontalPadding: Dp = Spacing.sm,
+    verticalPadding: Dp = Spacing.xs
+): Modifier = this
+    .clip(RoundedCornerShape(ChatStyle.panelCorner))
+    .background(chatMutedSurfaceColor())
+    .padding(horizontal = horizontalPadding, vertical = verticalPadding)
+
 /** 内容卡底色（差异/代码卡）：浅色下是白底 + 细线，深色下降一档成为「纸面」。 */
 @Composable
 internal fun chatCardSurfaceColor(): Color = MaterialTheme.colorScheme.surface
@@ -221,9 +234,7 @@ internal fun ChatMonoPanel(
     Box(
         modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(ChatStyle.panelCorner))
-            .background(chatMutedSurfaceColor())
-            .padding(horizontal = Spacing.sm, vertical = Spacing.sm)
+            .chatMutedPanel(verticalPadding = Spacing.sm)
     ) {
         content()
     }

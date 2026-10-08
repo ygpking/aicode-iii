@@ -1255,7 +1255,9 @@ fun AIChatPanel(
                         contentPadding = PaddingValues(
                             start = Spacing.lg,
                             end = Spacing.lg,
-                            top = Spacing.md,
+                            // 首条消息距顶部 8dp（原 md）：顶部工具栏与消息流之间收得更紧，
+                            // 配合消息间隔 xs，整屏密度提升，回应「太松太空」。
+                            top = Spacing.sm,
                             bottom = with(LocalDensity.current) { inputBarReservePx.toDp() }
                         )
                     ) {

@@ -295,7 +295,8 @@ internal fun AgentMessageItem(
             // LazyColumn 不再统一 spacedBy：末块（或非分块消息）自带与下一条 item 的间距，
             // 相邻分块之间零间距无缝衔接，整段长回复在外观上仍是连续的一整段。
             // 扁平文档流下正文之间没有气泡边框兜底，紧凑排布分清「轮次」。
-            .padding(bottom = if (isChunkFooter) Spacing.sm else 0.dp),
+            // xs(4dp)：消息间隔收紧，配合过渡说明浅色块，消息流整体更紧凑不显空。
+            .padding(bottom = if (isChunkFooter) Spacing.xs else 0.dp),
         verticalArrangement = Arrangement.spacedBy(Spacing.xs)
     ) {
         if (hasReasoning && isChunkHeader) {
@@ -696,18 +697,26 @@ private fun CompactionFailureCard(message: AgentUIMessage) {
 private fun ToolPrefaceRow(text: String) {
     // 过渡说明全文常显：它是模型为这次工具调用说的话（给人看的进展），不再折叠成一行。
     // 与思考气泡（ReasoningBubble）区分：思考是推理过程、默认收起；过渡说明是动作预告，直接可见。
-    SelectionContainer {
-        CompositionLocalProvider(
-            LocalTextSelectionColors provides TextSelectionColors(
-                handleColor = MaterialTheme.colorScheme.primary,
-                backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
-            )
-        ) {
-            Text(
-                text = text,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
-            )
+    // 浅色圆角底：灰字全文在页面底色上像一段悬空空白，衬一个弱底后成为有内容的块，
+    // 消息流不再显松（与思考块共用 chatMutedPanel，过程信息统一弱底层级）。
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .chatMutedPanel()
+    ) {
+        SelectionContainer {
+            CompositionLocalProvider(
+                LocalTextSelectionColors provides TextSelectionColors(
+                    handleColor = MaterialTheme.colorScheme.primary,
+                    backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+                )
+            ) {
+                Text(
+                    text = text,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 16.sp),
+                )
+            }
         }
     }
 }
