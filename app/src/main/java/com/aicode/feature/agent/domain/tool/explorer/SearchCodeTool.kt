@@ -37,7 +37,7 @@ class SearchCodeTool @Inject constructor(
     override val name = "search"
     // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
     override val renderHint = ToolRenderHint.SEARCH
-    override val description = "按 rg 风格搜索文本。例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。支持追加 `| head [-n N]` 截断输出。"
+    override val description = "按 rg 风格搜索文本（rg 默认递归、默认带文件名，勿加 -r——那是替换标志）。例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。支持追加 `| head [-n N]` 截断输出；路径不存在会直接报错，不确定时先 list 确认。"
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities = setOf(ToolCapability.READ_WORKSPACE)
 

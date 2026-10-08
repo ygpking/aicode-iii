@@ -45,7 +45,8 @@ class RestoreCompactedRangeTool @Inject constructor(
         "恢复一段已被上下文压缩折叠的历史：原文回到上下文回放，块内摘要退场。" +
             "需要**引用原文**时用本工具——压缩摘要只够定位，browseHistory 只给截断片段，" +
             "要报错原文、代码片段、精确数值或某句话的措辞就得把原文放回上下文。" +
-            "不带 block_id 调用时列出全部可恢复的压缩块；确认后带 block_id 恢复。"
+            "不带 block_id 调用时列出全部可恢复的压缩块；确认后带 block_id 恢复。" +
+            "慎用于刚压缩不久的窗口：回灌量约等于该块原文条数，无必要时别把长块拉回上下文。"
 
     override val parameters: Map<String, ToolParameter> = mapOf(
         "block_id" to ToolParameter(

@@ -37,7 +37,8 @@ class RetrieveToolResultTool @Inject constructor(
     override val capabilities: Set<ToolCapability> = emptySet()
     override val description =
         "按需回取此前被落盘的超长工具输出。当某个工具结果里出现 output_path、且你只需要其中" +
-            "某一段时，用本工具按行分页读取，比 readFile 更省上下文。默认每页 ${ToolResultPager.DEFAULT_MAX_LINES} 行。"
+            "某一段时，用本工具按行分页读取，比 readFile 更省上下文。默认每页 ${ToolResultPager.DEFAULT_MAX_LINES} 行。" +
+            "不要因输出被截断而重复执行原命令——先回取落盘的完整内容。"
 
     override val parameters: Map<String, ToolParameter> = mapOf(
         "path" to ToolParameter(

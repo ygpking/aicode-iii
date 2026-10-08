@@ -75,6 +75,8 @@ Room（`feature/agent/data/local/database/AgentDatabase.kt` + 各 DAO），迁�
 - **UI 变化（新增页面、改交互、调布局、改文案）→ 必须更新 `docs-site/docs/`**；新增文档页同步加进 `docs-site/.vitepress/config.ts` 侧栏与 `docs-site/docs/guide/overview.md` 索引。
 - **用户可见中文文案 → 必须进双语 strings.xml**：写入 `values/strings.xml`（中文）与 `values-en/strings.xml`（英文），代码用 `stringResource(R.string.xxx)` 引用。**禁止在 `.kt` 中硬编码中文 UI 文案。** 命名用语义化英文小写下划线，跨页面复用的加 `common_` 前缀。
 
+**提示词准入纪律（防稀释）**：新增工具/技能/静态提示词条款前，先查 `~/.aicode/traces-view/` 的 tool_finished 分布，确认对口场景在真实轨迹中出现过（场景不存在的新条款不会被调用，纯 token 成本）；新条款必须三分类——**时机型**（何时想起来用，禁止入静态片段，走事件信号或工具 schema）、**用法型**（怎么用对，并入工具 schema description，不写两份）、仅**准则型**（行为取舍裁量，无事件可挂）可入静态片段。精简/新增后用 `wc -c` 对账体积。
+
 **文档目录约定**：`docs-site/docs/` 是文档唯一事实源，`guide/` 放功能说明、`advanced/` 放环境搭建与进阶教程。构建时由 `syncAiDocs` task 复制到 `assets/docs/`，AI 在容器内看到的是 `~/.aicode/docs/{guide,advanced}/*.md`。**面向用户书写**：讲清怎么做、会看到什么、出错怎么办；变量名、错误码、内部实现路径属于 `prompts/`，别写进用户文档。
 
 ## Git 提交规范

@@ -44,7 +44,8 @@ class MemoryTool @Inject constructor(
         }
     }
     override val description =
-        "管理 AI 的长期记忆。当用户告知新的偏好、项目约定、架构设计，或者你发现了有价值的规律时，使用此工具将其永久记录。"
+        "管理 AI 的长期记忆。当用户告知新的偏好、项目约定、架构设计，或者你发现了有价值的规律时，使用此工具将其永久记录。" +
+            "prune 默认只预览不删除，需显式 dry_run=false 才真删；pinned 记忆永不被动。"
 
     /** edits 数组单个元素的结构，供 function-calling 的 items schema，语义与 editFile 一致。 */
     private val editItemSchema: Map<String, Any> = mapOf(
