@@ -354,10 +354,8 @@ internal fun AgentMessageItem(
                                 }
                             }
                         } else if (message.isToolPreface && !chunked && message.content.hasVisibleContent()) {
-                            // 过渡说明（随工具调用发出的那句）：折叠为一行，点开看全文。
+                            // 过渡说明（随工具调用发出的那句）：全文常显，不折叠。
                             // 只改观感，不碰喂给模型的历史（见 AgentUIMessage.isToolPreface）。
-                            // 分组：不带附件的归入连续工具调用分组（见 isGroupMember），默认收起，
-                            // 与它描述的那次调用同处一组；带附件的留作顶层 item，此处仍折叠为一行。
                             ToolPrefaceRow(text = message.content)
                         } else {
                             // 助手正文：不套容器，直接铺在页面底色上（文档流）。分块之间只留一个段落间距，
@@ -689,61 +687,27 @@ private fun CompactionFailureCard(message: AgentUIMessage) {
 }
 
 /**
- * 随工具调用发出的「过渡说明」：收起来只占一行，点开看全文。
+ * 随工具调用发出的「过渡说明」（模型为这次工具调用说的话）：全文常显、不折叠。
  *
- * 模型每调一次工具就写一句（实测占总输出九成以上），直接铺开会把真正的结论冲出屏幕。
- * 只影响观感：历史回放仍按原文本发给模型，不会因此丢失中间推理。
+ * 它是给人看的进展文字，与随后的工具行配套出现；只影响观感：历史回放仍按原文本
+ * 发给模型，不会因此丢失中间推理。
  */
 @Composable
 private fun ToolPrefaceRow(text: String) {
-    var expanded by rememberSaveable(text) { mutableStateOf(false) }
-    // 折叠行取**最后**一个非空行与思考气泡一致：过渡说明是紧接着工具调用的，末行才是当前进展。
-    // 取首行会与流式气泡（滚到末尾）显示的不是同一句，工具一开始就看着内容跳回开头。
-    val previewLine = text.lineSequence().lastOrNull { it.isNotBlank() }?.trim().orEmpty()
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 28.dp)
-                .clickable { expanded = !expanded },
-            verticalAlignment = Alignment.CenterVertically
+    // 过渡说明全文常显：它是模型为这次工具调用说的话（给人看的进展），不再折叠成一行。
+    // 与思考气泡（ReasoningBubble）区分：思考是推理过程、默认收起；过渡说明是动作预告，直接可见。
+    SelectionContainer {
+        CompositionLocalProvider(
+            LocalTextSelectionColors provides TextSelectionColors(
+                handleColor = MaterialTheme.colorScheme.primary,
+                backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
+            )
         ) {
             Text(
-                text = previewLine,
-                style = MaterialTheme.typography.labelMedium,
+                text = text,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
             )
-            Icon(
-                if (expanded) FeatherIcons.ChevronUp else FeatherIcons.ChevronDown,
-                contentDescription = if (expanded) stringResource(R.string.common_collapse_action) else stringResource(R.string.common_expand),
-                tint = Brand.IconGray,
-                modifier = Modifier.size(16.dp)
-            )
-        }
-        // 展开后只渲染全文，不再保留预览行：单行文本时预览与全文一字不差，
-        // 两者上下并排就是同一句话显示两遍（与既有 ReasoningBubble 同约定）。
-        if (expanded) {
-            Spacer(Modifier.height(Spacing.sm))
-            SelectionContainer {
-                CompositionLocalProvider(
-                    LocalTextSelectionColors provides TextSelectionColors(
-                        handleColor = MaterialTheme.colorScheme.primary,
-                        backgroundColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.24f),
-                    )
-                ) {
-                    Text(
-                        text = text,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
-                        modifier = Modifier.pointerInput(text) {
-                            detectTapGestures(onDoubleTap = { expanded = false })
-                        }
-                    )
-                }
-            }
         }
     }
 }

@@ -125,14 +125,14 @@ private const val CALIBRATE_TAIL_MS = 1_200L
  * 该 item 是否是「当前展开的工具分组」的成员行（用于加一级缩进）。
  *
  * 成员 item 自身不带所属分组信息（key 就是消息 id），但一个展开的分组，其成员一定是紧跟分组头的
- * 一串连续成员行（TOOL 结果行与带工具调用的助手过渡说明，见 [AgentUIMessage.isToolPreface]）；
+ * 一串连续成员行（TOOL 结果行；带工具调用的助手过渡说明不归组，见下方 [AgentUIMessage.isGroupMember]）；
  * 故从本项往前**只走连续的成员行**，遇到的第一个非成员行就是分组头，它上面的
  * [ChatRenderItem.groupExpanded] 已经是「手动选择优先」的终值。中途一旦遇到非成员行
  * （如用户消息、最终答复）立即停止并判定「不属于任何分组」——否则分组之后被打断的孤立
  * 工具行会错误继承前一个分组的缩进。
  *
  * @param index 本项在 [chatItems] 中的下标
- * @param isToolRow 本项是否为成员行（TOOL 结果或带工具调用的助手过渡说明）
+ * @param isToolRow 本项是否为成员行（TOOL 结果行）
  */
 internal fun isExpandedGroupMember(
     chatItems: List<ChatRenderItem>,
@@ -197,10 +197,9 @@ private val ToolGroupMemberPadding = PaddingValues(start = 16.dp)
 /**
  * 该消息是否归入「连续工具调用」分组。
  *
- * 两类成员：
- * - TOOL 结果行；
- * - 带工具调用的助手过渡说明（[AgentUIMessage.isToolPreface]）——它本就是「为这一次工具调用说的话」，
- *   与随后的工具行同属一次调用，折叠为一行而非各自占一行。
+ * 成员只有 TOOL 结果行。带工具调用的助手过渡说明（[AgentUIMessage.isToolPreface]）**不归组**：它是模型为这次工具调用
+ * 说的话、给人看的进展文字，作为顶层 item 全文常显（见 [MessageBubbles] 的 ToolPrefaceRow）；
+ * 折进收起的分组里等于把模型说的话藏起来。
  *
  * 上下文压缩失败/摘要、后台通知这些 TOOL 消息各有专用渲染分支（见 [AgentMessageItem] 的早退），
  * 混进分组会被当成普通工具行，故一并排除；普通消息（用户/最终答复）天然打断分组。
@@ -210,7 +209,6 @@ private val ToolGroupMemberPadding = PaddingValues(start = 16.dp)
  */
 private fun AgentUIMessage.isGroupMember(): Boolean {
     if (attachments.isNotEmpty()) return false
-    if (isToolPreface) return true
     return role == MessageRole.TOOL && !isCompactionFailure && !isContextSummary &&
         !isCompactionMarker && !isBackgroundNotification
 }
@@ -221,11 +219,8 @@ private fun toolGroupKey(first: AgentUIMessage): String = "toolgroup:${first.id}
 /**
  * 分组头要报的「N 次工具调用」里的 N。
  *
- * 数 TOOL 结果行：一条带多个 `tool_calls` 的助手过渡说明会落成多条 TOOL 行，
- * 按过渡说明数会少报。
- *
- * 下限取 1：流式中工具还没开始执行时组内可能只有过渡说明（它只会在真的带着工具调用时才产生），
- * 此时报「0 次工具调用」与事实相反。
+ * 数 TOOL 结果行：一条带多个 `tool_calls` 的助手消息会落成多条 TOOL 行，按消息数会少报。
+ * 组内成员全是 TOOL 结果行（过渡说明不归组，见 [AgentUIMessage.isGroupMember]），count 至少为 1。
  */
 internal fun toolCallCountOf(members: List<AgentUIMessage>): Int =
     members.count { it.role == MessageRole.TOOL }.coerceAtLeast(1)
@@ -288,7 +283,7 @@ private fun messageRenderItems(message: AgentUIMessage): List<ChatRenderItem> {
  *
  * **例外：本轮仍在进行（[turnRunning]）时，最末一个分组自动展开。**
  * 进行中的分组是「当下正在发生的事」，其成员行还在逐条追加。若此刻收起，成员行不再生成，
- * 刚刚流式吐出的过渡说明会连同已有内容一起从屏幕上消失、折叠成一行摘要，看上去就是
+ * 刚刚流式吐出的工具结果行会连同已有内容一起从屏幕上消失、折叠成一行摘要，看上去就是
  * 「字吐出来又被收回去」。回合收工后该分组自然回到默认收起态。
  *
  * **手动选择仍然优先**（与参考实现一致）：[groupOverrides] 里有记录时一律按记录走，
@@ -1274,8 +1269,7 @@ fun AIChatPanel(
                             )
                             if (group != null) {
                                 // 分组头：点一下展开/收起整组工具调用，并复用同一套视口重定位。
-                                // 计数只数 TOOL 结果行：组内还有「带工具调用的助手过渡说明」，
-                                // 它是同一次调用的另一面，算进去会报出比实际多的次数。
+                                // 计数只数 TOOL 结果行（组内成员全是 TOOL 行，过渡说明不归组）。
                                 // 还在跑时由「N 次工具调用」这行文案自己走涟漪高光（见 ToolCallGroupHeader）。
                                 ToolCallGroupHeader(
                                     count = toolCallCountOf(group),

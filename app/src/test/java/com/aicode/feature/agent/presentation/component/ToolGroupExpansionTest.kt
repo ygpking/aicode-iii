@@ -5,6 +5,7 @@ import com.aicode.feature.agent.presentation.AgentUIMessage
 import com.aicode.feature.agent.presentation.MessageRole
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,7 +30,7 @@ class ToolGroupExpansionTest {
     private fun assistant(id: String) =
         AgentUIMessage(id = id, role = MessageRole.ASSISTANT, content = "看一下")
 
-    /** 随工具调用发出的助手过渡说明：界面折成一行、归入同一次工具调用（见 [AgentUIMessage.isToolPreface]）。 */
+    /** 随工具调用发出的助手过渡说明：全文常显、不归入工具分组（见 [AgentUIMessage.isToolPreface]）。 */
     private fun preface(id: String) =
         AgentUIMessage(id = id, role = MessageRole.ASSISTANT, content = "先看一下这个", isToolPreface = true)
 
@@ -53,7 +54,7 @@ class ToolGroupExpansionTest {
     @Test
     fun runningTurn_expandsLastGroup() {
         // 进行中的分组是「当下正在发生的事」：成员行还在逐条追加，此刻收起会把刚流式吐出的
-        // 过渡说明连同已有内容一起藏掉，界面上就是「字吐出来又被收回去」。
+        // 工具结果行藏掉，界面上就是「字吐出来又被收回去」。
         val items = items(listOf(tool("t1"), tool("t2")), turnRunning = true)
         assertTrue("进行中的分组必须展开", items.first().groupExpanded)
         assertTrue(items.any { it.key == "t1" })
@@ -262,11 +263,11 @@ class ToolGroupExpansionTest {
         assertFalse(isExpandedGroupMember(items, -1, isToolRow = true))
     }
 
-    // ---- 过渡说明归入工具分组 ----
+    // ---- 过渡说明不归入工具分组 ----
 
     @Test
-    fun prefaceAndItsTools_foldIntoOneGroup() {
-        // 实测形态：助手说一句（带 tool_calls），工具执行完落一条结果行。
+    fun preface_isTopLevel_whileToolsStillGrouped() {
+        // 过渡说明作为顶层 item 全文常显，不再折进收起的分组；工具结果行仍按连续批次折成一组。
         val messages = listOf(
             preface("p1"),
             tool("t1"),
@@ -275,36 +276,41 @@ class ToolGroupExpansionTest {
         )
         val items = items(messages)
 
-        assertEquals("过渡说明与工具行应折成一组", 1, items.size)
-        assertEquals("toolgroup:p1", items.first().key)
-        assertEquals(4, items.first().toolGroup?.size)
+        assertEquals(4, items.size)
+        assertEquals("p1", items[0].key)
+        assertNull(items[0].toolGroup)
+        assertEquals("toolgroup:t1", items[1].key)
+        assertEquals("p2", items[2].key)
+        assertEquals("toolgroup:t2", items[3].key)
     }
 
     @Test
-    fun groupCount_countsToolRowsNotPreface() {
-        val messages = listOf(preface("p1"), tool("t1"), preface("p2"), tool("t2"), tool("t3"))
-        val members = items(messages).first().toolGroup!!
+    fun groupCount_countsToolRows() {
+        // 组内成员全是 TOOL 结果行，N 就是真实的工具调用次数。
+        val members = items(listOf(tool("t1"), tool("t2"), tool("t3"))).first().toolGroup!!
 
-        assertEquals("只数真实的工具结果行，过渡说明不算", 3, toolCallCountOf(members))
+        assertEquals(3, toolCallCountOf(members))
     }
 
     @Test
-    fun groupCount_neverReportsZeroWhilePrefacePending() {
-        // 工具还未开始执行：组内只有过渡说明（它只会在真的带着工具调用时产生）。
-        val members = items(listOf(preface("p1"))).first().toolGroup!!
+    fun prefaceAlone_hasNoGroup() {
+        // 工具还没开始执行、只有过渡说明时：不成组，过渡说明是顶层 item 全文常显。
+        val items = items(listOf(preface("p1")))
 
-        assertEquals("不得报「 0 次工具调用」", 1, toolCallCountOf(members))
+        assertEquals(1, items.size)
+        assertNull(items.first().toolGroup)
     }
 
     @Test
-    fun expandedGroup_indentsItsPrefaceToo() {
-        val messages = listOf(preface("p1"), tool("t1"))
-        val items = items(messages, overrides = mapOf("toolgroup:p1" to true))
+    fun preface_isNeverGroupedOrIndented() {
+        // 过渡说明（非成员行）夹在助手消息与工具组之间：回扫遇非成员即停，不得继承前组的缩进。
+        val messages = listOf(assistant("a0"), preface("p1"), tool("t1"))
+        val items = items(messages, overrides = mapOf("toolgroup:t1" to true))
         val prefaceIndex = items.indexOfFirst { it.key == "p1" }
         val toolIndex = items.indexOfFirst { it.key == "t1" }
 
-        assertTrue("前置条件：组应展开", prefaceIndex > 0 && toolIndex > prefaceIndex)
-        assertTrue("成员过渡说明应缩进", isExpandedGroupMember(items, prefaceIndex, isToolRow = true))
-        assertTrue("成员工具行应缩进", isExpandedGroupMember(items, toolIndex, isToolRow = true))
+        assertTrue("前置条件：过渡说明在工具组之前、组已展开", prefaceIndex > 0 && toolIndex > prefaceIndex)
+        assertFalse("过渡说明不是组成员、不缩进", isExpandedGroupMember(items, prefaceIndex, isToolRow = true))
+        assertTrue("工具行是组成员、缩进", isExpandedGroupMember(items, toolIndex, isToolRow = true))
     }
 }
