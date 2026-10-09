@@ -48,6 +48,7 @@ import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.subagent.AgentDefinition
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionForm
+import com.aicode.feature.agent.domain.subagent.AgentDefinitionOrigin
 import com.aicode.feature.agent.domain.subagent.AgentDefinitionScope
 import com.aicode.feature.agent.domain.subagent.AgentSaveError
 import com.aicode.feature.agent.domain.subagent.InjectPart
@@ -79,6 +80,8 @@ internal fun SubAgentEditorScreen(
     saveState: SubAgentSaveState,
     onLoadMetadata: () -> Unit,
     onSave: (AgentDefinitionForm, AgentDefinitionScope) -> Unit,
+    /** 扩展贡献的定义：本体只读，保存走模型覆盖表（写 agents.json，不动扩展目录）。 */
+    onSaveModelOverride: (providerId: String?, model: String?, reasoningEffort: String?, AgentDefinitionScope) -> Unit,
     onSaved: (String) -> Unit,
     onNavigateBack: () -> Unit
 ) {
@@ -120,7 +123,10 @@ internal fun SubAgentEditorScreen(
     BackHandler { onNavigateBack() }
 
     val scope = if (scopeIsGlobal) AgentDefinitionScope.GLOBAL else AgentDefinitionScope.PROJECT
-    val canSave = name.isNotBlank() && prompt.isNotBlank()
+    // 扩展贡献的定义体在扩展目录里，改了会被扩展升级/重装覆盖，故只放行模型相关字段；
+    // 其余字段不展示，保存时写 agents.json 的覆盖表（与目录定义的 frontmatter 同义）。
+    val isExtension = initial?.origin == AgentDefinitionOrigin.EXTENSION
+    val canSave = if (isExtension) true else name.isNotBlank() && prompt.isNotBlank()
 
     Scaffold(
         containerColor = settingsPageBackground(),
@@ -146,24 +152,33 @@ internal fun SubAgentEditorScreen(
                     TextButton(
                         enabled = canSave,
                         onClick = {
-                            onSave(
-                                AgentDefinitionForm(
-                                    name = name.trim(),
-                                    description = description.trim(),
-                                    providerId = providerId.ifBlank { null },
-                                    model = model.ifBlank { null },
-                                    reasoningEffort = effort.ifBlank { null },
-                                    mode = mode.takeIf { it.isNotBlank() }?.let { AgentMode.valueOf(it) },
-                                    allowedTools = allowTools,
-                                    disallowedTools = denyTools,
-                                    inject = injectTokens.mapNotNull { InjectPart.fromToken(it) }.toSet(),
-                                    interactionModes = modeTokens.mapNotNull {
-                                        SubAgentInteractionMode.fromToken(it)
-                                    }.toSet(),
-                                    prompt = prompt.trim()
-                                ),
-                                scope
-                            )
+                            if (isExtension) {
+                                onSaveModelOverride(
+                                    providerId.ifBlank { null },
+                                    model.ifBlank { null },
+                                    effort.ifBlank { null },
+                                    scope
+                                )
+                            } else {
+                                onSave(
+                                    AgentDefinitionForm(
+                                        name = name.trim(),
+                                        description = description.trim(),
+                                        providerId = providerId.ifBlank { null },
+                                        model = model.ifBlank { null },
+                                        reasoningEffort = effort.ifBlank { null },
+                                        mode = mode.takeIf { it.isNotBlank() }?.let { AgentMode.valueOf(it) },
+                                        allowedTools = allowTools,
+                                        disallowedTools = denyTools,
+                                        inject = injectTokens.mapNotNull { InjectPart.fromToken(it) }.toSet(),
+                                        interactionModes = modeTokens.mapNotNull {
+                                            SubAgentInteractionMode.fromToken(it)
+                                        }.toSet(),
+                                        prompt = prompt.trim()
+                                    ),
+                                    scope
+                                )
+                            }
                         }
                     ) {
                         Text(stringResource(R.string.common_save))
@@ -260,14 +275,17 @@ internal fun SubAgentEditorScreen(
                         )
                     }
                 )
+                if (!isExtension) {
                 SettingsDivider()
                 SettingsRow(
                     title = stringResource(R.string.subagent_editor_mode),
                     onClick = { showModeSheet = true },
                     trailing = { ValueText(mode.ifBlank { stringResource(R.string.subagent_inherit_parent) }) }
                 )
+                }
             }
 
+            if (!isExtension) {
             SettingsGroupHeader(text = stringResource(R.string.subagent_tools))
             SettingsGroup {
                 SettingsRow(
@@ -391,6 +409,7 @@ internal fun SubAgentEditorScreen(
                         .fillMaxWidth()
                         .padding(horizontal = Spacing.lg, vertical = 12.dp)
                 )
+            }
             }
         }
     }

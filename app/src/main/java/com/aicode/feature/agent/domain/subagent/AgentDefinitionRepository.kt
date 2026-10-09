@@ -32,14 +32,56 @@ class AgentDefinitionRepository @Inject constructor(
     /**
      * 全部定义（含来源作用域与承载方式），未过滤禁用，按名称排序。
      * 同作用域内扩展贡献优先于目录定义（与技能/记忆「扩展 > 内置」一致）。
+     * 返回值已应用模型覆盖表（见 [AgentDefinitionConfigRepository.overrides]）。
      */
     fun listAll(): List<AgentDefinitionEntry> =
-        mergeEntries(
-            localSource.listDefinitions().map { it to AgentDefinitionOrigin.DIRECTORY } +
-                extensionDefinitions(globalAgentDirs()).map { it to AgentDefinitionOrigin.EXTENSION },
-            projectSource.listDefinitions().map { it to AgentDefinitionOrigin.DIRECTORY } +
-                extensionDefinitions(projectAgentDirs()).map { it to AgentDefinitionOrigin.EXTENSION }
+        applyOverrides(
+            mergeEntries(
+                localSource.listDefinitions().map { it to AgentDefinitionOrigin.DIRECTORY } +
+                    extensionDefinitions(globalAgentDirs()).map { it to AgentDefinitionOrigin.EXTENSION },
+                projectSource.listDefinitions().map { it to AgentDefinitionOrigin.DIRECTORY } +
+                    extensionDefinitions(projectAgentDirs()).map { it to AgentDefinitionOrigin.EXTENSION }
+            )
         )
+
+    /**
+     * 应用模型覆盖表：扩展贡献的定义本体在扩展目录里不可改（改了升级即丢），
+     * 用户指定的模型存 agents.json，在这里覆盖到内存中的定义摘上，使列表、详情与派发口径一致。
+     */
+    private fun applyOverrides(entries: List<AgentDefinitionEntry>): List<AgentDefinitionEntry> {
+        val overrides = runCatching { configRepository.overrides() }.getOrElse {
+            FileLogger.w(TAG, "读取子代理模型覆盖表失败", it)
+            return entries
+        }
+        if (overrides.isEmpty()) return entries
+        return entries.map { entry ->
+            val override = overrides[NameKey.of(entry.definition.name)] ?: return@map entry
+            entry.copy(
+                definition = entry.definition.copy(
+                    providerId = override.providerId ?: entry.definition.providerId,
+                    model = override.model ?: entry.definition.model,
+                    reasoningEffort = override.reasoningEffort ?: entry.definition.reasoningEffort
+                )
+            )
+        }
+    }
+
+    /** 写入/清除某个子代理的模型覆盖项（扩展定义也能设；三个字段全空即清除）。 */
+    fun setModelOverride(
+        name: String,
+        providerId: String?,
+        model: String?,
+        reasoningEffort: String?,
+        scope: AgentDefinitionScope
+    ) = configRepository.setOverride(
+        name,
+        AgentDefinitionConfigRepository.ModelOverride(
+            providerId = providerId?.trim()?.takeIf { it.isNotEmpty() },
+            model = model?.trim()?.takeIf { it.isNotEmpty() },
+            reasoningEffort = reasoningEffort?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        ),
+        scope
+    )
 
     private fun globalAgentDirs(): List<File> =
         runCatching { extensionRepository.globalAgentDirs() }.getOrElse {

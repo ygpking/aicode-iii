@@ -26,14 +26,17 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import kotlinx.serialization.json.putJsonObject
 
 /**
  * 子代理启停配置持久化，与技能的 `skills.json` 同一套约定，支持全局 + 项目级两级：
  * - 全局：`filesDir/aicode/agents.json`（跨项目、跨升级保留）；
  * - 项目级：`workspacePath/.aicode/agents.json`（随工作区走，可 git 追踪）。
  *
- * 格式 `{"disabled": ["name-a"]}`，只存禁用名单；生效禁用集合 = 全局 + 项目并集。
+ * 格式 `{"disabled": ["name-a"], "overrides": {"name-b": {"provider": "...", "model": "...", "reasoningEffort": "high"}}}`，
+ * 只存禁用名单与覆盖表；生效禁用集合 = 全局 + 项目并集，覆盖表按「项目级 > 全局」逐字段合并。
  * 每次读取都从磁盘加载，外部手工编辑即时生效；名单里已不存在的子代理名在过滤时天然被忽略。
  */
 @Singleton
@@ -98,7 +101,49 @@ class AgentDefinitionConfigRepository @Inject constructor(
         val names = readDisabled(file).mapTo(LinkedHashSet()) { NameKey.of(it) }
         val key = NameKey.of(name)
         if (disabled) names.add(key) else names.remove(key)
-        writeDisabled(file, names)
+        writeConfig(file, names, readOverrides(file))
+    }
+
+    /**
+     * 模型覆盖表：扩展贡献的定义只读（改它得改扩展目录，升级即被覆盖），
+     * 但用户仍需要能单独指定它跑哪个模型——故把这类「显示与派发时要用的模型参数」
+     * 存在 agents.json 里，而不是写回定义文件。
+     *
+     * 键为子代理名（小写），值与定义 frontmatter 同名字段同义；空字段表示不覆盖。
+     * 无论定义来自目录还是扩展都可设置（目录定义另有自己的 frontmatter，覆盖表优先）。
+     */
+    data class ModelOverride(
+        val providerId: String? = null,
+        val model: String? = null,
+        val reasoningEffort: String? = null
+    ) {
+        val isEmpty: Boolean get() = providerId == null && model == null && reasoningEffort == null
+    }
+
+    /** 生效的模型覆盖表：全局打底，项目级逐字段覆盖。 */
+    fun overrides(): Map<String, ModelOverride> {
+        val merged = LinkedHashMap<String, ModelOverride>()
+        listOf(globalFile(), projectFile()).forEach { file ->
+            readOverrides(file).forEach { (name, override) ->
+                val key = NameKey.of(name)
+                val base = merged[key] ?: ModelOverride()
+                merged[key] = ModelOverride(
+                    providerId = override.providerId ?: base.providerId,
+                    model = override.model ?: base.model,
+                    reasoningEffort = override.reasoningEffort ?: base.reasoningEffort
+                )
+            }
+        }
+        return merged.filterValues { !it.isEmpty }
+    }
+
+    /** 写入/清除某个子代理的模型覆盖项（三个字段全空即从表中移除）。 */
+    fun setOverride(name: String, override: ModelOverride, scope: AgentDefinitionScope) {
+        val file = if (scope == AgentDefinitionScope.GLOBAL) globalFile() else projectFile()
+        val key = NameKey.of(name)
+        val updated = readOverrides(file).toMutableMap()
+        if (override.isEmpty) updated.remove(key) else updated[key] = override
+        writeConfig(file, readDisabled(file), updated)
     }
 
     companion object {
@@ -127,6 +172,40 @@ class AgentDefinitionConfigRepository @Inject constructor(
             return PRETTY_JSON.encodeToString(JsonObject.serializer(), root)
         }
 
+        internal fun parseOverrides(raw: String): Map<String, ModelOverride> {
+            val root = runCatching { JSON.parseToJsonElement(raw).jsonObject }.getOrElse {
+                return emptyMap()
+            }
+            val overrides = root["overrides"] as? JsonObject ?: return emptyMap()
+            return overrides.mapNotNull { (name, value) ->
+                val obj = value as? JsonObject ?: return@mapNotNull null
+                val override = ModelOverride(
+                    providerId = obj["provider"]?.let { (it as? JsonPrimitive)?.contentOrNull }?.trim()?.takeIf { it.isNotEmpty() },
+                    model = obj["model"]?.let { (it as? JsonPrimitive)?.contentOrNull }?.trim()?.takeIf { it.isNotEmpty() },
+                    reasoningEffort = obj["reasoningEffort"]?.let { (it as? JsonPrimitive)?.contentOrNull }?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+                )
+                if (override.isEmpty) null else NameKey.of(name) to override
+            }.toMap()
+        }
+
+        internal fun serializeConfig(names: Set<String>, overrides: Map<String, ModelOverride>): String {
+            val root = buildJsonObject {
+                putJsonArray("disabled") { names.sorted().forEach { add(it) } }
+                if (overrides.isNotEmpty()) {
+                    putJsonObject("overrides") {
+                        overrides.entries.sortedBy { it.key }.forEach { (name, override) ->
+                            putJsonObject(name) {
+                                override.providerId?.let { put("provider", it) }
+                                override.model?.let { put("model", it) }
+                                override.reasoningEffort?.let { put("reasoningEffort", it) }
+                            }
+                        }
+                    }
+                }
+            }
+            return PRETTY_JSON.encodeToString(JsonObject.serializer(), root)
+        }
+
         private fun readDisabled(file: File): Set<String> {
             if (!file.isFile) return emptySet()
             return runCatching { parseDisabled(file.readText()) }.getOrElse {
@@ -135,10 +214,18 @@ class AgentDefinitionConfigRepository @Inject constructor(
             }
         }
 
-        private fun writeDisabled(file: File, names: Set<String>) {
+        private fun readOverrides(file: File): Map<String, ModelOverride> {
+            if (!file.isFile) return emptyMap()
+            return runCatching { parseOverrides(file.readText()) }.getOrElse { emptyMap() }
+        }
+
+        private fun writeConfig(file: File, names: Set<String>, overrides: Map<String, ModelOverride>) {
             file.parentFile?.mkdirs()
-            // 落盘单一出口：统一归一为小写（与 skill 侧一致）。
-            val json = serializeDisabled(names.mapTo(LinkedHashSet()) { NameKey.of(it) })
+            // 落盘单一出口：禁用名单统一归一小写（与 skill 侧一致），覆盖表的键同样归一。
+            val json = serializeConfig(
+                names.mapTo(LinkedHashSet()) { NameKey.of(it) },
+                overrides.mapKeys { NameKey.of(it.key) }
+            )
             // 临时文件 + rename 原子落盘，避免写一半崩溃损坏配置
             val tmp = File(file.parentFile, "${file.name}.tmp")
             tmp.writeText(json)
