@@ -621,6 +621,8 @@
     <string name="chat_bg_commands_partial_failed">%1$d 个后台任务结束，%2$d 个失败</string>
     <string name="chat_context_compressed">上下文已压缩</string>
     <string name="chat_compaction_failed">上下文压缩失败</string>
+    <string name="chat_compaction_failed_empty_summary">摘要正文为空或输出被截断，已保留原对话</string>
+    <string name="chat_compaction_failed_head_not_persisted">部分历史尚未落库，本次压缩未生效，已保留原对话</string>
     <string name="chat_compressing_context">正在压缩上下文</string>
     <string name="chat_retrying">正在重试 %1$s/%2$s</string>
     <string name="chat_key_switched">已切换到第 %1$d/%2$d 个 Key</string>
@@ -1110,6 +1112,7 @@
     <string name="subagent_editor_clear">清空</string>
     <string name="subagent_prompt_hint">写清它的角色、工作方式与产出要求</string>
     <string name="subagent_no_models">暂无可用模型。请先在「AI 供应商」中添加并配置模型。</string>
+    <string name="subagent_extension_model_only_hint">此子代理来自扩展，定义本体只读（升级扩展即刷新）。这里设置的模型会单独保存，不受扩展升级影响。</string>
     <string name="subagent_editor_error_invalid_name">名称不合法：不能为空，也不能包含路径分隔符等特殊字符</string>
     <string name="subagent_editor_error_empty_prompt">提示词正文不能为空</string>
     <string name="subagent_editor_error_name_conflict">该作用域下已存在同名子代理</string>
@@ -1224,6 +1227,10 @@
     <string name="provider_model_capabilities">能力</string>
     <string name="provider_model_capability_tools">工具调用</string>
     <string name="provider_model_capability_reasoning">推理能力</string>
+    <string name="reasoning_capability_prefix">云端记录：%1$s</string>
+    <string name="reasoning_capability_efforts">可调等级：%1$s</string>
+    <string name="reasoning_capability_toggle">支持开关思考</string>
+    <string name="reasoning_capability_reasoning">支持推理</string>
     <string name="provider_filter_models_hint">输入模型名称筛选</string>
     <string name="provider_fetch_failed">拉取失败：%1$s</string>
     <string name="provider_no_matching_models">没有匹配的模型</string>
@@ -1411,6 +1418,10 @@
 
     <!-- Compaction Model -->
     <string name="compaction_no_models">暂无可用模型。请在「AI 供应商」中添加并配置模型后再选压缩专用模型。</string>
+    <string name="settings_compaction_reasoning_effort">推理等级</string>
+    <string name="settings_compaction_reasoning_effort_hint">压缩时给模型的思考等级。较低等级可减少思考开销、更快出摘要</string>
+    <string name="compaction_effort_unspecified">不指定</string>
+    <string name="compaction_effort_unspecified_hint">不发送该参数，由服务端决定</string>
     <string name="title_no_models">暂无可用模型。请在「AI 供应商」中添加并配置模型后再选标题总结专用模型。</string>
 
     <!-- Image Generation Model -->

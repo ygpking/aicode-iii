@@ -129,6 +129,16 @@ class ModelMetadataService @Inject constructor(
                 .orEmpty()
 
         /**
+         * reasoning_options 里是否含 `toggle` 项（= 模型声明支持开关思考）。
+         * 实测该字段长期被忽略（只取 effort），导致「能不能开关思考」这个云端信息白丢。
+         */
+        fun parseReasoningToggle(reasoningOptions: JsonElement?): Boolean =
+            reasoningOptions?.takeIf { it !is JsonNull }?.jsonArray
+                ?.mapNotNull { it.jsonObject }
+                ?.any { it["type"]?.jsonPrimitive?.content == "toggle" }
+                ?: false
+
+        /**
          * 解析后的模型目录：[byProvider] 保留目录里的原始 id 大小写；[lowerByProvider] 结构相同但键统一小写
          * （复用同一批 [ModelMetadata] 实例），用于大小写不敏感匹配。
          */
@@ -151,7 +161,8 @@ class ModelMetadataService @Inject constructor(
                         ?.mapNotNull { it.jsonPrimitive.content }
                         .orEmpty()
                     val cost = model["cost"]?.jsonObject
-                    val reasoningOptions = parseReasoningOptions(model["reasoning_options"])
+                    val reasoningOptionsRaw = model["reasoning_options"]
+                    val reasoningOptions = parseReasoningOptions(reasoningOptionsRaw)
                     ModelMetadata(
                         id = model["id"]?.jsonPrimitive?.content ?: "",
                         providerId = providerId,
@@ -168,6 +179,7 @@ class ModelMetadataService @Inject constructor(
                         supportsReasoning = model["reasoning"]?.jsonPrimitive?.booleanOrNull == true,
                         supportsCustomTemperature = model["temperature"]?.jsonPrimitive?.booleanOrNull == true,
                         reasoningEffortOptions = reasoningOptions.takeIf { it.isNotEmpty() },
+                        supportsReasoningToggle = parseReasoningToggle(reasoningOptionsRaw),
                         inputCostUsdPerM = cost?.get("input")?.jsonPrimitive?.doubleOrNull,
                         outputCostUsdPerM = cost?.get("output")?.jsonPrimitive?.doubleOrNull,
                         cacheReadCostUsdPerM = cost?.get("cache_read")?.jsonPrimitive?.doubleOrNull,

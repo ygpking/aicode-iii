@@ -244,6 +244,7 @@ fun SettingsScreen(
     val visionProviderId by viewModel.visionProviderId.collectAsStateWithLifecycle()
     val visionModel by viewModel.visionModel.collectAsStateWithLifecycle()
     val compactionProviderId by viewModel.compactionProviderId.collectAsStateWithLifecycle()
+    val compactionReasoningEffort by viewModel.compactionReasoningEffort.collectAsStateWithLifecycle()
     val compactionModel by viewModel.compactionModel.collectAsStateWithLifecycle()
     val titleProviderId by viewModel.titleProviderId.collectAsStateWithLifecycle()
     val titleModel by viewModel.titleModel.collectAsStateWithLifecycle()
@@ -561,6 +562,11 @@ fun SettingsScreen(
                 saveState = subAgentSaveState,
                 onLoadMetadata = { viewModel.loadAllModelMetadata() },
                 onSave = { form, scope -> viewModel.saveSubAgent(form, scope, editingSubAgent?.name) },
+                onSaveModelOverride = { providerId, model, effort, scope ->
+                    editingSubAgent?.let { entry ->
+                        viewModel.saveSubAgentModelOverride(entry.name, providerId, model, effort, scope)
+                    }
+                },
                 onSaved = { savedName ->
                     viewModel.clearSubAgentSaveState()
                     // 从详情页进来的改完回详情页，但得等新快照到位再展示
@@ -722,7 +728,6 @@ fun SettingsScreen(
                             )
                         }
                         SettingsSection.SubAgentDetail -> selectedSubAgent
-                            ?.takeIf { it.origin == AgentDefinitionOrigin.DIRECTORY }
                             ?.let { entry ->
                             IconButton(onClick = {
                                 editingSubAgent = entry
@@ -815,6 +820,7 @@ fun SettingsScreen(
                     visionModel = visionModel,
                     compactionProviderId = compactionProviderId,
                     compactionModel = compactionModel,
+                    compactionReasoningEffort = compactionReasoningEffort,
                     titleProviderId = titleProviderId,
                     titleModel = titleModel,
                     imageGenProviderId = imageGenProviderId,
@@ -825,6 +831,7 @@ fun SettingsScreen(
                     onClearVisionModel = { viewModel.clearVisionModel() },
                     onSelectCompactionModel = { pid, m -> viewModel.setCompactionModel(pid, m) },
                     onClearCompactionModel = { viewModel.clearCompactionModel() },
+                    onSelectCompactionReasoningEffort = { viewModel.setCompactionReasoningEffort(it) },
                     onSelectTitleModel = { pid, m -> viewModel.setTitleModel(pid, m) },
                     onClearTitleModel = { viewModel.clearTitleModel() },
                     onSelectImageGenModel = { pid, m -> viewModel.setImageGenModel(pid, m) },

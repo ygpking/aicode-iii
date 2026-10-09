@@ -166,6 +166,20 @@ class OpenAIAdapter @Inject constructor(
      * 这里把 "none"/"minimal" 明确跳过（不发该字段，交由服务端默认），"xhigh"/"max" 归一到 high
      * （OpenAI 无更高档），low/medium/high 原样透传。与 Anthropic/Gemini 对齐「不可表达即跳过」的策略。
      */
+    /**
+     * 思考等级 → OpenAI 系请求字段 reasoning_effort。
+     *
+     * 只做「档位→可表达值」的映射，**不碰思考开关**：各个非 OpenAI 厂商的开关字段
+     * （智谱 `thinking`、千问 `enable_thinking`…）格式各异、兼容面不同，统一表示不了，
+     * 硬编到适配器就是一家家打补丁（实测已因此堆了 glm / deepseek 多处特判）。
+     * 故本项目只提供**等级**，不提供「开/关」语义。
+     *
+     * 映射规则（宁可不发，不发非法值——多数服务端对未知/越界档位直接 400）：
+     * - null（未指定）：不发，走服务端默认。
+     * - none/minimal：无对应等级，不发（避免越界）。
+     * - xhigh/max：OpenAI 最高只到 high，归一到 high。
+     * - low/medium/high：原样透传。
+     */
     private fun normalizeReasoningEffort(effort: String?): String? = when (effort) {
         null -> null
         "none", "minimal" -> null

@@ -1329,6 +1329,18 @@ private fun AddModelSheet(
                             checked = supportsReasoning,
                             onCheckedChange = { supportsReasoning = it }
                         )
+                        // 云端元数据已声明该模型的思考能力时读出来展示，用户不必自己猜。
+                        // 仅作提示：手动开关仍可覆盖（元数据未命中/中转站改名时靠手填兜底）。
+                        val reasoningHint = reasoningCapabilityHint(initial)
+                        if (reasoningHint != null) {
+                            SettingsDivider()
+                            Text(
+                                text = reasoningHint,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = Spacing.lg, vertical = 10.dp)
+                            )
+                        }
                     }
                 }
 
@@ -2947,4 +2959,34 @@ private fun ProviderScriptParamsSheet(
             }
         }
     }
+}
+
+/**
+ * 把云端元数据声明的思考能力翻成一行提示文案；无声明时返回 null（不展示）。
+ *
+ * 依据 models.dev 的 `reasoning_options`：
+ * - 带 `effort`：列出可调等级（如「可调等级：low / high / max」）；
+ * - 带 `toggle`：声明支持开关思考；
+ * - 两者都有：都写上；
+ * - 都没有但 `reasoning=true`：只能说明「支持推理」。
+ * 只做提示而不自动改「支持推理」开关：元数据描述的是厂商声明，而用户可能接中转站、
+ * 模型名被改过，自动覆盖会静默改掉用户的实际配置。
+ *
+ * 文案必须走 stringResource（CLAUDE.md：禁止在 .kt 中硬编码中文 UI 文案）。
+ */
+@Composable
+private fun reasoningCapabilityHint(initial: ModelMetadata?): String? {
+    if (initial == null) return null
+    val efforts = initial.reasoningEffortOptions.orEmpty()
+    val parts = buildList {
+        if (efforts.isNotEmpty()) {
+            // 档位本身是 API 原值（low/high/max），原样展示云端声明，不做本地化映射。
+            add(stringResource(R.string.reasoning_capability_efforts, efforts.joinToString(" / ")))
+        }
+        if (initial.supportsReasoningToggle) add(stringResource(R.string.reasoning_capability_toggle))
+        if (isEmpty() && initial.supportsReasoning) add(stringResource(R.string.reasoning_capability_reasoning))
+    }
+    if (parts.isEmpty()) return null
+    // 分隔符用 locale 中性的中点，避免英文 locale 下「…；Thinking can be toggled」混排。
+    return stringResource(R.string.reasoning_capability_prefix, parts.joinToString(" · "))
 }

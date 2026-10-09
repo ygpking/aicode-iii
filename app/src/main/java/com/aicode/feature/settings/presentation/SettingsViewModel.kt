@@ -463,6 +463,10 @@ class SettingsViewModel @Inject constructor(
     private val _compactionModel = MutableStateFlow("")
     val compactionModel: StateFlow<String> = _compactionModel.asStateFlow()
 
+    /** 压缩请求的推理档位（apiValue）；空串 = 不指定（跟随服务端默认）。 */
+    private val _compactionReasoningEffort = MutableStateFlow("")
+    val compactionReasoningEffort: StateFlow<String> = _compactionReasoningEffort.asStateFlow()
+
     /** 标题总结专用模型选择：providerId 为空即「跟随当前聊天模型」。 */
     private val _titleProviderId = MutableStateFlow("")
     val titleProviderId: StateFlow<String> = _titleProviderId.asStateFlow()
@@ -755,6 +759,12 @@ class SettingsViewModel @Inject constructor(
             launch {
                 compactionModelSettingsRepository.modelFlow.collectLatest {
                     _compactionModel.value = it
+                }
+            }
+
+            launch {
+                compactionModelSettingsRepository.reasoningEffortFlow.collectLatest {
+                    _compactionReasoningEffort.value = it
                 }
             }
 
@@ -1373,6 +1383,38 @@ class SettingsViewModel @Inject constructor(
 
     fun clearSubAgentSaveState() {
         _subAgentSaveState.value = SubAgentSaveState.Idle
+    }
+
+    /**
+     * 保存扩展贡献子代理的模型覆盖（写 agents.json，不动扩展目录）：
+     * 扩展定义本体只读，但用户仍需能单独指定它跑哪个模型，故存覆盖表。
+     */
+    fun saveSubAgentModelOverride(
+        name: String,
+        providerId: String?,
+        model: String?,
+        reasoningEffort: String?,
+        scope: AgentDefinitionScope
+    ) {
+        viewModelScope.launch {
+            val error = withContext(Dispatchers.IO) {
+                runCatching {
+                    agentDefinitionRepository.setModelOverride(
+                        name, providerId, model, reasoningEffort, scope
+                    )
+                    null
+                }.getOrElse { e ->
+                    FileLogger.e("SettingsViewModel", "保存子代理模型覆盖失败: $name", e)
+                    AgentSaveError.IO_FAILED
+                }
+            }
+            _subAgentSaveState.value = if (error == null) {
+                SubAgentSaveState.Saved
+            } else {
+                SubAgentSaveState.Failed(error)
+            }
+            if (error == null) refreshSubAgents()
+        }
     }
 
     /** 当前已注册的全部工具名（含 MCP 动态工具），供编辑页勾选工具白名单与黑名单。 */
@@ -2177,6 +2219,13 @@ class SettingsViewModel @Inject constructor(
     fun setCompactionModel(providerId: String, model: String) {
         viewModelScope.launch {
             compactionModelSettingsRepository.setCompactionModel(providerId, model)
+        }
+    }
+
+    /** 设置压缩请求的推理档位（空串 = 不指定）。 */
+    fun setCompactionReasoningEffort(effort: String) {
+        viewModelScope.launch {
+            compactionModelSettingsRepository.setCompactionReasoningEffort(effort)
         }
     }
 

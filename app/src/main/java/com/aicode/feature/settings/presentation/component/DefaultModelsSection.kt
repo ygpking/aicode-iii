@@ -48,12 +48,14 @@ import com.aicode.feature.onboarding.domain.OnboardingStep
 import com.aicode.feature.onboarding.presentation.onboardingTarget
 import com.aicode.feature.settings.data.local.ModelSheetCollapseStore
 import com.aicode.feature.settings.domain.model.AIProviderConfig
+import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.settings.domain.model.ModelMetadata
 import com.aicode.feature.settings.domain.model.modelMetadataKey
 import compose.icons.FeatherIcons
 import compose.icons.feathericons.ArrowDown
 import compose.icons.feathericons.ArrowUp
 import compose.icons.feathericons.Check
+import compose.icons.feathericons.Cpu
 import compose.icons.feathericons.Camera
 import compose.icons.feathericons.Image
 import compose.icons.feathericons.Minimize2
@@ -69,6 +71,7 @@ internal fun DefaultModelsSection(
     visionModel: String,
     compactionProviderId: String,
     compactionModel: String,
+    compactionReasoningEffort: String,
     titleProviderId: String,
     titleModel: String,
     imageGenProviderId: String,
@@ -79,6 +82,7 @@ internal fun DefaultModelsSection(
     onClearVisionModel: () -> Unit,
     onSelectCompactionModel: (providerId: String, model: String) -> Unit,
     onClearCompactionModel: () -> Unit,
+    onSelectCompactionReasoningEffort: (String) -> Unit,
     onSelectTitleModel: (providerId: String, model: String) -> Unit,
     onClearTitleModel: () -> Unit,
     onSelectImageGenModel: (providerId: String, model: String) -> Unit,
@@ -86,6 +90,7 @@ internal fun DefaultModelsSection(
 ) {
     var showVisionSheet by remember { mutableStateOf(false) }
     var showCompactionSheet by remember { mutableStateOf(false) }
+    var showCompactionEffortSheet by remember { mutableStateOf(false) }
     var showTitleSheet by remember { mutableStateOf(false) }
     var showImageGenSheet by remember { mutableStateOf(false) }
 
@@ -108,6 +113,11 @@ internal fun DefaultModelsSection(
     } else {
         titleModel
     }
+
+    // 档位为空串时显示「不指定」，与「不设置该字段、走服务端默认」的语义一致。
+    val compactionEffortValue = compactionReasoningEffort.takeIf { it.isNotBlank() }
+        ?.let { value -> ReasoningEffort.entries.firstOrNull { it.apiValue == value }?.let { stringResource(it.labelRes()) } }
+        ?: stringResource(R.string.compaction_effort_unspecified)
 
     val imageGenValue = if (imageGenProviderId.isBlank() || imageGenModel.isBlank()) {
         stringResource(R.string.settings_image_gen_unconfigured)
@@ -148,6 +158,26 @@ internal fun DefaultModelsSection(
                 trailing = {
                     Text(
                         text = compactionValue,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.End,
+                        modifier = Modifier.weight(2f)
+                    )
+                }
+            )
+            SettingsDivider()
+            // 压缩请求的推理档位：压缩是一次性摘要任务，且思考型模型会把输出预算全烧在推理上
+            // （实测 glm-5.3 花满 48000 token、摘要为空）。这里可单独降档或关闭思考。
+            SettingsRow(
+                icon = FeatherIcons.Cpu,
+                title = stringResource(R.string.settings_compaction_reasoning_effort),
+                subtitle = stringResource(R.string.settings_compaction_reasoning_effort_hint),
+                onClick = { showCompactionEffortSheet = true },
+                trailing = {
+                    Text(
+                        text = compactionEffortValue,
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -231,6 +261,17 @@ internal fun DefaultModelsSection(
                 showCompactionSheet = false
             },
             onDismiss = { showCompactionSheet = false }
+        )
+    }
+
+    if (showCompactionEffortSheet) {
+        CompactionEffortSheet(
+            current = compactionReasoningEffort,
+            onSelect = {
+                onSelectCompactionReasoningEffort(it)
+                showCompactionEffortSheet = false
+            },
+            onDismiss = { showCompactionEffortSheet = false }
         )
     }
 
@@ -530,3 +571,100 @@ private fun formatTokenLimit(tokens: Int): String =
 
 private fun String.trimDecimal(): String =
     replace(Regex("(\\.\\d)\\d+"), "$1").removeSuffix(".0")
+
+/**
+ * 压缩请求的推理档位选择 sheet：首项「不指定」（不发该字段、走服务端默认），
+ * 其余为全部档位。不按模型元数据过滤——压缩模型常是中转站/自定义名，元数据易未命中，
+ * 宁多给选项（适配器会按模型归一到合法值）也不把选项藏掉。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CompactionEffortSheet(
+    current: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    AdaptiveModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = settingsPageBackground()
+    ) {
+        Column(
+            modifier = Modifier
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Spacing.lg)
+                .padding(bottom = Spacing.xl),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            SettingsGroupHeader(text = stringResource(R.string.settings_compaction_reasoning_effort))
+            SettingsGroup {
+                CompactionEffortRow(
+                    title = stringResource(R.string.compaction_effort_unspecified),
+                    subtitle = stringResource(R.string.compaction_effort_unspecified_hint),
+                    selected = current.isBlank(),
+                    onClick = { onSelect("") }
+                )
+                ReasoningEffort.entries.forEach { item ->
+                    SettingsDivider()
+                    CompactionEffortRow(
+                        title = stringResource(item.labelRes()),
+                        subtitle = null,
+                        selected = current == item.apiValue,
+                        onClick = { onSelect(item.apiValue) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 单行：标题 + 可选副标题 + 选中勾。 */
+@Composable
+private fun CompactionEffortRow(
+    title: String,
+    subtitle: String?,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = Spacing.lg, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            subtitle?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        Icon(
+            imageVector = FeatherIcons.Check,
+            contentDescription = null,
+            tint = if (selected) MaterialTheme.colorScheme.primary else Color.Transparent,
+            modifier = Modifier
+                .padding(start = Spacing.sm)
+                .size(18.dp)
+        )
+    }
+}
+
+private fun ReasoningEffort.labelRes(): Int = when (this) {
+    ReasoningEffort.NONE -> R.string.chat_reasoning_effort_none
+    ReasoningEffort.MINIMAL -> R.string.chat_reasoning_effort_minimal
+    ReasoningEffort.LOW -> R.string.chat_reasoning_effort_low
+    ReasoningEffort.MEDIUM -> R.string.chat_reasoning_effort_medium
+    ReasoningEffort.HIGH -> R.string.chat_reasoning_effort_high
+    ReasoningEffort.XHIGH -> R.string.chat_reasoning_effort_xhigh
+    ReasoningEffort.MAX -> R.string.chat_reasoning_effort_max
+}

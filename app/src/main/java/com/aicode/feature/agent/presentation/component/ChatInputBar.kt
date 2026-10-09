@@ -496,13 +496,17 @@ internal fun ChatInputBar(
                             )
                         }
 
-                        // 元数据未命中时（如中转站改了模型名）退回全部档位由用户自选：
-                        // 这类模型可能强制开启推理，隐藏按钮会导致无法调档。
-                        val availableEfforts = remember(activeProvider, modelMetadata) {
-                            activeProvider?.let { provider ->
-                                modelMetadata[modelMetadataKey(provider.id, provider.effectiveModel)]?.reasoningEffortOptions
-                                    ?.let { ReasoningEffort.fromValues(it) }
-                            }.orEmpty().ifEmpty { ReasoningEffort.entries }
+                        // 档位来源：优先用云端元数据（models.dev 的 reasoning_options）声明的档位，
+                        // 命中则**严格按它**——多给档位会让用户选到服务端不接受的等级（如 glm-5.3-flash
+                        // 目录里只有 low/high/max，选 medium 会被上游拒）。
+                        // 仅当元数据未命中（如中转站改了模型名）才退回全部档位：这类模型可能强制开启推理，
+                        // 隐藏按钮会导致无法调档。
+                        val metaEfforts = activeProvider?.let { provider ->
+                            modelMetadata[modelMetadataKey(provider.id, provider.effectiveModel)]?.reasoningEffortOptions
+                                ?.let { ReasoningEffort.fromValues(it) }
+                        }.orEmpty()
+                        val availableEfforts = remember(metaEfforts) {
+                            metaEfforts.ifEmpty { ReasoningEffort.entries }
                         }
                         ReasoningEffortSelector(
                             effort = reasoningEffort,

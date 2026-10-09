@@ -621,6 +621,8 @@
     <string name="chat_bg_commands_partial_failed">%1$d background tasks finished, %2$d failed</string>
     <string name="chat_context_compressed">Context compressed</string>
     <string name="chat_compaction_failed">Context compaction failed</string>
+    <string name="chat_compaction_failed_empty_summary">The summary was empty or truncated; the original conversation was kept</string>
+    <string name="chat_compaction_failed_head_not_persisted">Some history was not persisted yet, so compaction did not take effect; the original conversation was kept</string>
     <string name="chat_compressing_context">Compressing context</string>
     <string name="chat_retrying">Retrying %1$s/%2$s</string>
     <string name="chat_key_switched">Switched to key %1$d of %2$d</string>
@@ -1109,6 +1111,7 @@
     <string name="subagent_editor_clear">Clear</string>
     <string name="subagent_prompt_hint">Describe its role, how it should work and what to deliver</string>
     <string name="subagent_no_models">No models available. Add and configure a model under AI Vendors first.</string>
+    <string name="subagent_extension_model_only_hint">This subagent comes from an extension, so its definition is read-only (updating the extension refreshes it). The model set here is stored separately and survives extension updates.</string>
     <string name="subagent_editor_error_invalid_name">Invalid name: it cannot be empty or contain path separators and other special characters</string>
     <string name="subagent_editor_error_empty_prompt">The agent prompt cannot be empty</string>
     <string name="subagent_editor_error_name_conflict">A subagent with this name already exists in this scope</string>
@@ -1223,6 +1226,10 @@
     <string name="provider_model_capabilities">Capabilities</string>
     <string name="provider_model_capability_tools">Tool Calling</string>
     <string name="provider_model_capability_reasoning">Reasoning</string>
+    <string name="reasoning_capability_prefix">Model catalog: %1$s</string>
+    <string name="reasoning_capability_efforts">Effort levels: %1$s</string>
+    <string name="reasoning_capability_toggle">Thinking can be toggled</string>
+    <string name="reasoning_capability_reasoning">Supports reasoning</string>
     <string name="provider_filter_models_hint">Filter models by name</string>
     <string name="provider_fetch_failed">Fetch failed: %1$s</string>
     <string name="provider_no_matching_models">No matching models</string>
@@ -1411,6 +1418,10 @@
 
     <!-- Compaction Model -->
     <string name="compaction_no_models">No models available. Please add and configure a model in "AI Vendors" before selecting a dedicated compaction model.</string>
+    <string name="settings_compaction_reasoning_effort">Reasoning Level</string>
+    <string name="settings_compaction_reasoning_effort_hint">Thinking level for compaction. A lower level cuts thinking overhead and speeds up the summary</string>
+    <string name="compaction_effort_unspecified">Unspecified</string>
+    <string name="compaction_effort_unspecified_hint">Send no parameter and let the server decide</string>
     <string name="title_no_models">No models available. Please add and configure a model in "AI Vendors" before selecting a dedicated title model.</string>
 
     <!-- Image Generation Model -->

@@ -24,6 +24,17 @@ data class ModelMetadata(
     val source: Source = Source.INFERRED,
     /** models.dev 思考强度档位（reasoning_options 中 effort 类型的 values，如 ["low","medium","high"]）；null/空 = 无档位（不显示思考强度选择）。 */
     val reasoningEffortOptions: List<String>? = null,
+    /**
+     * models.dev `reasoning_options` 里的 `toggle` 项：该模型声明支持**开关思考**（而非只能调档位）。
+     * 实测目录里三种形态：
+     * - `[effort]`：只能调档位（如 gpt-5.4、glm-5.3-flash）；
+     * - `[toggle]`：只能开关、无档位（如 glm-5.1、qwq-plus）；
+     * - `[toggle, effort]`：两者都支持（如 deepseek-v4-pro、qwen3.5-flash）。
+     * 注意：这是「服务端列出该项」的事实，**不等于保证能关**（如 glm-5.3 系强制思考，
+     * 目录里仍带 toggle）。故本项目只用它来判断「该不该给这个模型展示档位/开关提示」，
+     * 不据此单方面发送关闭字段。
+     */
+    val supportsReasoningToggle: Boolean = false,
     /** models.dev cost：输入单价（USD/1M tokens）。 */
     val inputCostUsdPerM: Double? = null,
     /** models.dev cost：输出单价（USD/1M tokens）。 */
@@ -71,6 +82,8 @@ fun mergeModelMetadata(
         supportsImageOutput = c.supportsImageOutput,
         supportsTools = c.supportsTools,
         supportsReasoning = c.supportsReasoning,
+        supportsReasoningToggle = c.supportsReasoningToggle,
+        reasoningEffortOptions = c.reasoningEffortOptions ?: a.reasoningEffortOptions,
         contextTokens = c.contextTokens.takeIf { it > 0 } ?: a.contextTokens,
         inputTokens = c.inputTokens ?: a.inputTokens,
         outputTokens = c.outputTokens ?: a.outputTokens,
