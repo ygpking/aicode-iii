@@ -373,11 +373,40 @@ private const val TYPEWRITER_DRAIN_MAX_RATE = 400f
 /** 收尾硬上限（ms）：极端情况（文本被整体替换、渲染跟不上）也必须在这之内追平。 */
 private const val TYPEWRITER_DRAIN_HARD_MS = 600L
 
+/**
+ * 超过该字符数即停用打字机逐帧动画，直接显示全文。
+ *
+ * 逐帧推进时每帧都要截出「当前显示进度」的快照串，而该串随文本线性增长、每帧都超过
+ * ART 的大对象阈值（12KB）→ 每个快照都落进 Large Object Space，文本越长分配越猛。
+ * 实测 6.1 万字的思考链 ≈ 每帧 109KB、4.3MB/秒持续分配，设备 logcat 可见该进程
+ * 常驻 13~36MB 的 LOS 对象、每 2~3 秒回收 65~97MB，主线程被 GC 停顿卡住
+ * （同期的 jank 记录：单帧最长 1056ms，另一段连续 16 次 400~580ms）。
+ * 但这么多字的逐字滚动本来就没人读得完，动画纯属白烧内存——直接显示即可。
+ */
+private const val TYPEWRITER_MAX_ANIMATED_CHARS = 20_000
+
 /** 上游吐字速率估算的滑动窗口时长（ms）。 */
 private const val TYPEWRITER_RATE_WINDOW_MS = 500L
 
 /** 打字机渲染节流间隔（ms）：~40fps 高频平滑快照，彻底消除低速模型的顿挫感。 */
 private const val TYPEWRITER_RENDER_INTERVAL_MS = 24L
+
+/**
+ * 按码点数量截取字符串的尾部，避免把 emoji 等代理对切成孤立的半个字符。
+ * 与 [truncateToCodePoints] 对称（那个取头，这个取尾）。
+ */
+private fun takeLastCodePoints(text: String, codePoints: Int): String {
+    if (codePoints <= 0) return ""
+    val total = text.codePointCount(0, text.length)
+    if (codePoints >= total) return text
+    var index = text.length
+    var count = 0
+    while (index > 0 && count < codePoints) {
+        index -= Character.charCount(Character.codePointBefore(text, index))
+        count++
+    }
+    return text.substring(index)
+}
 
 /** 按码点数量截断字符串，避免把 emoji 等代理对截成孤立的半个字符。 */
 private fun truncateToCodePoints(text: String, codePoints: Int): String {
@@ -504,6 +533,15 @@ internal fun rememberTypewriterStreamingText(
     }
 
     LaunchedEffect(text, active, sessionKey) {
+        // 超长文本直接补全显示、不进逐帧循环（理由见 TYPEWRITER_MAX_ANIMATED_CHARS）。
+        // 这里同步维护 lastText/lastSessionKey：文本后续变短（换会话/换轮）回到下面原逻辑时，
+        // 「是否延续」的判定才拿得到正确的前值。
+        if (text.length > TYPEWRITER_MAX_ANIMATED_CHARS) {
+            lastSessionKey = sessionKey
+            lastText = text
+            if (renderText != text) commitRender(text)
+            return@LaunchedEffect
+        }
         // 文本不是当前进度的延续（换会话 / 新一轮 / 重试）：补全到当前全文，再跟着后续 delta 打字。
         // 不能归零重打——切到另一个正在输出的会话时，它已产出的几百字会当着用户的面再来一遍。
         // 换会话必须单独判：currentSessionId 与 streamingText 未必同一帧到达，只靠前缀判定
@@ -656,6 +694,10 @@ internal fun reasoningPreviewLine(raw: String, live: Boolean): String {
 /** 折叠行预览两端要剥掉的字符：空白 + Markdown 记号（标题 `#`、列表 `-` `+` `*`、引用 `>`、加粗与行内代码的 `*` `` ` ``）。 */
 private val REASONING_PREVIEW_MARKERS = charArrayOf(' ', '\t', '#', '*', '-', '>', '`', '+')
 
+/** 思考链展开渲染的长度上限与保留的尾部长度（码点）。 */
+private const val REASONING_EXPANDED_MAX_CHARS = 20_000
+private const val REASONING_EXPANDED_TAIL_CHARS = 6_000
+
 /**
  * 思考过程折叠行：左对齐、浅色弱化，与正式回复区分。**默认收起**，点这一行随时展开/收起。
  *
@@ -700,6 +742,15 @@ internal fun ReasoningBubble(
     }
     // 展开渲染用节流文本（流式思考时降低 md 解析频率）；preRendered 时外部已按打字机节奏给出渲染文本。
     val renderText = if (preRendered) text else rememberThrottledStreamingText(text)
+    // 展开态限长：超长思考链只渲染尾部一块，避免整串交给 Markdown 解析后全量排版。
+    // 与 [TYPEWRITER_MAX_ANIMATED_CHARS] 同一理由——超长内容每帧解析 + 逐行测量是主线程大开销，
+    // 而尾巴才是刚发生、用户真正想看的部分。
+    val expandedOverLimit = renderText.length > REASONING_EXPANDED_MAX_CHARS
+    val expandedText = if (expandedOverLimit) {
+        takeLastCodePoints(renderText, REASONING_EXPANDED_TAIL_CHARS)
+    } else {
+        renderText
+    }
     // 折叠行预览直接用实时文本：节流后的文本会让「快速滚动」慢半拍
     val previewLine = reasoningPreviewLine(text, live)
     // 过程块：与过渡说明共用 chatMutedPanel 浅底，弱化呈现；
@@ -758,8 +809,19 @@ internal fun ReasoningBubble(
                 }
                 if (expanded) {
                     Spacer(Modifier.height(Spacing.sm))
+                    if (expandedOverLimit) {
+                        Text(
+                            text = stringResource(
+                                R.string.chat_reasoning_truncated,
+                                renderText.length - expandedText.length
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(Modifier.height(Spacing.xs))
+                    }
                     MarkdownContent(
-                        text = renderText,
+                        text = expandedText,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         cache = cache,
                         compact = true,

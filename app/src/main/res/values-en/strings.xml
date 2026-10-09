@@ -650,6 +650,7 @@
     <string name="retry_error_unknown">Network error</string>
     <string name="retry_error_with_code">%1$s (%2$d)</string>
     <string name="chat_thinking_process">Thinking process</string>
+    <string name="chat_reasoning_truncated">Thinking is too long — showing the tail only (%1$d characters omitted)</string>
 
     <!-- Container Settings -->
     <string name="container_reset">Reset</string>
