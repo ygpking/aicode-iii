@@ -102,4 +102,35 @@ class SubAgentWriteLeaseTest {
         assertNull(lease.pathsFor("s1"))
         assertEquals(0, lease.findConflict(listOf("a.kt")).size)
     }
+
+    @Test
+    fun tildeDeclarationMatchesContainerAbsolutePath() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        // 声明用 ~/ 形式，目标用容器绝对路径（子代理复用 readFile 返回路径的场景）
+        lease.acquire("s1", listOf("~/workspace/app"))
+        assertTrue(lease.isWithinLease("s1", "/root/workspace/app/AgentTool.kt"))
+        assertTrue(lease.isWithinLease("s1", "/root/workspace/app"))
+        assertFalse(lease.isWithinLease("s1", "/root/workspace/other/File.kt"))
+    }
+
+    @Test
+    fun absoluteDeclarationMatchesTildePath() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        // 反向：声明容器绝对路径，目标用 ~/ 形式
+        lease.acquire("s1", listOf("/root/workspace/app"))
+        assertTrue(lease.isWithinLease("s1", "~/workspace/app/File.kt"))
+        assertFalse(lease.isWithinLease("s1", "~/workspace/other/File.kt"))
+    }
+
+    @Test
+    fun tildeConflictIsDetectedAcrossForms() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        lease.acquire("s1", listOf("~/workspace/app"))
+        // 另一子代理声明绝对路径，两形式应视为同一目录而判冲突
+        assertTrue(lease.findConflict(listOf("/root/workspace/app/a.kt")).contains("s1"))
+        assertTrue(lease.findConflict(listOf("~/workspace/app")).contains("s1"))
+    }
 }

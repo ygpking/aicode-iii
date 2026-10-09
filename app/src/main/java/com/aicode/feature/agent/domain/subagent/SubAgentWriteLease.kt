@@ -27,6 +27,8 @@ class SubAgentWriteLease @Inject constructor(
         const val TAG = "SubAgentWriteLease"
         /** 整工作区租约：声明该值时独占整个工作区，与任何其它写租约冲突。 */
         val WHOLE_WORKSPACE = setOf("*", ".", "")
+        /** 容器内 `~` 恒为 /root（proot 根里的家目录）。 */
+        const val CONTAINER_HOME = "/root"
     }
 
     /** 子代理会话 id → 其声明的写路径（原样保存，比较时归一化）。 */
@@ -116,11 +118,20 @@ class SubAgentWriteLease @Inject constructor(
     /**
      * 按段消解 `.` 与 `..`，去掉尾部斜杠，让「同一路径的不同写法」得到同一结果。
      * 纯字符串处理、不访问文件系统，故无法覆盖运行期才可知的路径（如含变量展开的路径）。
+     *
+     * 先展开 `~` 再归一化：子代理的 readFile/editFile 返回路径是容器绝对路径（/root/...），
+     * 而 write_paths 声明多为 `~/...`——若不展开，`~/workspace/app` 与 `/root/workspace/app`
+     * 会被视为不同路径，导致声明正确仍 WRITE_LEASE_DENIED（已实测三连）。
      */
     private fun normalizeWritePath(raw: String): String {
-        val absolute = raw.startsWith("/")
+        val expanded = when {
+            raw == "~" -> CONTAINER_HOME
+            raw.startsWith("~/") -> CONTAINER_HOME + raw.substring(1)
+            else -> raw
+        }
+        val absolute = expanded.startsWith("/")
         val parts = ArrayDeque<String>()
-        for (segment in raw.split('/')) {
+        for (segment in expanded.split('/')) {
             when (segment) {
                 "", "." -> Unit
                 ".." -> if (parts.isNotEmpty() && parts.last() != "..") parts.removeLast() else if (!absolute) parts.addLast("..")
