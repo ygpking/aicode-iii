@@ -1085,6 +1085,10 @@ class AIAgentViewModel @Inject constructor(
         }
         // 子代理运行中不允许重复启动（同一会话已有活跃 job）
         if (sessionJobs[event.subSessionId]?.isActive == true) return
+        // 多实例并存：MainActivity 可存两个实例，各自订阅同一总线、各自收到同一份 SPAWNED。
+        // 只有抢占到流归属的实例启动工作流，另一个直接跳过，避免子代理被重复启动、双流并发。
+        if (subAgentEventBus.isFlowOwnedElsewhere(event.subSessionId, this)) return
+        if (!subAgentEventBus.tryAcquireFlow(event.subSessionId, this)) return
 
         executeAgentRequestStream(
             request = event.detail,
@@ -1220,10 +1224,19 @@ class AIAgentViewModel @Inject constructor(
      * 避免各处重复判断忙碌/空闲。
      */
     private fun deliverSystemEvent(sessionId: String, item: PendingNotification) {
-        if (sessionJobs[sessionId]?.isActive == true) {
+        // 本实例持有该会话流（含刚抢占到归属、流即将启动的窗口）：入队，由本轮搭车送达。
+        // 归属性判断必须先于 sessionJobs：多实例下本实例可能未持有流但别处在跑，
+        // 单看 sessionJobs 会误判「空闲」而重复触发新流（同一会话双流并发）。
+        if (subAgentEventBus.isFlowOwnedBy(sessionId, this) ||
+            sessionJobs[sessionId]?.isActive == true
+        ) {
             agentNotificationCenter.enqueue(sessionId, item)
             return
         }
+        // 流在其他实例上跑：由持有者搭车，本实例不重复触发。
+        if (subAgentEventBus.isFlowOwnedElsewhere(sessionId, this)) return
+        // 无人持有：抢占归属后触发新流；抢不到说明其他实例刚抢到，本实例跳过。
+        if (!subAgentEventBus.tryAcquireFlow(sessionId, this)) return
         viewModelScope.launch {
             enqueueAgentRequest(
                 request = AgentNotificationFormatter.buildMessage(listOf(item)),
@@ -1376,6 +1389,10 @@ class AIAgentViewModel @Inject constructor(
         if (request.startsWith("/")) {
             slashCommandRegistry.resolve(request)?.let { command ->
                 runResolvedCommand(command, request, sessionId)
+                // 归属对称性：命令分流不抢归属，但调用方（如 spawnSubAgentWorkflow）可能已抢先取得；
+                // 命令启动完成后此处必须释放，否则子会话归属永久滞留（后续事件在本实例永久入队、别处永久跳过）；
+                // 用户消息路径此时未抢归属，releaseFlow 是幂等空操作。
+                subAgentEventBus.releaseFlow(sessionId, this)
                 return@launch
             }
         }
@@ -1387,6 +1404,30 @@ class AIAgentViewModel @Inject constructor(
             if (defaultProviderId != null && defaultModel != null) {
                 sessionUseCase.updateProviderModel(sessionId, defaultProviderId, defaultModel)
             }
+        }
+
+        // 多实例归属：所有 agent 流（用户消息、事件触发、子代理启动、队列消费）统一登记
+        // 「会话 → 持有流实例」。本实例已持有（spawnSubAgentWorkflow / deliverSystemEvent
+        // 抢到归属后进入本方法）视为成功；别处持有则不重复启动，把请求挂回队列等待
+        // 后续流结束时消费（不丢用户消息）。finally 中对称 releaseFlow。
+        if (!subAgentEventBus.isFlowOwnedBy(sessionId, this) &&
+            !subAgentEventBus.tryAcquireFlow(sessionId, this)
+        ) {
+            val req = QueuedRequest(
+                id = UUID.randomUUID().toString(),
+                request = request,
+                modelRequest = modelRequest,
+                currentFile = currentFile,
+                selectedCode = selectedCode,
+                projectRoot = projectRoot,
+                inputImages = inputImages,
+                inputAttachments = inputAttachments,
+                isAutoTrigger = isAutoTrigger
+            )
+            val currentList = _queuedRequests.value[sessionId] ?: emptyList()
+            _queuedRequests.value = _queuedRequests.value + (sessionId to (currentList + req))
+            FileLogger.w(TAG, "stream reject: sid=$sessionId 流已在其他实例运行，请求已排队等待")
+            return@launch
         }
 
         coroutineContext[Job]?.let { sessionJobs[sessionId] = it }
@@ -1731,6 +1772,9 @@ class AIAgentViewModel @Inject constructor(
             EventTrace.endTurn(turnId, sessionId, "finished state=${_agentStates.value[sessionId]}")
             // 子代理本轮结束：归还活跃名额（幂等，正常路径已被 COMPLETED/FAILED 归还）。
             subAgentRunId?.let { subAgentEventBus.release(it) }
+            // 多实例归属：对称释放 executeAgentRequestStream 开头（1402 附近）获取的流归属。
+            // 幂等：非本人持有的不动；命令分流等未抢过归属的路径执行到此是无害空操作。
+            subAgentEventBus.releaseFlow(sessionId, this)
             if (isOwnJob) {
                 sessionJobs.remove(sessionId)
             }

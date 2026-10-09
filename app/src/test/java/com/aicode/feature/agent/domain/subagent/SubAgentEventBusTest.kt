@@ -127,4 +127,60 @@ class SubAgentEventBusTest {
         assertTrue(bus.release("sub-1"))
         assertEquals(emptySet<String>(), bus.activeSubSessionIds.value)
     }
+
+    // —— 会话流归属（多实例去重）——
+    // 双 AIAgentViewModel 实例各收到同一份事件时，必须只有一个实例能启动/触发会话流。
+
+    private fun flowOwnerPair() = Pair(Any(), Any())
+
+    @Test
+    fun tryAcquireFlow_firstOwnerWins_secondRejected() {
+        val bus = SubAgentEventBus()
+        val (vmA, vmB) = flowOwnerPair()
+
+        assertTrue(bus.tryAcquireFlow("sub-1", vmA))
+        assertFalse("已被 vmA 持有，vmB 抢占应失败", bus.tryAcquireFlow("sub-1", vmB))
+        assertFalse("同 owner 重复抢占也应失败", bus.tryAcquireFlow("sub-1", vmA))
+    }
+
+    @Test
+    fun flowOwnership_ownerLookup() {
+        val bus = SubAgentEventBus()
+        val (vmA, vmB) = flowOwnerPair()
+        bus.tryAcquireFlow("sub-1", vmA)
+
+        assertTrue(bus.isFlowOwnedBy("sub-1", vmA))
+        assertTrue(bus.isFlowOwnedElsewhere("sub-1", vmB))
+        assertFalse(bus.isFlowOwnedElsewhere("sub-1", vmA))
+        assertFalse("无主会话：本人未持有、他人也未持有", bus.isFlowOwnedBy("sub-2", vmA))
+        assertFalse(bus.isFlowOwnedElsewhere("sub-2", vmA))
+    }
+
+    @Test
+    fun releaseFlow_onlyFreesOwnOwnership() {
+        val bus = SubAgentEventBus()
+        val (vmA, vmB) = flowOwnerPair()
+        bus.tryAcquireFlow("sub-1", vmA)
+
+        bus.releaseFlow("sub-1", vmB)
+        assertTrue("异 owner 释放不应生效", bus.isFlowOwnedBy("sub-1", vmA))
+
+        bus.releaseFlow("sub-1", vmA)
+        assertFalse(bus.isFlowOwnedBy("sub-1", vmA))
+        assertTrue("释放后他人可抢占", bus.tryAcquireFlow("sub-1", vmB))
+    }
+
+    /** 双实例核心场景：SPAWNED 被两份订阅各收到一次，只有一个实例能启动子会话流。 */
+    @Test
+    fun concurrentAcquire_singleWinner() {
+        val bus = SubAgentEventBus()
+        val (vmA, vmB) = flowOwnerPair()
+
+        val aWon = bus.tryAcquireFlow("sub-1", vmA)
+        val bWon = bus.tryAcquireFlow("sub-1", vmB)
+
+        assertTrue("先到者应获胜", aWon)
+        assertFalse("后到者应被拒", bWon)
+        assertTrue("后到者视角：流在别处", bus.isFlowOwnedElsewhere("sub-1", vmB))
+    }
 }

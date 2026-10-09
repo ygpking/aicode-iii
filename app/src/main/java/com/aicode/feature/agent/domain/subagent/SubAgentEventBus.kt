@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.subagent
 
 import com.aicode.core.util.FileLogger
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -61,6 +62,39 @@ class SubAgentEventBus @Inject constructor() {
 
     /** 是否已达并发上限。 */
     val isFull: Boolean get() = activeCount >= MAX_RUNNING
+
+    // —— 会话流归属（多实例去重）——
+    // MainActivity 为 standard 模式，可并存多个 Activity 实例；每个实例有独立的
+    // AIAgentViewModel，各自订阅同一事件总线，同一事件会被每份订阅各处理一次。
+    // 为避免「同一事件被多份状态各自处理」导致同一会话双流并发（子代理重复启动、
+    // 通知重复触发），这里维护「会话 → 持有其活跃流的 VM 实例」映射：处理事件前先看归属，
+    // 持有者搭车入队、别处持有则跳过、无主时抢占成功者才触发新流。
+    // owner 用 VM 实例引用（引用相等判定），release 只释放自己持有的归属。
+    private val flowOwners = ConcurrentHashMap<String, Any>()
+
+    /**
+     * 认领会话流归属；此前无主则成功并返回 true，已被（本实例或其他实例）持有则返回 false。
+     * 并发安全：putIfAbsent 原子，多个实例同时抢同一会话时只有一个成功。
+     */
+    fun tryAcquireFlow(sessionId: String, owner: Any): Boolean =
+        flowOwners.putIfAbsent(sessionId, owner) == null
+
+    /** 释放本实例持有的会话流归属（幂等：非本人持有则不动，不影响他人持有的归属）。 */
+    fun releaseFlow(sessionId: String, owner: Any) {
+        flowOwners.remove(sessionId, owner)
+    }
+
+    /** 该会话流是否由 [owner] 本人持有。 */
+    fun isFlowOwnedBy(sessionId: String, owner: Any): Boolean {
+        val current = flowOwners[sessionId] ?: return false
+        return current === owner
+    }
+
+    /** 该会话流是否已被其他实例持有（本实例不持有但别处在跑）。 */
+    fun isFlowOwnedElsewhere(sessionId: String, owner: Any): Boolean {
+        val current = flowOwners[sessionId] ?: return false
+        return current !== owner
+    }
 
     /**
      * 直接把某个子代理移出活跃集合，不广播事件；返回它此前是否处于活跃状态。
