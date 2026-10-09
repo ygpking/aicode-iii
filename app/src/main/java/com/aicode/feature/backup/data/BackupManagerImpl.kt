@@ -350,6 +350,7 @@ class BackupManagerImpl @Inject constructor(
         sendFileMaxSizeMb = if (options.appSettings) generalSettingsRepository.sendFileMaxSizeMbSnapshot() else 100,
         turnTotalLlmRounds = if (options.appSettings) generalSettingsRepository.turnTotalLlmRoundsSnapshot() else 50,
         deleteExternalWorkspaceSessions = if (options.appSettings) generalSettingsRepository.deleteExternalWorkspaceSessionsSnapshot() else false,
+        evidenceGuardEnabled = if (options.appSettings) generalSettingsRepository.evidenceGuardEnabledSnapshot() else true,
         logLevel = if (options.appSettings) logSettingsRepository.snapshot() else null,
         visionProviderId = if (options.appSettings) visionModelSettingsRepository.getVisionProviderId() else "",
         visionModel = if (options.appSettings) visionModelSettingsRepository.getVisionModel() else "",
@@ -655,6 +656,7 @@ class BackupManagerImpl @Inject constructor(
         generalSettingsRepository.restoreSendFileMaxSizeMb(meta.sendFileMaxSizeMb)
         generalSettingsRepository.restoreTurnTotalLlmRounds(meta.turnTotalLlmRounds)
         generalSettingsRepository.restoreDeleteExternalWorkspaceSessions(meta.deleteExternalWorkspaceSessions)
+        generalSettingsRepository.restoreEvidenceGuardEnabled(meta.evidenceGuardEnabled)
         logSettingsRepository.restore(meta.logLevel)
         if (meta.visionProviderId.isNotBlank() || meta.visionModel.isNotBlank()) {
             visionModelSettingsRepository.setVisionModel(meta.visionProviderId, meta.visionModel)

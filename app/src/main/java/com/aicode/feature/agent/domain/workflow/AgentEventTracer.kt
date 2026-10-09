@@ -133,5 +133,8 @@ internal object AgentEventTracer {
         AgentEvent.Completed -> "completed"
 
         is AgentEvent.ModeChanged -> "mode_changed ${event.newMode} 原因=${event.reason.take(100)}"
+
+        is AgentEvent.EvidenceGuardReport ->
+            "evidence_guard_report 未通过项=${event.notices.size} ${event.notices.firstOrNull()?.take(120) ?: ""}"
     }
 }

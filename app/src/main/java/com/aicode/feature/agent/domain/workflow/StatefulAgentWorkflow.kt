@@ -122,7 +122,8 @@ class StatefulAgentWorkflow @Inject constructor(
     private val agentNotificationCenter: AgentNotificationCenter,
     private val eventInjector: AgentEventInjector,
     private val fileAccess: FileAccessProvider,
-    private val memoryRepository: MemoryRepository
+    private val memoryRepository: MemoryRepository,
+    private val evidenceLedgerRepository: EvidenceLedgerRepository
 ) : AgentWorkflow {
 
     private companion object {
@@ -138,6 +139,12 @@ class StatefulAgentWorkflow @Inject constructor(
         const val LIVE_TAIL_CHARS = STREAM_LIVE_TAIL_CHARS
         const val PROGRESS_INTERVAL_MS = STREAM_PROGRESS_INTERVAL_MS
         const val USER_REJECTED_CODE = "USER_REJECTED"
+        /** 完工证据守卫软拉回时，注入给模型的系统提示前缀。 */
+        const val EVIDENCE_GUARD_NOTICE_PREFIX = "[系统提示] 完工证据核对未通过："
+        /** 守卫记录命令输出时保留的尾部字符数；只需覆盖 BUILD FAILED / AssertionError 等失败信号。 */
+        const val EVIDENCE_OUTPUT_TAIL_CHARS = 2000
+        /** 提示里展示「上次声明」的截断长度（与账本存储侧共用同一口径）。 */
+        const val CLAIM_PREVIEW_CHARS = 120
         /** 提权参数名；与 [ToolPermissionPolicyEngine] 同名常量对应。 */
         const val ELEVATE_ARG = "elevate"
 
@@ -232,7 +239,9 @@ class StatefulAgentWorkflow @Inject constructor(
         /** 被策略/系统拒绝（非用户拒绝）的 tool 结果，key = toolCall.id */
         val rejectedToolResults: Map<String, ToolBatchResult> = emptyMap(),
         /** 空响应兜底已注入一次续写提示（防无限重试）。 */
-        val emptyResponseRetried: Boolean = false
+        val emptyResponseRetried: Boolean = false,
+        /** 完工证据守卫已拉回的次数；达上限即放行，防守卫自身变成死循环。 */
+        val evidenceGuardBlocks: Int = 0
     )
 
     /** 改变状态的动作 (Action) */
@@ -583,6 +592,12 @@ class StatefulAgentWorkflow @Inject constructor(
         )
         val circuitBreaker = FailureCircuitBreaker()
         val loopSentinel = ToolLoopSentinel()
+        // 完工证据守卫：run 级累积本回合工具执行记录——ToolResultMessage 丢弃 isError、
+        // ToolBatchResult 只活一批，故必须在收尾判定前单独留存，供核对模型声明。
+        val evidenceRecords = mutableListOf<EvidenceGuard.ToolRecord>()
+        // 达上限仍未通过的核对结论：收尾时作为用户可见消息发出（不再静默放行）。
+        val guardReports = mutableListOf<AgentEvent.EvidenceGuardReport>()
+        val evidenceGuardEnabled = generalSettingsRepository.evidenceGuardEnabledFlow.first()
         // run 级累积预算：限制本次请求内工具输出喂进上下文的字符总量。默认关闭（DISABLED），
         // 启用后超限的后续输出一律落盘、内联只留紧凑预览，需回取时用 retrieveToolResult。
         // 随 run 新建，与轮次预算/熔断/哨兵同一生命周期。
@@ -618,7 +633,62 @@ class StatefulAgentWorkflow @Inject constructor(
 
         while (!state.isFinished && actionQueue.isNotEmpty()) {
             val action = actionQueue.removeFirst()
-            val (newState, effects) = reduce(state, action)
+            val (reducedState, reducedEffects) = reduce(state, action)
+            var newState = reducedState
+            var effects = reducedEffects
+            // 完工证据守卫：模型主动收尾（正常结束、无错误）时核对本回合的声明与凭证。
+            // 不通过则回退收尾、注入提示并续跑一轮（同空响应兜底的软拉回范式）；
+            // 达上限即放行，防守卫自身变成死循环制造机。
+            // PLAN 模式不查：该模式本就禁止写文件，收尾话里的「完成」指计划而非实务。
+            if (evidenceGuardEnabled &&
+                action is AgentAction.LlmResponse &&
+                currentContext.mode != AgentMode.PLAN &&
+                newState.isFinished &&
+                newState.error == null
+            ) {
+                val notices = EvidenceGuard.evaluate(action.response.content, evidenceRecords)
+                // 跨回合账本：run 级记录收尾即丢，长会话压缩后模型也看不到早期被拉回的消息，
+                // 故条次与上次声明要从会话级账本取（本址不在容器绑定内，模型改不了）。
+                val sessionId = currentContext.sessionId
+                val ledger = if (sessionId != null) evidenceLedgerRepository.load(sessionId) else EvidenceLedger()
+                if (notices.isNotEmpty()) {
+                    if (newState.evidenceGuardBlocks < EvidenceGuard.MAX_BLOCKS) {
+                        // 还有拉回余量：注入提示并续跑一轮（同空响应兜底的软拉回范式）。
+                        // 反复违反时把上次声明原文展示给模型（不做相似性匹配——那必被绕过，
+                        // 且模糊匹配是误伤面；模型看到自己原话后换措辞的心理成本最高）。
+                        val escalate = if (ledger.consecutiveFails >= 1 && ledger.lastFail != null) {
+                            "（本会话已累计 ${ledger.consecutiveFails} 次核对未通过；上次声明是「${ledger.lastFail.claim.take(CLAIM_PREVIEW_CHARS)}」。换措辞不改变结论。）"
+                        } else {
+                            "（若该改动确实在更早的会话中完成，请说明；否则请继续完成缺失的步骤。）"
+                        }
+                        FileLogger.w(TAG, "完工证据守卫拉回（第 ${newState.evidenceGuardBlocks + 1} 次，会话累计 ${ledger.consecutiveFails} 次）：${notices.joinToString("；")}")
+                        newState = newState.copy(
+                            isFinished = false,
+                            messages = newState.messages + AgentMessage.UserMessage(
+                                content = EVIDENCE_GUARD_NOTICE_PREFIX + notices.joinToString(" ") + escalate
+                            ),
+                            evidenceGuardBlocks = newState.evidenceGuardBlocks + 1
+                        )
+                        effects = effects + AgentSideEffect.CallLlm
+                    } else {
+                        // 拉回次数用尽而声明仍无凭证：不再静默放行，而是把未通过的项直接告诉用户。
+                        // 静默放行等于守卫拦不住的那一次谎报照旧被当成正常结束。
+                        FileLogger.w(TAG, "完工证据守卫达上限仍不通过，向用户如实报告：${notices.joinToString("；")}")
+                        guardReports += AgentEvent.EvidenceGuardReport(notices)
+                    }
+                }
+                // 账本写入覆盖**两种裁决**（不止违规时）：放行路径不写，则本 run 的成功验证命令
+                // 永不入账，「先红后绿」跨 run 失效（红被拉回、绿补跑后放行，恰是典型场景）。
+                // 同时 failed=false 会把 consecutiveFails 归零（诚实修复后不该永久背着累计标签）。
+                if (sessionId != null) {
+                    evidenceLedgerRepository.record(
+                        sessionId = sessionId,
+                        failed = notices.isNotEmpty(),
+                        claim = action.response.content,
+                        verifyCommands = verifyCommandsOf(evidenceRecords)
+                    )
+                }
+            }
             state = newState
 
             for (effect in effects) {
@@ -977,6 +1047,21 @@ class StatefulAgentWorkflow @Inject constructor(
                             }
                         }
 
+                        // 完工证据守卫——写文件前抓旧内容，供写后比对是否削弱了测试。
+                        // 只对测试文件抓：拿不到旧内容（新文件/远程读失败）就不判，宁可漏报。
+                        val preWriteContents = HashMap<String, String?>()
+                        if (evidenceGuardEnabled) {
+                            toRun.forEach { toolCall ->
+                                if (toolCall.name == "editFile" || toolCall.name == "writeFile") {
+                                    (toolCall.arguments["path"] as? JsonPrimitive)?.contentOrNull?.let { path ->
+                                        if (TamperDetector.looksLikeTestPath(path)) {
+                                            preWriteContents[path] = runCatchingCancellable { fileAccess.readFile(path) }.getOrNull()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         val executed = if (toRun.isEmpty()) {
                             emptyList()
                         } else {
@@ -1003,6 +1088,52 @@ class StatefulAgentWorkflow @Inject constructor(
                             preflight[call.id]
                                 ?: executedById[call.id]
                                 ?: ToolRunResult(ToolResult.Error("工具未执行", "TOOL_NOT_EXECUTED").toTransportString(), true)
+                        }
+
+                        // 完工证据守卫：累积本批工具执行记录（成败 + 写文件落点 + shell 命令正文），
+                        // 供收尾时核对模型声明。sleep 前置拦截/权限拒绝的调用不在此列——
+                        // 它们没有成功记录，只会让守卫更严，不会造成漏判。
+                        toolCalls.forEachIndexed { index, toolCall ->
+                            val rr = runResults.getOrNull(index)
+                            val args = toolCall.arguments
+                            val actionName = (args["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
+                            val command = when {
+                                toolCall.name == "Bash" -> (args["command"] as? JsonPrimitive)?.contentOrNull
+                                toolCall.name == "terminal" && actionName == "start" -> (args["command"] as? JsonPrimitive)?.contentOrNull
+                                toolCall.name == "terminal" && actionName == "send" -> (args["input"] as? JsonPrimitive)?.contentOrNull
+                                else -> null
+                            }
+                            // 写测试文件时比对前后内容，判定是否削弱了验证（删用例/加 skip/撇断言）。
+                            val writtenPath = (args["path"] as? JsonPrimitive)?.contentOrNull
+                            val tampered = if (!(rr?.isError ?: true) && writtenPath != null) {
+                                val after = runCatchingCancellable { fileAccess.readFile(writtenPath) }.getOrNull()
+                                if (after != null) {
+                                    // 两条作弊路径：改测试本身、改构建配置禁用测试。
+                                    // 新文件也要过 inspect（传 before=null）：删用例/减断言分支因
+                                    // oldAsserts=0 天然不触发，但「新建全恒真断言文件」靠它才能检出。
+                                    val findings = TamperDetector.inspect(
+                                        writtenPath,
+                                        preWriteContents[writtenPath],
+                                        after
+                                    ) + TamperDetector.inspectBuildConfig(writtenPath, after)
+                                    findings.also { if (it.isNotEmpty()) FileLogger.w(TAG, "测试作弊特征：${it.joinToString("；")}") }
+                                        .isNotEmpty()
+                                } else false
+                            } else false
+                            evidenceRecords.add(
+                                EvidenceGuard.ToolRecord(
+                                    toolName = toolCall.name,
+                                    isError = rr?.isError ?: true,
+                                    path = (args["path"] as? JsonPrimitive)?.contentOrNull,
+                                    command = command,
+                                    tampered = tampered,
+                                    // 取结果尾部：工具层把非零退出包装成 Success（isError 恒 false），
+                                    // 只有输出尾部的 BUILD FAILED/AssertionError 能揭示真实失败。
+                                    outputTail = if (command != null) {
+                                        rr?.raw?.takeLast(EVIDENCE_OUTPUT_TAIL_CHARS)
+                                    } else null
+                                )
+                            )
                         }
 
                         // 串行处理 mode 切换并组装批量结果。
@@ -1099,6 +1230,9 @@ class StatefulAgentWorkflow @Inject constructor(
         }
         
         state.error?.let { send(AgentEvent.Failed(it, state.errorCode)) }
+        // 守卫达上限仍未通过的核对结论：在 Failed 之后、Completed 之前发出，
+        // 让用户看到「模型声称完成但拿不出凭证」的实情（无错误时也发）。
+        guardReports.forEach { send(it) }
         send(AgentEvent.Completed)
     }
 
@@ -1381,6 +1515,30 @@ class StatefulAgentWorkflow @Inject constructor(
         "image/jpeg" -> "jpg"
         "image/webp" -> "webp"
         else -> "png"
+    }
+
+    /**
+     * 把 run 级的工具记录筛成本账本用的验证命令记录。
+     *
+     * 只留验证类命令（其它命令与「声明是否成立」无关），带上类别与成败。
+     * 成败不看 [EvidenceGuard.ToolRecord.isError]（工具层把非零退出包成 Success，恒为 false），
+     * 而看输出尾部有无失败信号（同 [CommandOutcome.hasFailureSignal] 的口径）。
+     */
+    private fun verifyCommandsOf(records: List<EvidenceGuard.ToolRecord>): List<LedgerCommand> {
+        val now = System.currentTimeMillis()
+        return records.mapNotNull { rec ->
+            // 被拒绝/未执行的调用不入账：权限拒绝、前置拦截都不是「验证失败」，
+            // 记成红会污染「先红后绿」判定。
+            if (rec.isError) return@mapNotNull null
+            val cmd = rec.command ?: return@mapNotNull null
+            val category = CommandOutcome.categoryOf(cmd) ?: return@mapNotNull null
+            LedgerCommand(
+                cmd = cmd.take(EvidenceLedgerRepository.CMD_MAX_CHARS),
+                category = category,
+                ok = !CommandOutcome.hasFailureSignal(rec.outputTail),
+                ts = now
+            )
+        }
     }
 
     private fun checkAndUpdateMode(toolCall: ToolCall, isError: Boolean, currentContext: AgentContext): Pair<AgentContext, Boolean> {

@@ -53,6 +53,7 @@ class GeneralSettingsRepository @Inject constructor(
         val SENDFILE_MAX_SIZE_MB_KEY = intPreferencesKey("sendfile_max_size_mb")
         val DELETE_EXTERNAL_WORKSPACE_SESSIONS_KEY = booleanPreferencesKey("delete_external_workspace_sessions")
         val TURN_TOTAL_LLM_ROUNDS_KEY = intPreferencesKey("turn_total_llm_rounds")
+        val EVIDENCE_GUARD_ENABLED_KEY = booleanPreferencesKey("evidence_guard_enabled")
 
         /** 首字超时默认 5 分钟，与原硬编码值一致。 */
         const val DEFAULT_FIRST_BYTE_TIMEOUT_SEC = 300
@@ -243,4 +244,17 @@ class GeneralSettingsRepository @Inject constructor(
     suspend fun turnTotalLlmRoundsSnapshot(): Int = turnTotalLlmRoundsFlow.first()
 
     suspend fun restoreTurnTotalLlmRounds(rounds: Int) = setTurnTotalLlmRounds(rounds)
+
+    /** 完工证据守卫开关：模型宣布完成/验证通过时核对本回合工具凭证；默认开启。 */
+    val evidenceGuardEnabledFlow: Flow<Boolean> =
+        context.generalDataStore.data.map { it[EVIDENCE_GUARD_ENABLED_KEY] ?: true }
+
+    suspend fun setEvidenceGuardEnabled(enabled: Boolean) {
+        context.generalDataStore.edit { it[EVIDENCE_GUARD_ENABLED_KEY] = enabled }
+    }
+
+    /** 备份快照：完工证据守卫开关。 */
+    suspend fun evidenceGuardEnabledSnapshot(): Boolean = evidenceGuardEnabledFlow.first()
+
+    suspend fun restoreEvidenceGuardEnabled(enabled: Boolean) = setEvidenceGuardEnabled(enabled)
 }

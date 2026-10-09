@@ -231,6 +231,7 @@ fun SettingsScreen(
     val streamIdleTimeoutSec by viewModel.streamIdleTimeoutSec.collectAsStateWithLifecycle()
     val maxNetworkRetries by viewModel.maxNetworkRetries.collectAsStateWithLifecycle()
     val enterToSend by viewModel.enterToSend.collectAsStateWithLifecycle()
+    val evidenceGuardEnabled by viewModel.evidenceGuardEnabled.collectAsStateWithLifecycle()
     val compactionThresholdPercent by viewModel.compactionThresholdPercent.collectAsStateWithLifecycle()
     val sendFileMaxSizeMb by viewModel.sendFileMaxSizeMb.collectAsStateWithLifecycle()
     val turnTotalLlmRounds by viewModel.turnTotalLlmRounds.collectAsStateWithLifecycle()
@@ -800,6 +801,8 @@ fun SettingsScreen(
                     onSetSendFileMaxSizeMb = { viewModel.setSendFileMaxSizeMb(it) },
                     turnTotalLlmRounds = turnTotalLlmRounds,
                     onSetTurnTotalLlmRounds = { viewModel.setTurnTotalLlmRounds(it) },
+                    evidenceGuardEnabled = evidenceGuardEnabled,
+                    onToggleEvidenceGuardEnabled = { viewModel.setEvidenceGuardEnabled(it) },
                     deleteExternalWorkspaceSessions = deleteExternalWorkspaceSessions,
                     onToggleDeleteExternalWorkspaceSessions = { viewModel.setDeleteExternalWorkspaceSessions(it) }
                 )

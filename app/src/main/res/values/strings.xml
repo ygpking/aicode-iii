@@ -46,6 +46,8 @@
     <string name="settings_sendfile_max_size_input_hint">单位 MB，填大于 0 的整数</string>
     <string name="settings_turn_total_rounds">单次任务最大轮次</string>
     <string name="settings_turn_total_rounds_desc">单次请求内 AI 最多可执行的工具调用轮数，超出会自停防死循环</string>
+    <string name="settings_evidence_guard">完工证据守卫</string>
+    <string name="settings_evidence_guard_desc">AI 声称「已完成/测试通过」但本回合无对应工具记录时，提示它补做或说明；避免未验证就报完成</string>
     <string name="settings_rounds_value">%1$d 轮</string>
     <string name="settings_turn_total_rounds_input_hint">整数，范围 10–500</string>
     <string name="settings_vision_model">识图模型</string>

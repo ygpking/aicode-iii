@@ -8,6 +8,7 @@ import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.workflow.DurableTaskRepository
+import com.aicode.feature.agent.domain.workflow.EvidenceLedgerRepository
 import dagger.Lazy
 import com.aicode.feature.agent.presentation.MessageRole
 import java.util.UUID
@@ -24,7 +25,9 @@ class SessionUseCase @Inject constructor(
     // → WorkspaceRepository → SessionUseCase 成环（v1.18.5 tag CI 实炸）。
     // 运行时 deleteSession 调用时各单例早已就绪，.get() 无递归初始化风险。
     private val durableTaskRepository: Lazy<DurableTaskRepository>,
-    private val checkpointManager: Lazy<CheckpointManager>
+    private val checkpointManager: Lazy<CheckpointManager>,
+    // 本类只用 Context，不成环；用 Lazy 只为与上面两者保持同一注入惯例。
+    private val evidenceLedgerRepository: Lazy<EvidenceLedgerRepository>
 ) {
     companion object {
         private const val TAG = "SessionUseCase"
@@ -97,6 +100,8 @@ class SessionUseCase @Inject constructor(
                 .onFailure { FileLogger.e(TAG, "清理会话 $sid 的 durable 账本失败", it) }
             runCatchingCancellable { checkpointManager.get().clearSessionCheckpoints(sid) }
                 .onFailure { FileLogger.e(TAG, "清理会话 $sid 的检查点失败", it) }
+            runCatchingCancellable { evidenceLedgerRepository.get().clearSession(sid) }
+                .onFailure { FileLogger.e(TAG, "清理会话 $sid 的证据账本失败", it) }
         }
         return deleted
     }

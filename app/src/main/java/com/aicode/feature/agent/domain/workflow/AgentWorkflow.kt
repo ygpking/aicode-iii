@@ -95,6 +95,15 @@ sealed class AgentEvent {
 
     /** 模式已切换（由 AI 调用 planMode 触发），UI 据此展示计划审查面板等。 */
     data class ModeChanged(val newMode: AgentMode, val reason: String) : AgentEvent()
+
+    /**
+     * 完工证据守卫的核对结论（用户可见）。
+     *
+     * 守卫拉回模型补做达到上限后，剩余的未通过项无法由模型自行纠正，
+     * 此时必须**如实告知用户**而不是静默放行——否则守卫拦不住的最后一次谎报
+     * 会被当成正常结束。由 ViewModel 按助手消息落库展示。
+     */
+    data class EvidenceGuardReport(val notices: List<String>) : AgentEvent()
 }
 
 interface AgentWorkflow {

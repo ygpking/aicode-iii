@@ -1740,6 +1740,15 @@ class AIAgentViewModel @Inject constructor(
                             showAgentCompletedNotification(modelRequest)
                         }
                     }
+                    is AgentEvent.EvidenceGuardReport -> {
+                        // 守卫拉回达上限、声明仍无凭证：直接告诉用户（不经模型改写）。
+                        val body = event.notices.joinToString("\n") { "· $it" }
+                        messagePersistenceUseCase.persist(
+                            sessionId,
+                            MessageRole.ASSISTANT,
+                            "[完工证据核对未通过]\n$body\n\n以上声明未能由本次会话的工具执行记录佐证，请核实后再采信。"
+                        )
+                    }
                     is AgentEvent.ModeChanged -> {
                         // 模式切换事件：PlanApprovalManager 已在 workflow 层面挂起等待用户批准
                         // 这里只更新 streamingText 显示

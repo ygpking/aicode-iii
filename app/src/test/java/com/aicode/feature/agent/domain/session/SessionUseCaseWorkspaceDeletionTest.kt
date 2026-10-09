@@ -5,6 +5,7 @@ import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.entity.ChatSessionEntity
 import com.aicode.feature.agent.domain.checkpoint.CheckpointManager
 import com.aicode.feature.agent.domain.workflow.DurableTaskRepository
+import com.aicode.feature.agent.domain.workflow.EvidenceLedgerRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
@@ -40,7 +41,8 @@ class SessionUseCaseWorkspaceDeletionTest {
 
         val useCase = SessionUseCase(
             chatDao, messageDao,
-            dagger.Lazy { durableRepo }, dagger.Lazy { checkpointMgr }
+            dagger.Lazy { durableRepo }, dagger.Lazy { checkpointMgr },
+            dagger.Lazy { mockk<EvidenceLedgerRepository>(relaxed = true) }
         )
         val deleted = useCase.deleteSessionsByWorkspace("/ws/a")
 
@@ -63,7 +65,8 @@ class SessionUseCaseWorkspaceDeletionTest {
         val useCase = SessionUseCase(
             chatDao, messageDao,
             dagger.Lazy { mockk<DurableTaskRepository>(relaxed = true) },
-            dagger.Lazy { mockk<CheckpointManager>(relaxed = true) }
+            dagger.Lazy { mockk<CheckpointManager>(relaxed = true) },
+            dagger.Lazy { mockk<EvidenceLedgerRepository>(relaxed = true) }
         )
         val deleted = useCase.deleteSessionsByWorkspace("/ws/empty")
 

@@ -523,6 +523,9 @@ class SettingsViewModel @Inject constructor(
     private val _enterToSend = MutableStateFlow(false)
     val enterToSend: StateFlow<Boolean> = _enterToSend.asStateFlow()
 
+    private val _evidenceGuardEnabled = MutableStateFlow(true)
+    val evidenceGuardEnabled: StateFlow<Boolean> = _evidenceGuardEnabled.asStateFlow()
+
     private val _compactionThresholdPercent = MutableStateFlow(90)
     val compactionThresholdPercent: StateFlow<Int> = _compactionThresholdPercent.asStateFlow()
 
@@ -849,6 +852,12 @@ class SettingsViewModel @Inject constructor(
             launch {
                 generalSettingsRepository.enterToSendFlow.collectLatest {
                     _enterToSend.value = it
+                }
+            }
+
+            launch {
+                generalSettingsRepository.evidenceGuardEnabledFlow.collectLatest {
+                    _evidenceGuardEnabled.value = it
                 }
             }
 
@@ -1879,6 +1888,13 @@ class SettingsViewModel @Inject constructor(
     fun setEnterToSend(enabled: Boolean) {
         viewModelScope.launch {
             generalSettingsRepository.setEnterToSend(enabled)
+        }
+    }
+
+    /** 完工证据守卫：模型宣布完成/验证通过时核对本回合工具凭证。 */
+    fun setEvidenceGuardEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            generalSettingsRepository.setEvidenceGuardEnabled(enabled)
         }
     }
 
