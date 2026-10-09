@@ -19,6 +19,7 @@ import com.aicode.feature.agent.domain.provider.ProviderFailureKind
 import com.aicode.feature.agent.domain.provider.ProviderFailureTaxonomy
 import com.aicode.feature.agent.presentation.MessageRole
 import com.aicode.feature.settings.data.remote.ModelMetadataService
+import com.aicode.feature.settings.data.repository.CompactionModelSettingsRepository
 import com.aicode.feature.settings.data.repository.GeneralSettingsRepository
 import com.aicode.feature.settings.domain.model.ModelContextPolicy
 import com.aicode.feature.settings.domain.model.ProviderType
@@ -39,11 +40,34 @@ class ContextCompactor @Inject constructor(
     private val systemPromptProvider: SystemPromptProvider,
     private val llmCallRecordDao: LlmCallRecordDao,
     private val generalSettingsRepository: GeneralSettingsRepository,
-    private val chatSessionDao: ChatSessionDao
+    private val chatSessionDao: ChatSessionDao,
+    private val compactionModelSettingsRepository: CompactionModelSettingsRepository
 ) {
 
     /** 会话上次成功压缩后的消息估算 token 数（自适应阈值的增长基准）。会话级内存态即可，丢了退回固定阈值。 */
     private val lastCompactionSizeBySession = ConcurrentHashMap<String, Int>()
+
+    /** 压缩失败（空摘要/截断）后的冷却截止（elapsedRealtime）。冷却期内同会话跳过自动压缩，防每轮 LLM 调用前原地重试。 */
+    private val compactionCooldownUntilBySession = ConcurrentHashMap<String, Long>()
+
+    /**
+     * 会话连续压缩失败次数（成功后清零）。
+     *
+     * 固定 60s 冷却只挡瞬时风暴：若失败是持续性的（如 head 长期未落库、压缩模型持续超预算），
+     * 会变成「每 60s 一次完整压缩调用」的慢性成本（实测单次最长 12 分钟、48000 output tokens）。
+     * 故按连续次数指数退避，超过 [COMPACTION_FAIL_MAX_STREAK] 后停到有新的成功或手动压缩为止。
+     */
+    private val compactionFailStreakBySession = ConcurrentHashMap<String, Int>()
+
+    /**
+     * 压缩单飞：同一会话同时只允许一次压缩在跑。
+     *
+     * 三个调用点（自动轮前、手动 /compress、上下文超限自愈）可能同时进入：
+     * 实测 10:16:14/10:16:21、11:30:45/11:30:47、11:46:39/11:46:40 均成对触发，
+     * 两个并发压缩各产一份摘要抢写同一会话（同一段 head 被压缩两次、各落一份摘要互相覆盖）。
+     * 用 putIfAbsent 原子占位，抢不到者直接返回原消息（等持有者写完，下轮自然读到新上下文）。
+     */
+    private val compactionInFlightBySession = ConcurrentHashMap<String, Boolean>()
 
     private companion object {
         const val TAG = "ContextCompactor"
@@ -56,6 +80,15 @@ class ContextCompactor @Inject constructor(
 
         /** 单次标记已压缩的 id 分块大小，避开 SQLite 绑定变量上限（旧版 999）。 */
         const val COMPACTED_IDS_CHUNK = 500
+
+        /** 压缩失败后的同会话冷却时长：思考型压缩模型耗尽输出预算后短时间重试必再次失败，先冷却再试。 */
+        const val COMPACTION_FAIL_COOLDOWN_MS = 60_000L
+
+        /** 连续失败多少次后停止自动重试（手动 /compress 与强制自愈不受限）。 */
+        const val COMPACTION_FAIL_MAX_STREAK = 4
+
+        /** 熔断后的冷却时长：1 小时（足够长到不再形成慢性成本，又不会溢出）。 */
+        const val COMPACTION_FAIL_STOP_MS = 60L * 60 * 1000
 
         val LEADING_COMMENT = Regex("(?s)^\\s*<!--.*?-->\\s*")
     }
@@ -73,6 +106,34 @@ class ContextCompactor @Inject constructor(
      * @return 压缩后的新列表（如果没有触发压缩则返回原列表的副本）
      */
     suspend fun compactIfNeeded(
+        messages: List<AgentMessage>,
+        aiProvider: AIProvider,
+        sessionId: String? = null,
+        force: Boolean = false,
+        lastInputTokens: Int = 0,
+        windowProvider: AIProvider? = null,
+        onEvent: suspend (AgentEvent) -> Unit = {}
+    ): List<AgentMessage> {
+        // 失败冷却/熔断只挡**自动**压缩：force=true（手动 /compress 与上下文超限自愈）是用户
+        // 主动意图或最后的自救手段，不能被冷却拦住——否则用户点了没反应、或溢出无法自愈。
+        val cooldownUntil = sessionId?.takeIf { !force }?.let { compactionCooldownUntilBySession[it] }
+        if (cooldownUntil != null && SystemClock.elapsedRealtime() < cooldownUntil) {
+            FileLogger.d(TAG, "压缩失败冷却中（剩余 ${(cooldownUntil - SystemClock.elapsedRealtime()) / 1000}s），跳过本次自动压缩")
+            return messages.toList()
+        }
+        // 单飞：抢不到租约说明同会话已有压缩在跑，直接返回原消息（持有者写完下轮自然读到新上下文）。
+        if (sessionId != null && compactionInFlightBySession.putIfAbsent(sessionId, true) != null) {
+            FileLogger.d(TAG, "同会话已有压缩在进行中，跳过本次并发压缩")
+            return messages.toList()
+        }
+        try {
+            return compactIfNeededLocked(messages, aiProvider, sessionId, force, lastInputTokens, windowProvider, onEvent)
+        } finally {
+            if (sessionId != null) compactionInFlightBySession.remove(sessionId)
+        }
+    }
+
+    private suspend fun compactIfNeededLocked(
         messages: List<AgentMessage>,
         aiProvider: AIProvider,
         sessionId: String? = null,
@@ -162,10 +223,17 @@ class ContextCompactor @Inject constructor(
         var callUsage: AIResponse? = null
 
         val summaryResponse = try {
+            // 压缩是同一次请求拿全量摘要（非流式），推理档位从「压缩模型」设置单独读取：
+            // 取不到（空串）则不传，走服务端默认。对 glm-5.3 这类强制思考的模型，
+            // 适配器会把 none/minimal 归一到最低合法档（low），避免思考耗尽输出预算、摘要为空。
+            val compactionEffort = runCatchingCancellable {
+                compactionModelSettingsRepository.getCompactionReasoningEffort()
+            }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
             val response = aiProvider.complete(
-                systemPrompt = "你是一个上下文压缩引擎。本次请求中的对话历史仅作为输入材料，不要继续其中任何任务，不要调用任何工具，只输出接手摘要。",
+                systemPrompt = "你是一个上下文压缩引擎。本次请求中的对话历史仅作为输入材料，不要继续其中任何任务，不要调用任何工具，只输出接手摘要。不要输出任何思考、推理或分析过程（不要 reasoning_content），直接从摘要正文开始。",
                 messages = summaryRequestMessages,
                 tools = emptyList(),
+                reasoningEffort = compactionEffort,
                 // 摘要请求是一次性的、不会被后续请求复用，禁用显式缓存断点以免白付缓存写入费。
                 disablePromptCaching = true
             )
@@ -190,6 +258,9 @@ class ContextCompactor @Inject constructor(
                 ProviderFailureKind.RATE_LIMITED,
                 ProviderFailureKind.UNKNOWN -> true
             }
+            // 异常路径**刻意不吃** failCompaction 的退避/熔断：这里已有更细的 transient 分类，
+            // 临时失败（限流/网关抖动）本就该下轮再试，与「确定性失败才熔断」的语义相反。
+            // 异常多为快速失败（成本远低于输出打满那次），不属「慢性烧钱」场景。
             onEvent(AgentEvent.CompactionFailed(callError, transient))
             onEvent(AgentEvent.CompactionFinished)
             return messages.toList() // 失败则原样返回，交由上层自行承担溢出风险
@@ -217,7 +288,29 @@ class ContextCompactor @Inject constructor(
             )
         }
 
-        val summaryText = CompactionFileTracker.append(summaryResponse, fileOps)
+        // 空摘要/截断保护：思考型压缩模型（如 glm-5.3）可能把输出预算全花在推理上（reasoning_content），
+        // 正文为空或被打满截断。照常持久化会把会话上下文替换成空摘要，历史静默丢失
+        // （实测：13:50 压缩 48000 output tokens 全耗在推理、content=""，摘要长度 0 照样入库并替换上下文）。
+        // 截断判定复用 [AIResponse.isTruncated] 的同一口径（TRUNCATION_STOP_REASONS 已含
+        // OpenAI `length` / Anthropic `max_tokens` / Gemini `MAX_TOKENS`）——不能只认 "length"，
+        // 否则压缩模型配成 Anthropic/Gemini 时，被截断的**半截非空摘要**会绕过保护入库替换上下文。
+        // 失败则保留原上下文并进入冷却，防下一轮原地重试死循环。
+        val summaryTrimmed = summaryResponse.trim()
+        val truncatedByLimit = callUsage?.isTruncated == true
+        if (summaryTrimmed.isEmpty() || truncatedByLimit) {
+            return failCompaction(
+                messages, sessionId, "empty_or_truncated_summary",
+                "摘要正文为空或输出被截断(stopReason=${callUsage?.stopReason})",
+                callUsage?.outputTokens ?: 0, force, onEvent
+            )
+        }
+        // 成功即清零连续失败计数与残余冷却（熔断复位）。
+        // 冷却也要清：否则失败进入 60s 冷却后，手动压缩成功紧接着的自动压缩仍被残余冷却拦一次。
+        sessionId?.let {
+            compactionFailStreakBySession.remove(it)
+            compactionCooldownUntilBySession.remove(it)
+        }
+        val summaryText = CompactionFileTracker.append(summaryTrimmed, fileOps)
         if (!fileOps.isEmpty) {
             FileLogger.i(TAG, "摘要已附加文件清单：读 ${fileOps.read.size} 个、改 ${fileOps.modified.size} 个")
         }
@@ -263,24 +356,30 @@ class ContextCompactor @Inject constructor(
                 // 既消除竞态，也保留「绝不误标未落库/全部历史」的原设计初衷。
                 val persistedIds = dbEntities.mapTo(HashSet()) { it.id }
                 val headIdsToMark = CompactionMarkSelector.selectIdsToMark(head, persistedIds)
+                // head 整段都未落库（进程被杀导致内存消息未持久化，实测 31 次回合未见收尾）：
+                // 无法标记 → 重启后 buildHistory 会回放完整 head。若仍插入 marker+summary，
+                // 回放结果 = 完整 head + 追加摘要，上下文不降反升（实测 125855 → 261138）。
+                // 故整轮折叠放弃：内存也不替换，与 DB 状态保持一致，并记失败与冷却防重试风暴。
+                // 判断必须在 withTransaction 之前——withTransaction 不是 inline 函数，
+                // 内部的裸 return 无法退到外层函数。
+                if (headIdsToMark.isEmpty()) {
+                    return failCompaction(
+                        messages, sessionId, "head_not_persisted",
+                        "head 内无已落库消息（共 ${head.size} 条），折叠无法在重启后生效", 0, force, onEvent
+                    )
+                }
                 // 三步写（标已压缩 + marker + summary）必须原子：若标记成功但摘要未落库，
                 // head 会被回放过滤掉（isCompacted）而摘要缺失 → 重启后那段上下文静默消失。
                 agentDatabase.withTransaction {
-                    if (headIdsToMark.isNotEmpty()) {
-                        // 先接管块归属再标折叠：老压缩块若被本块吸走，其块 id 被覆盖，
-                        // 旧块恢复只会回它仍持有的部分（与最新摘要不冲突）。
-                        headIdsToMark.chunked(COMPACTED_IDS_CHUNK).forEach { chunk ->
-                            agentMessageDao.assignCompactionBlock(chunk, blockId)
-                        }
-                        // 分块更新：Room 的 IN (...) 会为每个元素生成一个绑定参数，
-                        // 超 SQLite 变量上限（旧版 999）会直接报错；压缩型会话的 head 可达数百条。
-                        headIdsToMark.chunked(COMPACTED_IDS_CHUNK).forEach { chunk ->
-                            agentMessageDao.markMessagesCompactedByIds(chunk)
-                        }
-                    } else {
-                        // 仅当 head 整段都未落库（首轮即压缩等极端情况）才会走到这里；
-                        // 此时压缩无法在重启后生效，如实告警便于定位。
-                        FileLogger.w(TAG, "压缩持久化：head 内无已落库消息，跳过已压缩标记（会话 $sessionId，head 共 ${head.size} 条）")
+                    // 先接管块归属再标折叠：老压缩块若被本块吸走，其块 id 被覆盖，
+                    // 旧块恢复只会回它仍持有的部分（与最新摘要不冲突）。
+                    headIdsToMark.chunked(COMPACTED_IDS_CHUNK).forEach { chunk ->
+                        agentMessageDao.assignCompactionBlock(chunk, blockId)
+                    }
+                    // 分块更新：Room 的 IN (...) 会为每个元素生成一个绑定参数，
+                    // 超 SQLite 变量上限（旧版 999）会直接报错；压缩型会话的 head 可达数百条。
+                    headIdsToMark.chunked(COMPACTED_IDS_CHUNK).forEach { chunk ->
+                        agentMessageDao.markMessagesCompactedByIds(chunk)
                     }
 
                     // 摘要收尾：marker + summary 时间戳放在 tail 最后一条之后，回放/UI 顺序 = tail → 摘要，
@@ -337,6 +436,37 @@ class ContextCompactor @Inject constructor(
         }
 
         return newMessages
+    }
+
+    private suspend fun failCompaction(
+        messages: List<AgentMessage>,
+        sessionId: String?,
+        code: String,
+        reason: String,
+        outputTokens: Int,
+        force: Boolean,
+        onEvent: suspend (AgentEvent) -> Unit
+    ): List<AgentMessage> {
+        FileLogger.e(TAG, "压缩失败：$reason（output $outputTokens tokens），保留原上下文")
+        // force 失败不累加熔断计数也不设冷却：手动触发/溢出自救失败不该污染自动压缩的熔断状态
+        // （否则用户手动连点几次，就把自动压缩提前熔断了）。
+        if (sessionId != null && !force) {
+            val streak = (compactionFailStreakBySession[sessionId] ?: 0) + 1
+            compactionFailStreakBySession[sessionId] = streak
+            // 线性递增退避：第 1 次 60s、第 2 次 120s、第 3 次 180s；
+            // 连续达到上限后转长期冷却，停到成功或手动压缩为止（防 60s 一次的慢性成本）。
+            // 注意用有限常量而非 Long.MAX_VALUE：后者与 elapsedRealtime 相加会溢出成负数，
+            // 反而使「冷却中」判断恒为 false、熔断形同虚设。
+            val backoff = if (streak >= COMPACTION_FAIL_MAX_STREAK) COMPACTION_FAIL_STOP_MS
+            else COMPACTION_FAIL_COOLDOWN_MS * streak
+            compactionCooldownUntilBySession[sessionId] = SystemClock.elapsedRealtime() + backoff
+            if (streak >= COMPACTION_FAIL_MAX_STREAK) {
+                FileLogger.w(TAG, "压缩连续失败 $streak 次，已停止自动重试（手动 /compress 仍可触发）")
+            }
+        }
+        onEvent(AgentEvent.CompactionFailed(code, transient = false))
+        onEvent(AgentEvent.CompactionFinished)
+        return messages.toList()
     }
 
     /**

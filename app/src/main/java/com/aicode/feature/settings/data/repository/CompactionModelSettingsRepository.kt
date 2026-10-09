@@ -23,7 +23,8 @@ private val Context.compactionModelDataStore by preferencesDataStore(
 class CompactionModelSettingsRepository @Inject constructor(
     @ApplicationContext context: Context
 ) : ModelSelectionSettingsRepository(
-    context.compactionModelDataStore, "compaction_provider_id", "compaction_model"
+    context.compactionModelDataStore, "compaction_provider_id", "compaction_model",
+    reasoningEffortKeyName = "compaction_reasoning_effort"
 ) {
 
     /** 写入压缩专用模型（设空字符串即等同 [clear]）。 */
@@ -37,4 +38,14 @@ class CompactionModelSettingsRepository @Inject constructor(
 
     /** 读取一次当前压缩专用 model（冷读用）。 */
     suspend fun getCompactionModel(): String = readModel()
+
+    /**
+     * 读取压缩请求使用的推理档位（冷读用）；空串 = 不指定（走服务端默认）。
+     * 压缩是一次性摘要任务，把档位调低（或在不支持关闭的模型上降到最低合法档）
+     * 能显著减少「思考耗尽输出预算、摘要为空」的风险。
+     */
+    suspend fun getCompactionReasoningEffort(): String = readReasoningEffort()
+
+    /** 写入压缩请求的推理档位（空串 = 不指定）。 */
+    suspend fun setCompactionReasoningEffort(effort: String) = setReasoningEffort(effort)
 }

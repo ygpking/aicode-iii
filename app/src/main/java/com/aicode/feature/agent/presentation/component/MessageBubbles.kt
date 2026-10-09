@@ -628,7 +628,16 @@ private fun CompactionSummaryCard(message: AgentUIMessage, markdownCache: Markdo
 @Composable
 private fun CompactionFailureCard(message: AgentUIMessage) {
     var expanded by remember(message.id) { mutableStateOf(false) }
-    val reason = message.content.ifBlank { stringResource(R.string.chat_compaction_failed) }
+    // 落库的 content 是稳定英文 code（见 ContextCompactor.failCompaction 的 code 参数）：
+    // 在此映射为本地化文案。用 startsWith 而非全等：早期版本曾把中文原因拼在 code 后
+    // （`empty_or_truncated_summary: 摘要正文为空...`），前缀匹配让那批历史卡片也能本地化；
+    // 同时向后兼容将来在 code 后附加细节的写法。未命中则原样显示，不丢信息。
+    val code = message.content.trim()
+    val reason = when {
+        code.startsWith("empty_or_truncated_summary") -> stringResource(R.string.chat_compaction_failed_empty_summary)
+        code.startsWith("head_not_persisted") -> stringResource(R.string.chat_compaction_failed_head_not_persisted)
+        else -> message.content.ifBlank { stringResource(R.string.chat_compaction_failed) }
+    }
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = Spacing.xs)) {
         ChatHairline()
         Column(
