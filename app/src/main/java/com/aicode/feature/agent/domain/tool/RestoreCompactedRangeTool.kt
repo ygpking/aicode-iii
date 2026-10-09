@@ -46,7 +46,10 @@ class RestoreCompactedRangeTool @Inject constructor(
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities: Set<ToolCapability> = emptySet()
     override val description =
-        "会话历史检索与压缩块管理（一个工具三个模式，action 必看）：\n" +
+        "会话历史检索与压缩块管理（一个工具三个模式，action 必看）。\n" +
+            "**主动用**：当用户引用早期会话内容、你记不清某事的细节/决定/精确数值/原话措辞、" +
+            "用户说『之前/上次/早前说过』而当前上下文没有对应信息时，先用 preview 检索压缩块再答，别凭印象编；" +
+            "preview 是截断预览，数值/措辞等精确内容命中后要完整原文用 action=restore 二跳取回。\n" +
             "1) preview（默认）：检索本会话历史（含已被压缩折叠、当前上下文里看不到的消息），" +
             "返回**截断预览**（单条最多 ${SessionHistoryPager.MAX_CHARS_PER_MESSAGE} 字符、整页封顶 ${SessionHistoryPager.MAX_TOTAL_CHARS} 字符）。" +
             "按 keyword 子串匹配或时间翻页。用于定位：判断某事是否发生过、大致在哪、涉及哪些文件。" +
