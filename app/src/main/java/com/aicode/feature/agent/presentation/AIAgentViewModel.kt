@@ -104,6 +104,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -1392,7 +1393,7 @@ class AIAgentViewModel @Inject constructor(
                 // 归属对称性：命令分流不抢归属，但调用方（如 spawnSubAgentWorkflow）可能已抢先取得；
                 // 命令启动完成后此处必须释放，否则子会话归属永久滞留（后续事件在本实例永久入队、别处永久跳过）；
                 // 用户消息路径此时未抢归属，releaseFlow 是幂等空操作。
-                subAgentEventBus.releaseFlow(sessionId, this)
+                subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
                 return@launch
             }
         }
@@ -1410,8 +1411,13 @@ class AIAgentViewModel @Inject constructor(
         // 「会话 → 持有流实例」。本实例已持有（spawnSubAgentWorkflow / deliverSystemEvent
         // 抢到归属后进入本方法）视为成功；别处持有则不重复启动，把请求挂回队列等待
         // 后续流结束时消费（不丢用户消息）。finally 中对称 releaseFlow。
-        if (!subAgentEventBus.isFlowOwnedBy(sessionId, this) &&
-            !subAgentEventBus.tryAcquireFlow(sessionId, this)
+        //
+        // owner 一律用 this@AIAgentViewModel：本方法是 viewModelScope.launch{} 的 lambda 体，
+        // 裸 this 是 CoroutineScope，与成员函数（spawnSubAgentWorkflow / deliverSystemEvent）里的
+        // VM 实例永不相等——若两处混用，子代理 SPAWNED 抢到的归属在流启动处会判为「别人持有」而
+        // 必然 reject 入队（实测 v1.19.0：子代理创建后恒 stream reject，待发送队列永不消费）。
+        if (!subAgentEventBus.isFlowOwnedBy(sessionId, this@AIAgentViewModel) &&
+            !subAgentEventBus.tryAcquireFlow(sessionId, this@AIAgentViewModel)
         ) {
             val req = QueuedRequest(
                 id = UUID.randomUUID().toString(),
@@ -1427,24 +1433,55 @@ class AIAgentViewModel @Inject constructor(
             val currentList = _queuedRequests.value[sessionId] ?: emptyList()
             _queuedRequests.value = _queuedRequests.value + (sessionId to (currentList + req))
             FileLogger.w(TAG, "stream reject: sid=$sessionId 流已在其他实例运行，请求已排队等待")
+            // 被拒入队后若没有正常回合来消费，该会话的队列会永久滞留（实测：子代理 SPAWNED
+            // 被 reject 后 updatedAt 恒等于 createdAt，UI 待发送队列永不消费）。
+            // 兜底：延迟轮询流归属，持有者释放/进程消亡后抢占成功即消费队列；上限 20 次 × 3s。
+            viewModelScope.launch {
+                repeat(20) {
+                    delay(3_000)
+                    if (sessionJobs[sessionId]?.isActive == true) return@launch
+                    if (subAgentEventBus.tryAcquireFlow(sessionId, this@AIAgentViewModel)) {
+                        if (_queuedRequests.value[sessionId].isNullOrEmpty()) {
+                            subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
+                            return@launch
+                        }
+                        processNextInQueue(sessionId)
+                        return@launch
+                    }
+                }
+                FileLogger.w(TAG, "stream reject 兜底重试放弃：sid=$sessionId 流归属 60s 内未释放，队列保留待用户处理")
+            }
             return@launch
         }
 
         coroutineContext[Job]?.let { sessionJobs[sessionId] = it }
         FileLogger.d(TAG, "stream start: sid=$sessionId prevState=${_agentStates.value[sessionId]} isAutoTrigger=$isAutoTrigger")
-        setAgentState(sessionId, AgentUIState.Streaming)
-        acquireKeepalive()
-        // durable 账本：登记任务为 RUNNING（崩溃时非终态 → 冷启动可被识别）。
-        val durableTaskId = durableTaskRepository.begin(sessionId, request)
-        // 新一轮请求：清空上一轮的浏览器操作时间线（本次任务独立），
-        // 同时让预览窗被关闭的状态复位，使本轮的浏览器操作能重新弹出预览。
-        browserManager.clearOperations()
-        // 清掉上一轮遗留的「已全部完成」待办。
-        // 为什么在这里清而不是在回合结束时：待办面板的价值在于任务跑完后仍能看到完成清单，
-        // 回合末尾就清会让用户看不到结果。但若一直不清，面板会永久悬在输入框上方——
-        // 因为清理需要 AI 主动调 todo(空数组)，而提示词并未给它这个义务，实际几乎不会发生。
-        // 折中：保留到用户发下一条消息为止，此时上一轮的清单已经看过、再无价值。
-        clearStaleCompletedTodos(sessionId)
+        // 前置步骤（状态/保活/账本/清理）用 try 兜底：这些步骤若抛异常，
+        // 此前 tryAcquireFlow 抢到的流归属不会被下面的正式 try 释放（正式 try 覆盖不到这里），
+        // 该会话从此永久显示「流已在其他实例运行」，所有后续请求 reject 入队、队列永不消费
+        // （实测：子代理 SPAWNED 在此窗口异常后 updatedAt 恒等于 createdAt、UI 待发送队列卡死）。
+        val durableTaskId: String
+        try {
+            setAgentState(sessionId, AgentUIState.Streaming)
+            acquireKeepalive()
+            // durable 账本：登记任务为 RUNNING（崩溃时非终态 → 冷启动可被识别）。
+            durableTaskId = durableTaskRepository.begin(sessionId, request)
+            // 新一轮请求：清空上一轮的浏览器操作时间线（本次任务独立），
+            // 同时让预览窗被关闭的状态复位，使本轮的浏览器操作能重新弹出预览。
+            browserManager.clearOperations()
+            // 清掉上一轮遗留的「已全部完成」待办。
+            // 为什么在这里清而不是在回合结束时：待办面板的价值在于任务跑完后仍能看到完成清单，
+            // 回合末尾就清会让用户看不到结果。但若一直不清，面板会永久悬在输入框上方——
+            // 因为清理需要 AI 主动调 todo(空数组)，而提示词并未给它这个义务，实际几乎不会发生。
+            // 折中：保留到用户发下一条消息为止，此时上一轮的清单已经看过、再无价值。
+            clearStaleCompletedTodos(sessionId)
+        } catch (e: Exception) {
+            FileLogger.e(TAG, "启动 AI 工作流前置步骤失败，释放流归属并退出", e)
+            subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
+            sessionJobs.remove(sessionId)
+            setAgentState(sessionId, AgentUIState.Idle)
+            return@launch
+        }
 
         // 事件轨迹回合：开启后每个 AgentEvent 都会记一行。轨迹独立成层、默认开启，
         // 只有把日志等级设为 NONE 才停止（release 默认 INFO，若挂在 DEBUG 之下则正式包永不记录）。
@@ -1774,7 +1811,7 @@ class AIAgentViewModel @Inject constructor(
             subAgentRunId?.let { subAgentEventBus.release(it) }
             // 多实例归属：对称释放 executeAgentRequestStream 开头（1402 附近）获取的流归属。
             // 幂等：非本人持有的不动；命令分流等未抢过归属的路径执行到此是无害空操作。
-            subAgentEventBus.releaseFlow(sessionId, this)
+            subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
             if (isOwnJob) {
                 sessionJobs.remove(sessionId)
             }
@@ -1869,11 +1906,12 @@ class AIAgentViewModel @Inject constructor(
      * 取消 job 并把未完成的流式内容落库为「已停止」；队列下一条照常执行。
      */
     fun stopAgentSession(sessionId: String) {
-        val job = sessionJobs[sessionId] ?: return
-        if (!job.isActive) return
-        // 用户在界面上手动停止运行中的子代理：交回并发槽位并告知父代理，否则槽位泄漏到进程重启，
-        // 且父代理会一直等一条永不到达的完成通知。TaskTool 的 stop/del 已在 emit(STOPPED) 时释放过，
-        // 那条路径下 release 返回 false，不会重复通知。
+        // 清掉该会话的待发送队列：停止后不应再自动重启（含 stream reject 入队的请求，
+        // 否则延迟重试会把它重新启动）。
+        _queuedRequests.value = _queuedRequests.value + (sessionId to emptyList())
+        // 归还并发槽位并告知父代理，须在 job 检查之前：卡死的子代理（从未启动）没有活跃 job，
+        // 原实现直接 return，槽位与队列永久残留（TaskTool emit(STOPPED) 已释放过的路径
+        // 这里 release 幂等返回 false，不会重复通知）。
         if (subAgentEventBus.release(sessionId)) {
             viewModelScope.launch {
                 val sub = sessionUseCase.getSessionById(sessionId)
@@ -1889,6 +1927,11 @@ class AIAgentViewModel @Inject constructor(
                 }
             }
         }
+        val job = sessionJobs[sessionId] ?: return
+        if (!job.isActive) return
+        // 用户在界面上手动停止运行中的子代理：交回并发槽位并告知父代理，否则槽位泄漏到进程重启，
+        // 且父代理会一直等一条永不到达的完成通知。TaskTool 的 stop/del 已在 emit(STOPPED) 时释放过，
+        // 那条路径下 release 返回 false，不会重复通知。
         val runningTools = _runningTools.value[sessionId]?.values?.toList() ?: emptyList()
         val streamingText = _streamingTexts.value[sessionId]
         val streamingReasoning = _streamingReasonings.value[sessionId]
@@ -2167,6 +2210,10 @@ class AIAgentViewModel @Inject constructor(
                 )
             } finally {
                 setCompacting(sid, false)
+                // 与 executeAgentRequestStream 对称：自己注册的 job 必须自己移除，
+                // 否则 sessionJobs[sid] 永久指向已结束的 job（脏状态会让 isOwnJob 对比与
+                // 「已有活跃 job」判定失准）。仅当仍指向本 job 时移除，防误删接替者。
+                if (sessionJobs[sid] == coroutineContext[Job]) sessionJobs.remove(sid)
                 // 压缩是异步流程，结束后接续队列中排队的下一条
                 processNextInQueue(sid)
             }
