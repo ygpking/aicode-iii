@@ -56,6 +56,84 @@ class CompactionFileTrackerTest {
     }
 
     @Test
+    fun accumulatesFromPreviousSummaryBlocksWithTrailingHints() {
+        // 真实落库形态：摘要尾部还挂着「本压缩块可恢复」提示（f034cef 引入）与丢弃量注记。
+        // 清单块因此不在串尾，BLOCK_CLOSE 的 `$` 尾锚点（无 MULTILINE）失配 →
+        // 旧实现解析到 0 个块，跨轮累积静默失效（真机 JVM 实测）。本用例锁死该回归。
+        val previous = AgentMessage.AssistantMessage(
+            content = "摘要正文\n\n<read-files>\nold-read.kt\n</read-files>\n\n" +
+                "<modified-files>\nold-mod.kt\n</modified-files>\n\n" +
+                "---\n> 本压缩块（块 id 前缀 c6cc3fd3）含被折叠的早期消息原文，如摘要缺关键细节：" +
+                "先用 restoreCompactedRange 的 preview 模式检索定位。"
+        )
+        val ops = CompactionFileTracker.extract(listOf(previous, assistant(call("readFile", "new.kt"))))
+        assertEquals(listOf("old-read.kt", "new.kt"), ops.read)
+        assertEquals(listOf("old-mod.kt"), ops.modified)
+    }
+
+    @Test
+    fun accumulatesWhenDropNoticeFollowsBlocks() {
+        // 丢弃量注记（B3-b 新增）同样在清单块之后，不得影响读回。
+        val previous = AgentMessage.AssistantMessage(
+            content = "摘要正文\n\n<read-files>\nold-read.kt\n</read-files>\n\n" +
+                "<modified-files>\nold-mod.kt\n</modified-files>\n" +
+                "> 注：更早的 3 条消息（约 12345 token）超出压缩模型窗口，未能纳入本摘要。\n\n" +
+                "---\n> 本压缩块（块 id 前缀 abcd1234）含被折叠的早期消息原文。"
+        )
+        val ops = CompactionFileTracker.extract(listOf(previous))
+        assertEquals(listOf("old-read.kt"), ops.read)
+        assertEquals(listOf("old-mod.kt"), ops.modified)
+    }
+
+    @Test
+    fun isolatedCloseTagInBodyDoesNotHideRealBlocks() {
+        // 正文里叙述清单机制时会写孤立闭标签（无配对开标签）。
+        val previous = AgentMessage.AssistantMessage(
+            content = "摘要正文\n这里提到 </read-files> 这个标签\n重要正文不能丢\n\n" +
+                "<read-files>\nreal.kt\n</read-files>"
+        )
+        val ops = CompactionFileTracker.extract(listOf(previous))
+        assertEquals(listOf("real.kt"), ops.read)
+    }
+
+    @Test
+    fun isolatedCloseTagAfterRealBlockDoesNotSwallowFollowingText() {
+        // 复核实测指出的漏洞：宽松配对（「闭标签前面能找到开标签即可」）会让真块**之后**
+        // 正文里的孤立 `</read-files>` 认领真块的开标签，把两者之间的正文全裁掉。
+        // 判据改为「独占行 + 紧邻同名配对」后，孤立标签找不到未配对的开标签，正文得以保留。
+        val previous = AgentMessage.AssistantMessage(
+            content = "摘要\n\n<read-files>\nreal.kt\n</read-files>\n\n" +
+                "后文提到 </read-files> 标签，这段说明不能丢。"
+        )
+        val ops = CompactionFileTracker.extract(listOf(previous))
+        assertEquals(listOf("real.kt"), ops.read)
+    }
+
+    @Test
+    fun appendKeepsTextThatFollowsTrailingBlock() {
+        // 写侧：重写摘要时只剔除清单块本身，块之后/之间的正文不得被吞。
+        val summary = "摘要正文末段。\n\n<read-files>\nold.kt\n</read-files>"
+        val out = CompactionFileTracker.append(summary, CompactionFileTracker.FileOps(read = listOf("new.kt")))
+        assertTrue("正文应保留，实际=$out", out.contains("摘要正文末段"))
+        assertTrue("新清单应写入，实际=$out", out.contains("new.kt"))
+        assertTrue("旧清单条目不应重复残留，实际=$out", !out.contains("old.kt"))
+    }
+
+    @Test
+    fun trailingHintsDoNotPolluteExtraction() {
+        // 尾注里的中文标点与 token 数字不得被当路径收下。
+        val previous = AgentMessage.AssistantMessage(
+            content = "摘要\n\n<read-files>\nreal.kt\n</read-files>\n\n" +
+                "<modified-files>\nmod.kt\n</modified-files>\n" +
+                "> 注：更早的 3 条消息（约 12345 token）超出压缩模型窗口，未能纳入本摘要。\n" +
+                "---\n> 本压缩块（块 id 前缀 abcd1234）含被折叠的早期消息原文。"
+        )
+        val ops = CompactionFileTracker.extract(listOf(previous))
+        assertEquals(listOf("real.kt"), ops.read)
+        assertEquals(listOf("mod.kt"), ops.modified)
+    }
+
+    @Test
     fun ignoresUserMessageAndBlankPaths() {
         // 用户消息里的同名字样属巧合，不是元数据；缺参数的工具调用跳过。
         val user = AgentMessage.UserMessage(content = "<modified-files>\n不存在的.kt\n</modified-files>")

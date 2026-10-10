@@ -3,11 +3,34 @@ package com.aicode.feature.settings.domain.model
 object ModelContextPolicy {
     const val DEFAULT_CONTEXT_TOKENS = 128_000
     const val MIN_PRESERVE_RECENT_TOKENS = 2_000
+
+    /**
+     * tail 保护区的**基础**上限（128k 窗口时代的取值，占窗口 15.6%）。
+     *
+     * 大窗口下该值偏小：1M 窗口下只占 2%，压缩一次要折叠 98% 的历史，
+     * 全押摘要质量。故实际上限按窗口取宽，见 [preserveRecentTokens]。
+     */
     const val MAX_PRESERVE_RECENT_TOKENS = 20_000
+
+    /** 大窗口下 tail 占窗口的目标比例。 */
+    private const val PRESERVE_WINDOW_RATIO = 0.1
+
     const val CHARS_PER_TOKEN = 4
 
-    fun preserveRecentTokens(usableTokens: Int): Int =
-        (usableTokens / 4).coerceIn(MIN_PRESERVE_RECENT_TOKENS, MAX_PRESERVE_RECENT_TOKENS)
+    /**
+     * tail 保护区预算：按可用空间的四分之一，上限随窗口取宽。
+     *
+     * 上限 = `max(基础上限, 窗口 * 10%)`——小窗口下与旧行为完全一致（不回归），
+     * 大窗口下从 2% 提到 10%。
+     *
+     * 约束（已验算）：压缩后大小 = tail + 摘要（约 10k）须小于触发阈值，
+     * 否则会「压完立刻又触发」形成高频压缩。上式的 tail 不超过 [usableTokens]/4，
+     * 而 [usableTokens] 传入的是触发阈值，故压缩后最大为 阈值/4 + 10k，对任何阈值都成立。
+     */
+    fun preserveRecentTokens(usableTokens: Int, contextLimit: Int = DEFAULT_CONTEXT_TOKENS): Int {
+        val cap = maxOf(MAX_PRESERVE_RECENT_TOKENS, (contextLimit * PRESERVE_WINDOW_RATIO).toInt())
+        return (usableTokens / 4).coerceIn(MIN_PRESERVE_RECENT_TOKENS, cap)
+    }
 
     /**
      * 按**字符数**估算 token（向下兼容的旧口径）。仅适用于纯 ASCII/拉丁文本；

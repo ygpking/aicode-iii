@@ -153,13 +153,13 @@ class ContextCompactor @Inject constructor(
         val summaryMetadata = modelMetadataService.resolve(aiProvider.providerId, inferProviderType(aiProvider), aiProvider.model)
         val contextLimit = windowMetadata.contextTokens.takeIf { it > 0 } ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
         // 触发阈值百分比由「偏好设置 → 模型」配置（默认 90，见 GeneralSettingsRepository）。
-        // 自适应下调：距上次成功压缩增长超过窗口 15% 的会话（工具输出密集型），阈值降 15 个百分点
-        // 提前压；固定 90% 追不上增长时压缩点会一路扬升（实测 136k→199k→224k）。下限 60%。
+        // 自适应下调：距上次成功压缩增长超过窗口 15% 的会话（工具输出密集型）额外下调 15 个百分点
+        // 提前压；固定 90% 追不上增长时压缩点会一路扬升（实测 136k→199k→224k）。
+        // 下调**只降不升**，策略与判据集中在 [CompactionThreshold]（含回归用例）。
         val basePercent = generalSettingsRepository.compactionThresholdPercent()
         val lastCompactedSize = sessionId?.let { lastCompactionSizeBySession[it] } ?: 0
-        val fastGrowth = lastCompactedSize > 0 && estimatedTokens - lastCompactedSize > contextLimit * 0.15
-        val effectivePercent = if (fastGrowth) (basePercent - 15).coerceAtLeast(60) else basePercent
-        val triggerThreshold = (contextLimit * effectivePercent / 100.0).toInt()
+        val fastGrowth = CompactionThreshold.isFastGrowth(lastCompactedSize, estimatedTokens, contextLimit)
+        val triggerThreshold = CompactionThreshold.triggerTokens(contextLimit, basePercent, fastGrowth)
         // 真实 usage 优先（含 system prompt + tools，与上下文窗口同口径）；取不到（0）回退本地估算
         val currentTokens = lastInputTokens.takeIf { it > 0 } ?: estimatedTokens
         val reachedThreshold = currentTokens >= triggerThreshold
@@ -180,7 +180,7 @@ class ContextCompactor @Inject constructor(
         onEvent(AgentEvent.CompactionStarted(currentTokens))
 
         // 拆分 Head（需要压缩的老数据）和 Tail（保留的新数据）
-        var splitIndex = selectTailStartIndex(messages, triggerThreshold)
+        var splitIndex = selectTailStartIndex(messages, triggerThreshold, contextLimit)
         if (force && splitIndex <= 0 && messages.size > 1) {
             splitIndex = messages.size - 1
         }
@@ -202,16 +202,21 @@ class ContextCompactor @Inject constructor(
         val fileOps = CompactionFileTracker.extract(messages)
         val summaryWindowTokens = summaryMetadata.contextTokens.takeIf { it > 0 }
             ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
-        val headForSummary = removeCompactionPairs(head).truncateForSummaryWindow(summaryWindowTokens)
-        if (headForSummary.isEmpty()) {
-            // 重复压缩时 head 可能只剩旧的 marker+summary 对，删光后无可压缩内容，跳过本轮压缩。
-            FileLogger.i(TAG, "无可压缩内容（head 为空），跳过压缩")
+        val headForSummary = removeCompactionPairs(head)
+            .truncateForSummaryWindow(summaryWindowTokens)
+        val headMessages = headForSummary.kept.trimLeadingForCompaction()
+        if (headMessages.isEmpty()) {
+            // 空只可能来自前两步：重复压缩时 head 只剩旧的 marker+summary 对（被 removeCompactionPairs 删光），
+            // 或整体超出摘要窗口预算被 truncateForSummaryWindow 截空。
+            // 检查放在清理**之后**：清理会改变消息集，必须按最终要发送的内容判空，
+            // 否则会发出一条只有指令、没有材料的摘要请求，模型只能凭空编造并落库顶替真实历史。
+            FileLogger.i(TAG, "无可压缩内容（head 清理后为空），跳过压缩")
             onEvent(AgentEvent.CompactionFinished)
             return messages.toList()
         }
         // 压缩请求：head 原始消息数组 + 末尾一条压缩指令（Codex 式），tools 不发送。
         // 消息数组保留真实角色结构（user/assistant/tool 配对），比文本化拼接更利于模型理解。
-        val summaryRequestMessages = headForSummary.trimLeadingForCompaction() + listOf(
+        val summaryRequestMessages = headMessages + listOf(
             AgentMessage.UserMessage(content = buildSummaryInstruction(previousSummary))
         )
 
@@ -335,8 +340,12 @@ class ContextCompactor @Inject constructor(
         // 事件驱动：把「本块可恢复」作为事实写进摘要尾部（而非静态工具描述），
         // 模型每轮回放都看得到这个块 id，需要细节时自然会去调 restoreCompactedRange。
         // 与工具 schema description 互补：description 说「什么时候该用」，这里说「现在有块可用」。
+        //
+        // 若本次因压缩模型窗口不足而丢了最旧的一段，同样写进产物：否则接手方
+        // 会把「摘要里没有」当成「从未发生」，而实际是「发生但未纳入摘要」——两者后果完全不同。
+        val droppedNotice = headForSummary.notice()
         val compactedMessageWithHint = compactedMessage.copy(
-            content = summaryText + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
+            content = summaryText + droppedNotice + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
                 "如摘要缺关键细节（报错原文、代码片段、精确数值）：先用 restoreCompactedRange 的 preview 模式" +
                 "检索定位（返回截断预览，省 token），确认需要完整原文再以 action=restore 恢复整块；" +
                 "不要为复核上下文而无谓恢复。"
@@ -503,8 +512,8 @@ class ContextCompactor @Inject constructor(
         return splitIndex
     }
 
-    private fun selectTailStartIndex(messages: List<AgentMessage>, usableTokens: Int): Int {
-        val budget = ModelContextPolicy.preserveRecentTokens(usableTokens)
+    private fun selectTailStartIndex(messages: List<AgentMessage>, usableTokens: Int, contextLimit: Int): Int {
+        val budget = ModelContextPolicy.preserveRecentTokens(usableTokens, contextLimit)
         return CompactionTailSelector.compute(messages, budget) { msg -> estimateTokens(msg) }
     }
 
@@ -556,12 +565,16 @@ class ContextCompactor @Inject constructor(
     }
 
     /**
-     * 压缩请求前的清理：截断可能丢弃最旧的 user 消息，导致头部出现孤立的 assistant/tool 消息，
-     * 丢到第一条 user 为止；去掉图片与超长工具输出，压缩模型按纯文本做摘要。
+     * 压缩请求前的清理：头部非 user 段折叠成一条 user 消息，并去掉图片与超长工具输出。
+     *
+     * 折叠规则与理由见 [CompactionHeadFolder]（该处含「丢光则永久失忆」的实测背景）。
      */
     private fun List<AgentMessage>.trimLeadingForCompaction(): List<AgentMessage> {
-        val trimmed = dropWhile { it !is AgentMessage.UserMessage }
-        return trimmed.map { msg ->
+        val leading = takeWhile { it !is AgentMessage.UserMessage }
+        val rest = drop(leading.size)
+        val folded = CompactionHeadFolder.fold(leading)
+        val withHead = if (folded == null) rest else listOf(folded) + rest
+        return withHead.map { msg ->
             when {
                 msg is AgentMessage.UserMessage && msg.images.isNotEmpty() -> msg.copy(images = emptyList())
                 msg is AgentMessage.ToolResultMessage && msg.result.length > TOOL_OUTPUT_MAX_CHARS ->
@@ -631,23 +644,21 @@ class ContextCompactor @Inject constructor(
      * 按压缩模型窗口预算截断 head：从新到旧保留消息，超预算丢弃更旧的消息。
      * 预算用与全局一致的 CJK 感知 token 口径（[ModelContextPolicy.estimateTokens]），预留 30%
      * 给摘要提示词与旧摘要（故乘 0.7）；不使用「字符数」的第二套口径，避免中文截不干净。
+     *
+     * 选取与丢弃量统计在 [CompactionSummaryWindow]（含回归用例）；
+     * 丢弃量会进 WARN 日志与摘要产物，避免「更早的历史没进摘要」被当成「从未发生」。
      */
-    private fun List<AgentMessage>.truncateForSummaryWindow(contextTokens: Int): List<AgentMessage> {
-        if (isEmpty()) return this
+    private fun List<AgentMessage>.truncateForSummaryWindow(contextTokens: Int): CompactionSummaryWindow.Result<AgentMessage> {
         val budgetTokens = (contextTokens * SUMMARY_WINDOW_RESERVE_RATIO).toInt()
-        var totalTokens = 0
-        val kept = mutableListOf<AgentMessage>()
-        for (msg in asReversed()) {
-            val tokens = estimateTokens(msg)
-            if (kept.isNotEmpty() && totalTokens + tokens > budgetTokens) break
-            totalTokens += tokens
-            kept.add(msg)
+        val result = CompactionSummaryWindow.selectTail(this, budgetTokens) { estimateTokens(it) }
+        if (result.hasDrop) {
+            FileLogger.w(
+                TAG,
+                "head 超出压缩模型窗口预算：丢弃 ${result.droppedCount} 条最旧消息" +
+                    "（约 ${result.droppedTokens} token，预算 $budgetTokens token）——这部分内容不会进摘要",
+            )
         }
-        val truncated = kept.asReversed()
-        if (truncated.size != size) {
-            FileLogger.i(TAG, "head 超出压缩模型窗口预算，丢弃 ${size - truncated.size} 条最旧消息（预算 $budgetTokens token）")
-        }
-        return truncated
+        return result
     }
 }
 
@@ -670,8 +681,60 @@ internal object CompactionFileTracker {
      */
     private const val BLOCK_CHAR_BUDGET = 2_000
 
-    /** 块区末尾的闭合标签：从摘要尾部反向剥块，只认真正写在末尾的清单。 */
-    private val BLOCK_CLOSE = Regex("</(read-files|modified-files)>\\s*$")
+    /** 块开/闭标签行：要求独占一行（与 [parseTrailingBlocks] 的行首判据同源）。 */
+    private val BLOCK_TAG_LINE = Regex("""^[ \t]*<(/?)(read-files|modified-files)>[ \t]*$""", RegexOption.MULTILINE)
+
+    /**
+     * 找出所有**完整清单块**的区间 `[起始, 结束)`。
+     *
+     * 判据（三个条件同时成立，缺一不可）：
+     * 1. 开闭标签各自**独占一行**；
+     * 2. 开标签与紧随其后的闭标签**同名**；
+     * 3. 两者之间不得再出现其它标签行。
+     *
+     * 这套判据同时避开两个已实测的坑：
+     * - 无锚点匹配会把「正文里提到 `<read-files>` 与 `</read-files>`」当成真块，
+     *   把中间整段正文当路径收下（实测该块涨到 12235 字符而真实路径 0 条）；
+     * - 只要求「闭标签前面能找到开标签」的宽松配对，会让真块**之后**正文里的
+     *   孤立 `</read-files>` 认领真块的开标签，把两者之间的正文全裁掉
+     *   （复核与主代理均用 JVM 实测复现）。
+     *
+     * 本函数取代了原先「裁到最后一个闭标签」的做法——那个做法的前提是「清单块在串尾」，
+     * 而摘要落库时尾部还拼着可恢复提示与丢弃量注记，前提不成立（详见 [parseTrailingBlocks]）。
+     */
+    private fun blockRanges(text: String): List<IntRange> {
+        val tags = BLOCK_TAG_LINE.findAll(text).toList()
+        val ranges = mutableListOf<IntRange>()
+        var i = 0
+        while (i + 1 < tags.size) {
+            val open = tags[i]
+            val close = tags[i + 1]
+            val matched = open.groupValues[1].isEmpty() &&
+                close.groupValues[1].isNotEmpty() &&
+                open.groupValues[2] == close.groupValues[2]
+            if (matched) {
+                ranges += open.range.first..close.range.last
+                i += 2
+            } else {
+                i++
+            }
+        }
+        return ranges
+    }
+
+    /** 去掉所有完整清单块，保留其余内容（写侧用：重写摘要前先剔除旧清单）。 */
+    private fun removeBlocks(text: String): String {
+        val ranges = blockRanges(text)
+        if (ranges.isEmpty()) return text
+        val sb = StringBuilder(text.length)
+        var pos = 0
+        for (r in ranges) {
+            sb.append(text, pos, r.first)
+            pos = r.last + 1
+        }
+        sb.append(text, pos, text.length)
+        return sb.toString()
+    }
 
     private const val TAG_READ = "read-files"
     private const val TAG_MODIFIED = "modified-files"
@@ -719,29 +782,30 @@ internal object CompactionFileTracker {
     }
 
     /**
-     * 只从消息**尾部**剥出清单块，要求标签各自独占行首。
+     * 从消息内容里读出所有**完整清单块**。
      *
-     * 不能用无锚点的 `findAll`：摘要里叙述清单机制时会自带 `<read-files>` 字样，
-     * 恰好凑成一对标签就会把中间整段正文当路径收下（实测该块涨到 12235 字符而真实路径为 0）；
-     * [append] 又把收下的脏行原样写回，故脏行逐轮自我累积。
+     * 用 [blockRanges] 的「独占行 + 紧邻同名配对」判据，而不是全文无锚点 findAll：
+     * 摘要在叙述清单机制时会自带 `<read-files>` 字样，恰好凑成一对就能把中间整段正文
+     * 当路径收下（实测该块涨到 12235 字符而真实路径为 0）。
      */
     private fun parseTrailingBlocks(content: String): Pair<List<String>, List<String>> {
         val found = mutableListOf<Pair<String, List<String>>>()
-        var body = content.trimEnd()
-        while (true) {
-            val close = BLOCK_CLOSE.find(body) ?: break
-            val tag = close.groupValues[1]
-            val openIndex = body.lastIndexOf("\n<$tag>", close.range.first)
-            if (openIndex < 0) break
-            val lines = body.substring(openIndex + tag.length + 3, close.range.first)
+        for (range in blockRanges(content)) {
+            val segment = content.substring(range.first, range.last + 1)
+            // 区间由 [blockRanges] 判定为「开标签行 + 内容 + 同名闭标签行」，
+            // 故恰有两个标签行；取首末即开与闭。
+            val matches = BLOCK_TAG_LINE.findAll(segment).toList()
+            if (matches.size < 2) continue
+            val open = matches.first()
+            val close = matches.last()
+            val tag = open.groupValues[2]
+            val lines = segment.substring(open.range.last + 1, close.range.first)
                 .lineSequence().map { it.trim() }.filter { it.isPathLike() }.toList()
             found.add(tag to lines)
-            body = body.substring(0, openIndex + 1)
         }
-        // 剥块是从尾部往头部走的，反过来才是文件里原有的先后顺序。
-        val ordered = found.asReversed()
-        return ordered.filter { it.first == TAG_READ }.flatMap { it.second } to
-            ordered.filter { it.first == TAG_MODIFIED }.flatMap { it.second }
+        // [blockRanges] 按文档顺序返回，故此处已是原先后顺序。
+        return found.filter { it.first == TAG_READ }.flatMap { it.second } to
+            found.filter { it.first == TAG_MODIFIED }.flatMap { it.second }
     }
 
     fun append(summary: String, ops: FileOps): String {
@@ -753,23 +817,18 @@ internal object CompactionFileTracker {
     }
 
     /**
-     * 先把摘要尾部已有的清单块剥干净再重新追加。
+     * 先把摘要里已有的清单块剔除干净再重新追加。
      *
-     * 不复用旧的全文 `findAll` 匹配：摘要里叙述清单机制时会自带标签字样，
-     * 无锚点的匹配会从第一个 `<read-files>` 一直吃到下一个 `</read-files>`，把中间正文整段切掉。
-     * 本函数只在尾部连续剥标签，遇到非块内容立即停，且要求标签前是行首（前一个字符为换行）。
+     * 用 [removeBlocks]（独占行 + 紧邻同名配对）而非全文无锚点匹配：后者会从第一个
+     * `<read-files>` 一直吃到下一个 `</read-files>`，把中间正文整段切掉。
+     * 剔除是「全部完整块」而非「仅尾部块」——块本就是待重写的元数据，
+     * 且模型复读上轮摘要尾部的注记也靠这一步清掉（否则逐轮累积）。
+     *
+     * 注意：块必须按 `read-files` → `modified-files` 顺序、不得交错。[blockRanges]
+     * 按标签出现顺序两两配对，交错嵌套（开 read → 开 mod → 闭 read → 闭 mod）会让两块都配不上、被整段漏读。
      */
     private fun StringBuilder.appendSummaryBody(summary: String) {
-        var body = summary
-        while (true) {
-            val close = BLOCK_CLOSE.find(body) ?: break
-            val tag = close.groupValues[1]
-            val openIndex = body.lastIndexOf("\n<$tag>", close.range.first)
-            // 标签未行首开头，说明是正文里提到「<read-files>」而非真块，不动。
-            if (openIndex < 0) break
-            body = body.substring(0, openIndex + 1)
-        }
-        append(body.trimEnd())
+        append(removeBlocks(summary).trimEnd())
     }
 
     private fun StringBuilder.appendBlocks(ops: FileOps) {
