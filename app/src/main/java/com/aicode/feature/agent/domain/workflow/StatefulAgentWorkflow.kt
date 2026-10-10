@@ -1077,6 +1077,12 @@ class StatefulAgentWorkflow @Inject constructor(
                                 workspaceKey = currentContext.projectRoot,
                                 toolNameOf = { it.name },
                                 commandTextOf = { commandTextOf(it) },
+                                // 只读判定优先读各工具声明的 capabilities（经 effectiveCapabilities 按实参求值）：
+                                // 声明了能力集就以能力为准，未声明（含动态 MCP 工具）回退按名判定，仍不确定一律串行。
+                                capabilitiesOf = { call ->
+                                    toolRegistry.getTool(call.name)?.effectiveCapabilities(call.arguments)
+                                        ?: emptySet()
+                                },
                             ) { toolCall ->
                                 val tool = toolRegistry.getTool(toolCall.name)
                                 if (tool is StreamingAgentTool) {
