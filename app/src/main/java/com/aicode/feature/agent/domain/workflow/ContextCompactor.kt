@@ -185,7 +185,24 @@ class ContextCompactor @Inject constructor(
             splitIndex = messages.size - 1
         }
         if (splitIndex <= 0) {
-            FileLogger.i(TAG, "压缩放弃：拆分点落在消息最前端，无可压缩内容，跳过压缩")
+            // 两种完全不同的成因必须分开记，否则误诊：
+            // ① 消息本地估算总量 <= tail 预算 → 确实无历史可压（正当跳过）；
+            // ② 总量 > 预算却仍归零 → 划分逻辑有缺陷（如恢复段保护把回溯拉到 0），是 bug。
+            // 实测教训：旧文案把两者混为「无可压缩内容」，曾导致把 ②（真 bug）误判为 ①。
+            val budget = ModelContextPolicy.preserveRecentTokens(triggerThreshold, contextLimit)
+            if (estimatedTokens > budget) {
+                FileLogger.w(
+                    TAG,
+                    "压缩异常：拆分点落在最前端但消息估算 ${estimatedTokens} > tail 预算 ${budget}（${messages.size} 条）——" +
+                        "划分逻辑未产出可压缩段，疑为 bug，本次跳过"
+                )
+            } else {
+                FileLogger.i(
+                    TAG,
+                    "压缩跳过：消息估算 ${estimatedTokens} <= tail 预算 ${budget}（${messages.size} 条），" +
+                        "全部历史均需保留，无可压缩内容"
+                )
+            }
             onEvent(AgentEvent.CompactionFinished)
             return messages.toList()
         }
