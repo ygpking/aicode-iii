@@ -63,17 +63,38 @@ class CompactionRestoreTest {
     }
 
     @Test
+    fun restoredAnchorAtHead_doesNotBlockCompaction() {
+        // 回归：恢复段横跨历史最前端时，不能启用整体保护。
+        //
+        // 真实事故：恢复块后原文回灌到历史最前端（restoredStart=0），旧实现让恢复段
+        // 不受预算限制整体进 tail → 回溯走到下标 0 → splitIndex=0 → 调用方判为
+        // 「无可压缩内容」永久跳过压缩。实测连续 25 次放弃、上下文从 220k 涨到 253k。
+        // 期望：仍按普通预算划分，得出**非 0** 的拆分点，压缩能继续工作。
+        val messages = listOf(
+            user("r1", restored = true),
+            assistant("r2", restored = true),
+            user("r3", restored = true),
+            user("u1"), assistant("a1")
+        )
+        val split = CompactionTailSelector.compute(messages, budget = 1, estimate = ::estimate)
+        assertTrue("恢复段锚在最前端时不得返回 0（否则压缩被永久跳过）", split > 0)
+        // 预算为 1 时只有最后一条能进 tail。
+        assertEquals(4, split)
+    }
+
+    @Test
     fun restoredSegmentIsProtectedFromTheStartOfTheSegment() {
-        // 恢复段从 r1 开始：即使 r1 恰好耗尽预算，tail 起点也必须推进到 r1（含），
+        // 恢复段**不在**最前端（前面还有可压缩的旧消息）：段首必须以预算外方式整体进 tail，
         // 否则下轮压缩会把刚恢复的消息再折回去，恢复白做。
         val messages = listOf(
-            user("r1", restored = true),           // 恢复段首
+            user("old1"),                        // 段首之前的旧消息（应留 head）
+            user("r1", restored = true),          // 恢复段首
             assistant("r2", restored = true),
-            user("u1"), assistant("a1")            // 新消息
+            user("u1"), assistant("a1")           // 新消息
         )
         // 预算只够 a1+u1+r2，r2 之后再放不下 r1 —— 但 r1 是恢复段首，必须整体进 tail。
         val split = CompactionTailSelector.compute(messages, budget = 60, estimate = ::estimate)
-        assertEquals(0, split)
+        assertEquals(1, split)
     }
 
     @Test
