@@ -685,6 +685,8 @@ internal object CompactionFileTracker {
     private val EXTENSION_TAIL = Regex("\\.[A-Za-z0-9]{1,8}$")
 
     private val READ_TOOLS = setOf("readFile")
+    // 与 EvidenceGuard.WRITE_TOOLS 语义不同源（这里是压缩时选文件用，那边是写凭证判定），
+    // 刻意不合并；若将来写工具集合变化，两处需各自评估。
     private val MODIFY_TOOLS = setOf("writeFile", "editFile")
 
     internal data class FileOps(

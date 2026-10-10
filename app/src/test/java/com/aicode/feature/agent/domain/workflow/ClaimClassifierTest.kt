@@ -124,4 +124,91 @@ class ClaimClassifierTest {
         val paths = ClaimClassifier.claimedPaths("Updated Foo.kt with the fix.")
         assertTrue(paths.any { it.contains("Foo.kt") })
     }
+
+    // ── 引用/转述不作数（真机两次误伤后补）────────────────────────
+
+    @Test
+    fun `代码块内的引用话术不算声明`() {
+        val msg = "以下是给用户的演示话术：\n```\n已修复该问题，全部测试通过。\n```\n请按上面步骤验证。"
+        assertFalse(ClaimClassifier.claimsChange(msg))
+        assertFalse(ClaimClassifier.claimsVerification(msg))
+    }
+
+    @Test
+    fun `贴 git 历史提交不算声明`() {
+        val msg = "历史提交：\n```\na1b2c3 fixed the crash in parser\n```\n以上为已有记录。"
+        assertFalse(ClaimClassifier.claimsChange(msg))
+    }
+
+    @Test
+    fun `代码块外真实声明仍命中`() {
+        assertTrue(ClaimClassifier.claimsChange("已修复该问题。\n```\n全部测试通过\n```"))
+    }
+
+    @Test
+    fun `未闭合代码块剥到文末`() {
+        // 锁死「剥到文末」语义——若改成「未闭合不剥」，真机第 1 次误伤会复发。
+        assertFalse(ClaimClassifier.claimsChange("说明如下：\n```\n已修复该问题"))
+    }
+
+    @Test
+    fun `行内 code 不被剥离`() {
+        // CLAIMED_PATH_RE 依赖反引号包裹路径，剥掉会让路径声明整体失配。
+        assertTrue(ClaimClassifier.claimsChange("已修改 `app/src/Foo.kt` 的逻辑。"))
+    }
+
+    @Test
+    fun `引文标记句不算声明`() {
+        assertFalse(ClaimClassifier.claimsChange("上面引用的「已修复」是演示话术，并非本轮改动。"))
+        assertFalse(ClaimClassifier.claimsChange("守卫提示里说我「声称修改了 Foo.kt」。"))
+        assertTrue(ClaimClassifier.claimsChange("已修复该问题。"))
+    }
+
+    @Test
+    fun `已更新记忆不算变更声明`() {
+        assertFalse(ClaimClassifier.claimsChange("已更新记忆。"))
+        assertFalse(ClaimClassifier.claimsChange("已更新了记忆。"))
+        assertTrue(ClaimClassifier.claimsChange("已更新 ClaimClassifier.kt。"))
+    }
+
+    // ── 记忆域用句子级判断（宾语正则有词序/修饰盲区）──────────────
+
+    @Test
+    fun `记忆域的各种词序与修饰都不算变更声明`() {
+        assertFalse(ClaimClassifier.claimsChange("已更新完记忆。"))
+        assertFalse(ClaimClassifier.claimsChange("已更新好了记忆。"))
+        assertFalse(ClaimClassifier.claimsChange("已更新了长期记忆。"))
+        assertFalse(ClaimClassifier.claimsChange("已修复完备忘。"))
+        assertFalse(ClaimClassifier.claimsChange("已更新完待办事项。"))
+        // 前置宾语——宾语正则永远看不见（前瞻只看动词后）
+        assertFalse(ClaimClassifier.claimsChange("记忆已更新。"))
+        // 跨空白修饰
+        assertFalse(ClaimClassifier.claimsChange("已更新了 3 处记忆"))
+    }
+
+    @Test
+    fun `带路径的记忆句仍算变更声明`() {
+        // 句里带文件路径就不是纯记忆域——混合句要拦。
+        assertTrue(ClaimClassifier.claimsChange("已更新了长期记忆和 Foo.kt"))
+        assertTrue(ClaimClassifier.claimsChange("已更新 memory.py"))
+    }
+
+    @Test
+    fun `英文 memory 相关的真实修复不被排除`() {
+        // memory 不进记忆域词表：「已修复 memory leak」是真实的修复声明。
+        assertTrue(ClaimClassifier.claimsChange("已修复 memory leak。"))
+        assertTrue(ClaimClassifier.claimsChange("已更新了 memory 缓存。"))
+        // 已知代价（复核定案）：英文宾语无路径，判为声明 → R2 低频误报一次。
+        assertTrue(ClaimClassifier.claimsChange("已更新 memory。"))
+    }
+
+    @Test
+    fun `回顾锚词句不算本轮声明`() {
+        assertFalse(ClaimClassifier.claimsChange("上一轮已修复该问题。"))
+        assertFalse(ClaimClassifier.claimsChange("上一回合我更新了 Foo.kt。"))
+        assertFalse(ClaimClassifier.claimsChange("上一步已修改完成。"))
+        assertFalse(ClaimClassifier.claimsChange("此前已解决了该缺陷。"))
+        // 「刚才/前面」刻意不进词表：它们可指本回合真声明或位置指代。
+        assertTrue(ClaimClassifier.claimsChange("刚才已修复该问题。"))
+    }
 }

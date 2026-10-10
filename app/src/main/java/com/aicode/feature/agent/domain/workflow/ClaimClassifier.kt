@@ -42,6 +42,9 @@ internal object ClaimClassifier {
     /** 「声称改了东西」的短语结构。 */
     private val CHANGE_PATTERNS = listOf(
         // 中文①：变更动词直接跟「已」，最可靠的形式。
+        // **不加宾语负前瞻**：记忆域（「已更新记忆」）交给句子级 [isMemoryDomainSentence] 判，
+        // 因为宾语正则可被前置宾语（「记忆已更新」）、跨空白修饰（「已更新了 3 处记忆」）绕过，
+        // 且加宽前瞻会把「已修复 memory leak」这类真实修复误排除（实测回归）。
         Regex("已(?:经)?(?:修改|改动|更新|修复|解决|改好|改完|写好)(?:了|完成|完毕)?"),
         // 中文②：「已实现/已完成」需排除非变更主语（方案落地、核查完成都不算改代码）。
         Regex("(?<!(?:$NON_CHANGE_BEFORE))已(?:经)?实现(?!方案|计划|目标|需求|思路|构想|想法)"),
@@ -114,15 +117,64 @@ internal object ClaimClassifier {
     fun hasEnChangeVerb(message: String): Boolean = EN_CHANGE_VERBS.containsMatchIn(message)
 
     /** 是否声称「验证通过」。 */
-    fun claimsVerification(message: String): Boolean =
-        !isSuppressed(message) && splitSentences(message).any { s -> VERIFY_PATTERNS.any { it.containsMatchIn(s) } }
+    fun claimsVerification(message: String): Boolean {
+        val text = stripFencedBlocks(message)
+        return !isSuppressed(text) && splitSentences(text).any { s -> VERIFY_PATTERNS.any { it.containsMatchIn(s) } }
+    }
 
     /** 是否声称「改了东西」。 */
-    fun claimsChange(message: String): Boolean =
-        !isSuppressed(message) && splitSentences(message).any { s -> CHANGE_PATTERNS.any { it.containsMatchIn(s) } }
+    fun claimsChange(message: String): Boolean {
+        val text = stripFencedBlocks(message)
+        return !isSuppressed(text) && splitSentences(text)
+            .any { s -> !isMemoryDomainSentence(s) && CHANGE_PATTERNS.any { it.containsMatchIn(s) } }
+    }
+
+    /**
+     * 该句是否只是在说「记忆/备忘/待办」域的东西（memory/todo 工具的操作）。
+     *
+     * 这类操作不是文件写入，在 R2 里永远拿不到凭证，故不作变更声明。
+     * 用**句级判断**而非正则枚举宾语：宾语正则对词序 / 修饰长度 / 空白全都无能为力
+     * （「记忆已更新」「已更新了 3 处记忆」都饶得过），而句级判断天然免疫这些。
+     * 句里带文件路径时不算记忆域——「更新长期记忆和 Foo.kt」这种混合句要拦。
+     * 词表只留中文三词：`memory` 不进，「已修复 memory leak」是真实修复。
+     */
+    private fun isMemoryDomainSentence(sentence: String): Boolean =
+        MEMORY_DOMAIN_RE.containsMatchIn(sentence) && !PATH_LIKE_RE.containsMatchIn(sentence)
+
     /** 提取文本里点名的文件路径（声明改了某个具体文件时用）。 */
     fun claimedPaths(message: String): List<String> =
-        CLAIMED_PATH_RE.findAll(message).map { it.groupValues[1] }.filter { it.isNotBlank() }.toList().distinct()
+        CLAIMED_PATH_RE.findAll(stripFencedBlocks(message))
+            .map { it.groupValues[1] }.filter { it.isNotBlank() }.toList().distinct()
+
+    /**
+     * 剥离 fenced code block（``` 围栏）内容。
+     *
+     * 贴演示话术、贴 git log/diff、贴历史输出都在围栏里——它们不是本回合的完工声明，
+     * 但纯字符串匹配会把里面的「已修复 / 全部通过」当成自己的话（真机已实证两次误伤）。
+     *
+     * 只处理 ``` 围栏：未闭合时按 markdown 语义剥到文末（漏报方向，可接受）。
+     * **行内 code 不剥**——[CLAIMED_PATH_RE] 依赖反引号包裹的路径（``已修改 `Foo.kt` ``），
+     * 剥掉会让路径声明整体失配。
+     */
+    fun stripFencedBlocks(message: String): String {
+        if (!message.contains("```")) return message
+        val out = StringBuilder()
+        var inFence = false
+        message.lineSequence().forEach { line ->
+            if (line.trimStart().startsWith("```")) {
+                inFence = !inFence
+                return@forEach
+            }
+            if (!inFence) out.appendLine(line)
+        }
+        return out.toString()
+    }
+
+    /** 记忆域宾语（memory / todo 工具的操作对象）。 */
+    private val MEMORY_DOMAIN_RE = Regex("记忆|备忘|待办")
+
+    /** 像文件路径的串：句里出现它就不是单纯的记忆域句子。 */
+    private val PATH_LIKE_RE = Regex("[\\w./\\-]+\\.\\w+")
 
     /**
      * 整段抑制：命中任一 NEGATOR 即视为非声明。
@@ -161,10 +213,37 @@ internal object ClaimClassifier {
             .filterNot { it.contains("有没有") || it.contains("是不是") }
             .filterNot { it.startsWith("是否") || it.contains("是否已") }
             .filterNot { CONDITION_MARKERS.any { m -> it.contains(m) } }
+            .filterNot { QUOTE_MARKERS.any { m -> m.containsMatchIn(it) } }
             .filterNot { it.startsWith(">") || it.startsWith("|") }
 
     /** 条件标记：出现在句里即整句视为假设而非断言（宁可漏判，不可误判）。 */
     private val CONDITION_MARKERS = listOf("如果", "若", "一旦", "假如", "倘若", "要是", "的话")
+
+    /**
+     * 引文标记：句里出现即视为「在引述/转述他人或自己的话」，不作声明。
+     *
+     * 必须**句子级**（不能进整段级 [NEGATORS]）——否则一句引文会压掉全篇真声明。
+     * 词表刻意取窄：「例如/比如/示例/假设」不进表，它们与声明短语同小句的概率不低
+     * （「例如已修复了三处」连写是真声明）；「声明」排除「声明式」（Compose 高频术语）。
+     * 「声称/声明」是切断拉回循环的关键：拉回注入文案与 escalate 会带上次声明原文，
+     * 模型下轮复述「守卫说我『声称修改了 Foo.kt』」时若不复述判引文，会被再拉回一次。
+     */
+    private val QUOTE_MARKERS = listOf(
+        Regex("引用"),
+        Regex("原文"),
+        Regex("话术"),
+        Regex("复述"),
+        Regex("转述"),
+        Regex("演示"),
+        Regex("声称"),
+        Regex("声明(?!式)"),
+        // 回顾锚词：跨回合汇报的标志（「上一轮改了什么」）。
+        // 砍掉「刚才/前面」：「刚才检查发现真修了」是本回合真声明、「前面几行」是位置指代。
+        Regex("上一轮"),
+        Regex("上一回合"),
+        Regex("上一步"),
+        Regex("此前"),
+    )
 
     /** 逐句判定某个局部否定是否抑制该句（供调用方做句级核对）。 */
     fun sentenceIsNegative(sentence: String): Boolean =

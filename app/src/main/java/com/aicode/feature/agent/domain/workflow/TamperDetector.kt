@@ -113,7 +113,57 @@ internal object TamperDetector {
     fun looksLikeTestPath(path: String): Boolean = isTestPath(path)
 
     private fun codeLines(text: String): List<String> =
-        text.lines().filter { !isCommentLine(it) }
+        stripStringLiterals(text).lines().filter { !isCommentLine(it) }
+
+    /**
+     * 把字符串字面量的内容替换为空格（保留换行与其余结构）。
+     *
+     * 断言计数必须看出字符串之外的东西：本守卫自己的测试文件就用
+     * `"... assertTrue(true) ..."` 这种字符串当语料（测作弊检测用），
+     * 按行正则会把语料算成真断言而误报（真机已实咬：改该测试文件必被拉回一轮）。
+     * 对普通字符串与 `"""` 多行字符串都处理，转义不出界。
+     */
+    private fun stripStringLiterals(text: String): String {
+        if (!text.contains('"')) return text
+        val sb = StringBuilder(text.length)
+        var i = 0
+        while (i < text.length) {
+            when {
+                text.startsWith("\"\"\"", i) -> {
+                    sb.append("   ")
+                    i += 3
+                    while (i < text.length) {
+                        if (text.startsWith("\"\"\"", i)) {
+                            sb.append("   ")
+                            i += 3
+                            break
+                        }
+                        sb.append(if (text[i] == '\n') '\n' else ' ')
+                        i++
+                    }
+                }
+                text[i] == '"' -> {
+                    sb.append(' ')
+                    i++
+                    while (i < text.length && text[i] != '"') {
+                        // 反斜杠转义：跳过后一个字符，避免 `\"` 被当成字符串结束
+                        if (text[i] == '\\' && i + 1 < text.length) i++
+                        sb.append(if (text[i] == '\n') '\n' else ' ')
+                        i++
+                    }
+                    if (i < text.length) {
+                        sb.append(' ')
+                        i++
+                    }
+                }
+                else -> {
+                    sb.append(text[i])
+                    i++
+                }
+            }
+        }
+        return sb.toString()
+    }
 
     /** 整行注释与空行不计入比对（注释掉测试不算删除测试，但也不算保留）。 */
     private fun isCommentLine(line: String): Boolean {
@@ -208,7 +258,9 @@ internal object TamperDetector {
      */
     fun inspectBuildConfig(path: String, after: String): List<String> {
         if (!looksLikeBuildConfig(path)) return emptyList()
-        return if (GRADLE_TEST_DISABLE_RE.containsMatchIn(after)) {
+        // 先剔字符串字面量：配置里也可能内嵌含有禁用写法的字符串语料（本仓库测试中就有）。
+        val body = stripStringLiterals(after)
+        return if (GRADLE_TEST_DISABLE_RE.containsMatchIn(body)) {
             listOf("构建配置 `$path` 里出现禁用/忽略测试失败的设置（让测试恒过而不修问题）")
         } else {
             emptyList()

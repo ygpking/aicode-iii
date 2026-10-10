@@ -21,6 +21,14 @@ data class LedgerFail(
     val ts: Long,
 )
 
+/** 账本里一次成功写文件的记录（供跨回合汇报核对凭证）。 */
+@Serializable
+data class LedgerWrite(
+    val tool: String,
+    val path: String,
+    val ts: Long,
+)
+
 /**
  * 单个会话的账本内容。
  *
@@ -45,8 +53,34 @@ data class EvidenceLedger(
      * 展示层（把它带进 `EvidenceGuardReport`）待接，当前只落账本。
      */
     val redThenGreen: Boolean = false,
+    /**
+     * 最近的写文件记录（环形，最多 [EvidenceLedgerRepository.MAX_WRITES] 条）。
+     *
+     * 供 [hasRecentWrite] 判定「跨回合汇报」：run 级 records 只活一次收尾，
+     * 而多轮任务里模型下一轮汇报上一轮的改动是常态（真机实证：不认会让每轮汇报都被拉回）。
+     */
+    val recentWrites: List<LedgerWrite> = emptyList(),
 ) {
     companion object {
+        /** 跨回合写凭证的时效：只认最近这么久的写入。太宽会拿旧成果给新声明背书。 */
+        const val PRIOR_WRITE_WINDOW_MS = 30L * 60 * 1000
+
+        /**
+         * 本会话近期是否成功写过 [path]（[path] 为 null 时只判「有没有写过任何文件」）。
+         *
+         * R3 的路径核对**不放宽**：点名了文件就要么本回合写、要么窗内写过该路径。
+         */
+        fun hasRecentWrite(writes: List<LedgerWrite>, now: Long, path: String? = null): Boolean =
+            writes.any { w -> now - w.ts <= PRIOR_WRITE_WINDOW_MS && (path == null || pathMatches(w.path, path)) }
+
+        /** 路径匹配：等值、或一方是另一方的路径后缀（`app/x.kt` ↔ `/root/workspace/app/x.kt`）。 */
+        private fun pathMatches(actual: String, claimed: String): Boolean {
+            val a = actual.trim()
+            val c = claimed.trim()
+            if (a == c) return true
+            return a.endsWith("/$c") || c.endsWith("/$a")
+        }
+
         /**
          * 根据本次裁决合并出新账本（纯函数，便于单测）。
          *
@@ -62,17 +96,23 @@ data class EvidenceLedger(
             failed: Boolean,
             claim: String,
             commands: List<LedgerCommand>,
+            writes: List<LedgerWrite>,
             now: Long,
             maxCommands: Int,
+            maxWrites: Int,
         ): EvidenceLedger {
             val merged = (old.verifyCommands + commands)
                 .distinctBy { it.cmd to it.ts }
                 .takeLast(maxCommands)
+            val mergedWrites = (old.recentWrites + writes)
+                .distinctBy { it.tool to it.path to it.ts }
+                .takeLast(maxWrites)
             return old.copy(
                 consecutiveFails = if (failed) old.consecutiveFails + 1 else 0,
                 lastFail = if (failed) LedgerFail(claim = claim.take(500), verdict = "FAIL", ts = now) else old.lastFail,
                 verifyCommands = merged,
                 redThenGreen = hasRedThenGreenIn(merged),
+                recentWrites = mergedWrites,
             )
         }
 

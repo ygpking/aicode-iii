@@ -272,4 +272,120 @@ class EvidenceGuardV2Test {
         val after = "class Foo { fun a() { println(2) } }"
         assertEquals(emptyList<String>(), TamperDetector.inspect("app/src/main/Foo.kt", before, after))
     }
+
+    // ── 守卫收尾裁决：引用与只读工具不应误伤（真机实证后补）─────────
+
+    @Test
+    fun `引用话术收尾不触发拉回`() {
+        val msg = "演示话术：\n```\n已修复，全部测试通过\n```"
+        assertTrue(EvidenceGuard.evaluate(msg, emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `更新记忆不触发 R2`() {
+        assertTrue(EvidenceGuard.evaluate("已更新记忆。", listOf(rec("memory"))).isEmpty())
+    }
+
+    @Test
+    fun `readFile 测试文件不判作弊`() {
+        // 真机实咬：readFile 带 path 参数进比对，preWrite 无旧内容 → 按「新建文件」
+        // 分支报「新增 5 处恒真断言」。只对写工具比对后此路断绝。
+        val content = "class FooTest {\n    fun `a`() { assertTrue(true) }\n}"
+        val record = EvidenceGuard.buildToolRecord(
+            toolName = "readFile",
+            isError = false,
+            path = "app/src/test/java/com/aicode/feature/agent/domain/workflow/FooTest.kt",
+            readFile = { content },
+            preWrite = emptyMap(),
+        )
+        assertEquals(false, record.tampered)
+        assertTrue(EvidenceGuard.evaluate("分析结论如下。", listOf(record)).isEmpty())
+    }
+
+    @Test
+    fun `writeFile 新建全恒真测试文件仍判作弊`() {
+        val content = "class FooTest {\n    @Test\n    fun `a`() { assertTrue(true) }\n}"
+        val record = EvidenceGuard.buildToolRecord(
+            toolName = "writeFile",
+            isError = false,
+            path = "app/src/test/java/com/aicode/feature/agent/domain/workflow/FooTest.kt",
+            readFile = { content },
+            preWrite = emptyMap(),
+        )
+        assertEquals(true, record.tampered)
+    }
+
+    @Test
+    fun `写工具白名单统一`() {
+        assertTrue(EvidenceGuard.isWriteTool("editFile"))
+        assertTrue(EvidenceGuard.isWriteTool("writeFile"))
+        assertEquals(false, EvidenceGuard.isWriteTool("readFile"))
+        assertEquals(false, EvidenceGuard.isWriteTool("memory"))
+    }
+
+    // ── 跨回合汇报凭证（账本近期写入窗口）─────────────────────────
+
+    @Test
+    fun `本回合没写文件但会话近期写过时 R2 放行`() {
+        val now = 1_000_000L
+        val writes = listOf(LedgerWrite(tool = "editFile", path = "app/src/Foo.kt", ts = now - 60_000))
+        assertTrue(EvidenceGuard.evaluate("已修复该问题。", emptyList(), writes, now).isEmpty())
+    }
+
+    @Test
+    fun `窗口外的旧写入不给声明背书`() {
+        val now = 10_000_000L
+        val writes = listOf(
+            LedgerWrite(tool = "editFile", path = "app/src/Foo.kt", ts = now - EvidenceLedger.PRIOR_WRITE_WINDOW_MS - 1)
+        )
+        assertTrue(EvidenceGuard.evaluate("已修复该问题。", emptyList(), writes, now).isNotEmpty())
+    }
+
+    @Test
+    fun `R3 路径核对不放宽——窗内写过别的文件不算`() {
+        val now = 1_000_000L
+        val writes = listOf(LedgerWrite(tool = "editFile", path = "app/src/Other.kt", ts = now - 1000))
+        assertTrue(
+            EvidenceGuard.evaluate("已修改 app/src/Foo.kt 的逻辑。", emptyList(), writes, now).isNotEmpty()
+        )
+    }
+
+    @Test
+    fun `R3 窗内写过同一路径则放行`() {
+        val now = 1_000_000L
+        val writes = listOf(LedgerWrite(tool = "editFile", path = "app/src/Foo.kt", ts = now - 1000))
+        assertTrue(
+            EvidenceGuard.evaluate("已修改 app/src/Foo.kt 的逻辑。", emptyList(), writes, now).isEmpty()
+        )
+    }
+
+    @Test
+    fun `无任何写凭证的声明仍被拦`() {
+        assertTrue(EvidenceGuard.evaluate("已修复该问题。", emptyList(), emptyList(), 1_000_000L).isNotEmpty())
+    }
+
+    @Test
+    fun `字符串语料里的恒真断言不算真断言`() {
+        // 本守卫自己的测试文件就用这种字符串当饲料，按行正则会把语料算成断言
+        // （真机实咬：改该测试文件必被拉回一轮）。
+        val before = "class ATest {\n    fun `a`() { assertEquals(1, 1) }\n}"
+        val after = before + "\nval content = \"class FooTest { fun `a`() { assertTrue(true) } }\"\n"
+        assertEquals(emptyList<String>(), TamperDetector.inspect("app/src/test/ATest.kt", before, after))
+    }
+
+    @Test
+    fun `多行字符串里的断言语料也被剥离`() {
+        val before = "class ATest {\n    fun `a`() { assertEquals(1, 1) }\n}"
+        val after = before + "\nval s = \"\"\"\n    fun `b`() { assertTrue(true) }\n\"\"\"\n"
+        assertEquals(emptyList<String>(), TamperDetector.inspect("app/src/test/ATest.kt", before, after))
+    }
+
+    @Test
+    fun `真实代码里的恒真断言仍被检出`() {
+        // 字符串剥离不能把真断言的检出一起剥掉。
+        val before = "class ATest {\n    fun `a`() { assertEquals(1, 1) }\n}"
+        val after = "class ATest {\n    fun `a`() { assertEquals(1, 1) }\n    fun `b`() { assertTrue(true) }\n}"
+        val found = TamperDetector.inspect("app/src/test/ATest.kt", before, after)
+        assertTrue(found.any { it.contains("恒真断言") })
+    }
 }

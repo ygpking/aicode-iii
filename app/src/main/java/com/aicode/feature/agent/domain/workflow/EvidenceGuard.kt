@@ -1,5 +1,7 @@
 package com.aicode.feature.agent.domain.workflow
 
+import com.aicode.core.util.FileLogger
+
 /**
  * 完工证据守卫：模型宣布「做完 / 验证通过」时，用本回合的工具执行记录核对是否有对应凭证。
  *
@@ -59,6 +61,52 @@ internal object EvidenceGuard {
     /** 写文件类工具：只有它们能作为「改了代码」的凭证。 */
     private val WRITE_TOOLS = setOf("editFile", "writeFile")
 
+    private const val TAG = "EvidenceGuard"
+
+    /**
+     * 该工具是否为「写文件」工具。
+     *
+     * checkpoint 快照、写前抓旧内容、作弊比对、R2/R3 凭证四处共用，防白名单漂移
+     * （本 bug 本身就是「比对处只看 path 不看工具名」与前两处白名单不一致的产物）。
+     */
+    internal fun isWriteTool(name: String): Boolean = name in WRITE_TOOLS
+
+    /**
+     * 从一次工具调用组装 [ToolRecord]，并判定写测试文件是否构成作弊。
+     *
+     * 提取自 workflow 内联代码：R4 是唯一**不依赖模型声明**的拉回通道（真机已实咬），
+     * 需要可测入口。
+     *
+     * 只对写工具比对：`readFile` 等带 `path` 参数的成功调用若一并进入比对，
+     * `preWrite` 里没它的旧内容，[TamperDetector.inspect] 会按「新建文件」分支判定而误报
+     * （真机实证：读守卫自己的测试文件被判「新增 5 处恒真断言」）。
+     */
+    internal fun buildToolRecord(
+        toolName: String,
+        isError: Boolean,
+        path: String?,
+        readFile: (String) -> String?,
+        preWrite: Map<String, String?>,
+        command: String? = null,
+        outputTail: String? = null,
+    ): ToolRecord {
+        val tampered = if (!isError && path != null && isWriteTool(toolName)) {
+            val after = readFile(path)
+            if (after != null) {
+                // 两条作弊路径：改测试本身、改构建配置禁用测试。
+                // 新文件也要过 inspect（传 before=null）：删用例/减断言分支因
+                // oldAsserts=0 天然不触发，但「新建全恒真断言文件」靠它才能检出。
+                (
+                    TamperDetector.inspect(path, preWrite[path], after) +
+                        TamperDetector.inspectBuildConfig(path, after)
+                    )
+                    .also { if (it.isNotEmpty()) FileLogger.w(TAG, "测试作弊特征：${it.joinToString("；")}") }
+                    .isNotEmpty()
+            } else false
+        } else false
+        return ToolRecord(toolName, isError, path, command, tampered, outputTail)
+    }
+
     /** 报告失败的词。句里出现这些词，说明是在如实报告失败而不是声称全通过。 */
     private val FAILURE_MARKERS = listOf("失败", "不通过", "未通过", "failed", "failure")
 
@@ -67,16 +115,25 @@ internal object EvidenceGuard {
      *
      * @param message 本回合最后一条模型正文（收尾声明所在）。
      * @param records 本次请求内累积的工具执行记录。
+     * @param priorWrites 本会话账本里的历史写文件记录（跨回合汇报的凭证来源）。
      * @return 违规说明列表；空表示声明都有凭证，放行收尾。
      */
-    fun evaluate(message: String, records: List<ToolRecord>): List<String> {
+    fun evaluate(
+        message: String,
+        records: List<ToolRecord>,
+        priorWrites: List<LedgerWrite> = emptyList(),
+        now: Long = System.currentTimeMillis(),
+    ): List<String> {
         if (message.isBlank()) return emptyList()
 
         val notices = mutableListOf<String>()
 
         // 失败词按**整条消息**排除而非逐句：真实汇报常把「测试通过」与「但 2 个 failed」
         // 拆成小句（逗号切分后分属两句），逐句判定会漏掉这个跨句情形。
-        val mentionsFailure = FAILURE_MARKERS.any { message.contains(it, ignoreCase = true) }
+        // 先剥 fenced block：贴演示话术/历史输出/失败堆栈都在围栏里，不是本回合的声明
+        // （不剥会让「贴出的旧输出」既提供失败词又提供通过声明）。
+        val body = ClaimClassifier.stripFencedBlocks(message)
+        val mentionsFailure = FAILURE_MARKERS.any { body.contains(it, ignoreCase = true) }
 
         val claimsVerify = !mentionsFailure && ClaimClassifier.claimsVerification(message)
         val claimsChange = ClaimClassifier.claimsChange(message)
@@ -86,15 +143,21 @@ internal object EvidenceGuard {
             notices += "你声称验证/测试通过，但本回合没有成功的命令执行记录。请实际运行验证后再报告，或明确说明「未验证」。"
         }
 
-        // R2：声称改完并解决，但本回合没有任何成功的文件修改。
-        if (claimsChange && !hasSuccessfulWrite(records)) {
+        // R2：声称改完并解决，但本回合没有成功的文件修改。
+        // 凭证扩到会话级近期写入：多轮任务里「本回合只汇报不写文件」是常态。
+        if (claimsChange && !hasSuccessfulWrite(records) &&
+            !EvidenceLedger.hasRecentWrite(priorWrites, now)
+        ) {
             notices += "你声称已完成/已修复，但本回合没有成功的文件修改记录。请确认是否已动手，或改为说明当前状态与下一步。"
         }
 
         // R3：点名说了改了某个文件，但本回合没有对该路径的成功写入。
+        // 路径核对不放宽：要么本回合写，要么窗内写过该路径。
         if (claimsChange) {
             ClaimClassifier.claimedPaths(message).forEach { claimed ->
-                if (!hasSuccessfulWriteTo(records, claimed)) {
+                if (!hasSuccessfulWriteTo(records, claimed) &&
+                    !EvidenceLedger.hasRecentWrite(priorWrites, now, claimed)
+                ) {
                     notices += "你声称修改了 `$claimed`，但本回合没有对该文件的成功修改记录。请确认，或说明实际改动位置。"
                 }
             }
@@ -130,10 +193,10 @@ internal object EvidenceGuard {
         }
 
     private fun hasSuccessfulWrite(records: List<ToolRecord>): Boolean =
-        records.any { !it.isError && it.toolName in WRITE_TOOLS }
+        records.any { !it.isError && isWriteTool(it.toolName) }
 
     private fun hasSuccessfulWriteTo(records: List<ToolRecord>, claimed: String): Boolean =
-        records.any { !it.isError && it.toolName in WRITE_TOOLS && pathMatches(it.path, claimed) }
+        records.any { !it.isError && isWriteTool(it.toolName) && pathMatches(it.path, claimed) }
 
     /** 路径匹配：等值、或一方是另一方的工作区相对路径（`app/x.kt` ↔ `/root/workspace/app/x.kt`）。 */
     private fun pathMatches(actual: String?, claimed: String): Boolean {

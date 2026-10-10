@@ -646,11 +646,14 @@ class StatefulAgentWorkflow @Inject constructor(
                 newState.isFinished &&
                 newState.error == null
             ) {
-                val notices = EvidenceGuard.evaluate(action.response.content, evidenceRecords)
-                // 跨回合账本：run 级记录收尾即丢，长会话压缩后模型也看不到早期被拉回的消息，
-                // 故条次与上次声明要从会话级账本取（本址不在容器绑定内，模型改不了）。
                 val sessionId = currentContext.sessionId
                 val ledger = if (sessionId != null) evidenceLedgerRepository.load(sessionId) else EvidenceLedger()
+                // 跨回合汇报：本回合只汇报不写文件时，用会话账本里的近期写入作凭证。
+                val notices = EvidenceGuard.evaluate(
+                    action.response.content,
+                    evidenceRecords,
+                    priorWrites = ledger.recentWrites
+                )
                 if (notices.isNotEmpty()) {
                     if (newState.evidenceGuardBlocks < EvidenceGuard.MAX_BLOCKS) {
                         // 还有拉回余量：注入提示并续跑一轮（同空响应兜底的软拉回范式）。
@@ -685,7 +688,8 @@ class StatefulAgentWorkflow @Inject constructor(
                         sessionId = sessionId,
                         failed = notices.isNotEmpty(),
                         claim = action.response.content,
-                        verifyCommands = verifyCommandsOf(evidenceRecords)
+                        verifyCommands = verifyCommandsOf(evidenceRecords),
+                        writes = writesOf(evidenceRecords)
                     )
                 }
             }
@@ -1038,7 +1042,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         // 统一记录 checkpoint（editFile/writeFile 修改前快照），再并行执行；
                         // mode 切换检查在结果收集后于主协程串行处理（planApproval 单例）。
                         toRun.forEach { toolCall ->
-                            if (toolCall.name == "editFile" || toolCall.name == "writeFile") {
+                            if (EvidenceGuard.isWriteTool(toolCall.name)) {
                                 (toolCall.arguments["path"] as? JsonPrimitive)?.contentOrNull?.let { path ->
                                     currentContext.sessionId?.let { sid ->
                                         checkpointManager.beforeFileModified(sid, path)
@@ -1052,7 +1056,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         val preWriteContents = HashMap<String, String?>()
                         if (evidenceGuardEnabled) {
                             toRun.forEach { toolCall ->
-                                if (toolCall.name == "editFile" || toolCall.name == "writeFile") {
+                                if (EvidenceGuard.isWriteTool(toolCall.name)) {
                                     (toolCall.arguments["path"] as? JsonPrimitive)?.contentOrNull?.let { path ->
                                         if (TamperDetector.looksLikeTestPath(path)) {
                                             preWriteContents[path] = runCatchingCancellable { fileAccess.readFile(path) }.getOrNull()
@@ -1104,29 +1108,17 @@ class StatefulAgentWorkflow @Inject constructor(
                                 else -> null
                             }
                             // 写测试文件时比对前后内容，判定是否削弱了验证（删用例/加 skip/撇断言）。
+                            // 只对写工具比对——任何带 path 参数的工具（含 readFile）都进来会把「读」当「写」，
+                            // preWrite 里没它的旧内容，误按「新建文件」分支报作弊（真机已实咬）。
                             val writtenPath = (args["path"] as? JsonPrimitive)?.contentOrNull
-                            val tampered = if (!(rr?.isError ?: true) && writtenPath != null) {
-                                val after = runCatchingCancellable { fileAccess.readFile(writtenPath) }.getOrNull()
-                                if (after != null) {
-                                    // 两条作弊路径：改测试本身、改构建配置禁用测试。
-                                    // 新文件也要过 inspect（传 before=null）：删用例/减断言分支因
-                                    // oldAsserts=0 天然不触发，但「新建全恒真断言文件」靠它才能检出。
-                                    val findings = TamperDetector.inspect(
-                                        writtenPath,
-                                        preWriteContents[writtenPath],
-                                        after
-                                    ) + TamperDetector.inspectBuildConfig(writtenPath, after)
-                                    findings.also { if (it.isNotEmpty()) FileLogger.w(TAG, "测试作弊特征：${it.joinToString("；")}") }
-                                        .isNotEmpty()
-                                } else false
-                            } else false
                             evidenceRecords.add(
-                                EvidenceGuard.ToolRecord(
+                                EvidenceGuard.buildToolRecord(
                                     toolName = toolCall.name,
                                     isError = rr?.isError ?: true,
-                                    path = (args["path"] as? JsonPrimitive)?.contentOrNull,
+                                    path = writtenPath,
+                                    readFile = { p -> runCatchingCancellable { fileAccess.readFile(p) }.getOrNull() },
+                                    preWrite = preWriteContents,
                                     command = command,
-                                    tampered = tampered,
                                     // 取结果尾部：工具层把非零退出包装成 Success（isError 恒 false），
                                     // 只有输出尾部的 BUILD FAILED/AssertionError 能揭示真实失败。
                                     outputTail = if (command != null) {
@@ -1538,6 +1530,21 @@ class StatefulAgentWorkflow @Inject constructor(
                 ok = !CommandOutcome.hasFailureSignal(rec.outputTail),
                 ts = now
             )
+        }
+    }
+
+    /**
+     * 把 run 级的工具记录筛成本账本用的**写文件**记录。
+     *
+     * 只留成功的写工具调用（带路径）——供下一轮「跨回合汇报」核对凭证。
+     */
+    private fun writesOf(records: List<EvidenceGuard.ToolRecord>): List<LedgerWrite> {
+        val now = System.currentTimeMillis()
+        return records.mapNotNull { rec ->
+            if (rec.isError) return@mapNotNull null
+            if (!EvidenceGuard.isWriteTool(rec.toolName)) return@mapNotNull null
+            val path = rec.path ?: return@mapNotNull null
+            LedgerWrite(tool = rec.toolName, path = path, ts = now)
         }
     }
 
