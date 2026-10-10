@@ -24,9 +24,11 @@
 | 冒烟编译（日常默认） | `./gradlew :app:assembleUniversalDebug` |
 | 推送前单测 | `./gradlew :app:testUniversalDebugUnitTest` |
 | 推送前迁移对账 | `python3 scripts/check_migrations.py`（或 `./gradlew checkMigrations`） |
+| 压缩链路回归（改压缩/会话回放相关时） | `python3 scripts/check_compaction_flow.py` |
 | 发版构建 APK / AAB | `./gradlew assembleRelease` / `./gradlew bundleRelease` |
 
 - **别用聚合任务做日常验证**：`assembleDebug` / `assembleRelease` / `test` / `build` 都会跨三个 flavor 全跑，耗时极长。
+- **上下文压缩链路有专门的回归脚本**：`scripts/check_compaction_flow.py`。改 `CompactionTailSelector`、`CompactionThreshold`、`ModelContextPolicy`、`AgentMessageDao` 的压缩块 SQL、`buildHistory` 的筛选与配对、`SessionHistoryPager` 时**必须跑**。它含正向仿真 + **失败注入自检**（注入已知缺陷，要求检查变红）——若注入后仍全绿，说明用例无判别力，脚本自身会报失败。
 - 产物：`app/build/outputs/apk/<flavor>/release/app-<flavor>-release.apk`、`.../bundle/<flavor>/release/app-<flavor>-release.aab`。
 - flavor 按 ABI 拆分：`universal`（arm64-v8a + x86_64）、`armsolo`（仅 arm64-v8a）、`x86solo`（仅 x86_64）。
 - release 签名凭据读 `app/keystore.properties`（`storeFile` / `storePassword` / `keyAlias` / `keyPassword`）；本地通常不存放签名文件，CI 从 GitHub secret 还原到 `app/aicode.jks`。
