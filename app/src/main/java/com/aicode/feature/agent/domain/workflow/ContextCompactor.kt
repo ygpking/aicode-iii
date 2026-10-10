@@ -153,13 +153,13 @@ class ContextCompactor @Inject constructor(
         val summaryMetadata = modelMetadataService.resolve(aiProvider.providerId, inferProviderType(aiProvider), aiProvider.model)
         val contextLimit = windowMetadata.contextTokens.takeIf { it > 0 } ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
         // 触发阈值百分比由「偏好设置 → 模型」配置（默认 90，见 GeneralSettingsRepository）。
-        // 自适应下调：距上次成功压缩增长超过窗口 15% 的会话（工具输出密集型），阈值降 15 个百分点
-        // 提前压；固定 90% 追不上增长时压缩点会一路扬升（实测 136k→199k→224k）。下限 60%。
+        // 自适应下调：距上次成功压缩增长超过窗口 15% 的会话（工具输出密集型）额外下调 15 个百分点
+        // 提前压；固定 90% 追不上增长时压缩点会一路扬升（实测 136k→199k→224k）。
+        // 下调**只降不升**，策略与判据集中在 [CompactionThreshold]（含回归用例）。
         val basePercent = generalSettingsRepository.compactionThresholdPercent()
         val lastCompactedSize = sessionId?.let { lastCompactionSizeBySession[it] } ?: 0
-        val fastGrowth = lastCompactedSize > 0 && estimatedTokens - lastCompactedSize > contextLimit * 0.15
-        val effectivePercent = if (fastGrowth) (basePercent - 15).coerceAtLeast(60) else basePercent
-        val triggerThreshold = (contextLimit * effectivePercent / 100.0).toInt()
+        val fastGrowth = CompactionThreshold.isFastGrowth(lastCompactedSize, estimatedTokens, contextLimit)
+        val triggerThreshold = CompactionThreshold.triggerTokens(contextLimit, basePercent, fastGrowth)
         // 真实 usage 优先（含 system prompt + tools，与上下文窗口同口径）；取不到（0）回退本地估算
         val currentTokens = lastInputTokens.takeIf { it > 0 } ?: estimatedTokens
         val reachedThreshold = currentTokens >= triggerThreshold
@@ -180,7 +180,7 @@ class ContextCompactor @Inject constructor(
         onEvent(AgentEvent.CompactionStarted(currentTokens))
 
         // 拆分 Head（需要压缩的老数据）和 Tail（保留的新数据）
-        var splitIndex = selectTailStartIndex(messages, triggerThreshold)
+        var splitIndex = selectTailStartIndex(messages, triggerThreshold, contextLimit)
         if (force && splitIndex <= 0 && messages.size > 1) {
             splitIndex = messages.size - 1
         }
@@ -202,16 +202,21 @@ class ContextCompactor @Inject constructor(
         val fileOps = CompactionFileTracker.extract(messages)
         val summaryWindowTokens = summaryMetadata.contextTokens.takeIf { it > 0 }
             ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
-        val headForSummary = removeCompactionPairs(head).truncateForSummaryWindow(summaryWindowTokens)
-        if (headForSummary.isEmpty()) {
-            // 重复压缩时 head 可能只剩旧的 marker+summary 对，删光后无可压缩内容，跳过本轮压缩。
-            FileLogger.i(TAG, "无可压缩内容（head 为空），跳过压缩")
+        val headForSummary = removeCompactionPairs(head)
+            .truncateForSummaryWindow(summaryWindowTokens)
+        val headMessages = headForSummary.kept.trimLeadingForCompaction()
+        if (headMessages.isEmpty()) {
+            // 空只可能来自前两步：重复压缩时 head 只剩旧的 marker+summary 对（被 removeCompactionPairs 删光），
+            // 或整体超出摘要窗口预算被 truncateForSummaryWindow 截空。
+            // 检查放在清理**之后**：清理会改变消息集，必须按最终要发送的内容判空，
+            // 否则会发出一条只有指令、没有材料的摘要请求，模型只能凭空编造并落库顶替真实历史。
+            FileLogger.i(TAG, "无可压缩内容（head 清理后为空），跳过压缩")
             onEvent(AgentEvent.CompactionFinished)
             return messages.toList()
         }
         // 压缩请求：head 原始消息数组 + 末尾一条压缩指令（Codex 式），tools 不发送。
         // 消息数组保留真实角色结构（user/assistant/tool 配对），比文本化拼接更利于模型理解。
-        val summaryRequestMessages = headForSummary.trimLeadingForCompaction() + listOf(
+        val summaryRequestMessages = headMessages + listOf(
             AgentMessage.UserMessage(content = buildSummaryInstruction(previousSummary))
         )
 
@@ -335,8 +340,12 @@ class ContextCompactor @Inject constructor(
         // 事件驱动：把「本块可恢复」作为事实写进摘要尾部（而非静态工具描述），
         // 模型每轮回放都看得到这个块 id，需要细节时自然会去调 restoreCompactedRange。
         // 与工具 schema description 互补：description 说「什么时候该用」，这里说「现在有块可用」。
+        //
+        // 若本次因压缩模型窗口不足而丢了最旧的一段，同样写进产物：否则接手方
+        // 会把「摘要里没有」当成「从未发生」，而实际是「发生但未纳入摘要」——两者后果完全不同。
+        val droppedNotice = headForSummary.notice()
         val compactedMessageWithHint = compactedMessage.copy(
-            content = summaryText + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
+            content = summaryText + droppedNotice + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
                 "如摘要缺关键细节（报错原文、代码片段、精确数值）：先用 restoreCompactedRange 的 preview 模式" +
                 "检索定位（返回截断预览，省 token），确认需要完整原文再以 action=restore 恢复整块；" +
                 "不要为复核上下文而无谓恢复。"
@@ -503,8 +512,8 @@ class ContextCompactor @Inject constructor(
         return splitIndex
     }
 
-    private fun selectTailStartIndex(messages: List<AgentMessage>, usableTokens: Int): Int {
-        val budget = ModelContextPolicy.preserveRecentTokens(usableTokens)
+    private fun selectTailStartIndex(messages: List<AgentMessage>, usableTokens: Int, contextLimit: Int): Int {
+        val budget = ModelContextPolicy.preserveRecentTokens(usableTokens, contextLimit)
         return CompactionTailSelector.compute(messages, budget) { msg -> estimateTokens(msg) }
     }
 
@@ -556,12 +565,16 @@ class ContextCompactor @Inject constructor(
     }
 
     /**
-     * 压缩请求前的清理：截断可能丢弃最旧的 user 消息，导致头部出现孤立的 assistant/tool 消息，
-     * 丢到第一条 user 为止；去掉图片与超长工具输出，压缩模型按纯文本做摘要。
+     * 压缩请求前的清理：头部非 user 段折叠成一条 user 消息，并去掉图片与超长工具输出。
+     *
+     * 折叠规则与理由见 [CompactionHeadFolder]（该处含「丢光则永久失忆」的实测背景）。
      */
     private fun List<AgentMessage>.trimLeadingForCompaction(): List<AgentMessage> {
-        val trimmed = dropWhile { it !is AgentMessage.UserMessage }
-        return trimmed.map { msg ->
+        val leading = takeWhile { it !is AgentMessage.UserMessage }
+        val rest = drop(leading.size)
+        val folded = CompactionHeadFolder.fold(leading)
+        val withHead = if (folded == null) rest else listOf(folded) + rest
+        return withHead.map { msg ->
             when {
                 msg is AgentMessage.UserMessage && msg.images.isNotEmpty() -> msg.copy(images = emptyList())
                 msg is AgentMessage.ToolResultMessage && msg.result.length > TOOL_OUTPUT_MAX_CHARS ->
@@ -631,23 +644,21 @@ class ContextCompactor @Inject constructor(
      * 按压缩模型窗口预算截断 head：从新到旧保留消息，超预算丢弃更旧的消息。
      * 预算用与全局一致的 CJK 感知 token 口径（[ModelContextPolicy.estimateTokens]），预留 30%
      * 给摘要提示词与旧摘要（故乘 0.7）；不使用「字符数」的第二套口径，避免中文截不干净。
+     *
+     * 选取与丢弃量统计在 [CompactionSummaryWindow]（含回归用例）；
+     * 丢弃量会进 WARN 日志与摘要产物，避免「更早的历史没进摘要」被当成「从未发生」。
      */
-    private fun List<AgentMessage>.truncateForSummaryWindow(contextTokens: Int): List<AgentMessage> {
-        if (isEmpty()) return this
+    private fun List<AgentMessage>.truncateForSummaryWindow(contextTokens: Int): CompactionSummaryWindow.Result<AgentMessage> {
         val budgetTokens = (contextTokens * SUMMARY_WINDOW_RESERVE_RATIO).toInt()
-        var totalTokens = 0
-        val kept = mutableListOf<AgentMessage>()
-        for (msg in asReversed()) {
-            val tokens = estimateTokens(msg)
-            if (kept.isNotEmpty() && totalTokens + tokens > budgetTokens) break
-            totalTokens += tokens
-            kept.add(msg)
+        val result = CompactionSummaryWindow.selectTail(this, budgetTokens) { estimateTokens(it) }
+        if (result.hasDrop) {
+            FileLogger.w(
+                TAG,
+                "head 超出压缩模型窗口预算：丢弃 ${result.droppedCount} 条最旧消息" +
+                    "（约 ${result.droppedTokens} token，预算 $budgetTokens token）——这部分内容不会进摘要",
+            )
         }
-        val truncated = kept.asReversed()
-        if (truncated.size != size) {
-            FileLogger.i(TAG, "head 超出压缩模型窗口预算，丢弃 ${size - truncated.size} 条最旧消息（预算 $budgetTokens token）")
-        }
-        return truncated
+        return result
     }
 }
 
@@ -672,6 +683,30 @@ internal object CompactionFileTracker {
 
     /** 块区末尾的闭合标签：从摘要尾部反向剥块，只认真正写在末尾的清单。 */
     private val BLOCK_CLOSE = Regex("</(read-files|modified-files)>\\s*$")
+
+    /** 任意位置的清单块闭标签（无尾部锚点）——仅用于定位块结束位置。 */
+    private val BLOCK_CLOSE_ANY = Regex("</(read-files|modified-files)>")
+
+    /**
+     * 裁到**最后一个完整清单块**的闭标签为止，丢掉其后的追加内容。
+     *
+     * 为什么必须裁：[BLOCK_CLOSE] 的 `$` 是**整串结尾**锚点（无 MULTILINE）。摘要落库时
+     * 尾部还会拼上「本压缩块可恢复」提示与丢弃量注记，清单块因此不在串尾，
+     * [BLOCK_CLOSE].find 直接失配 → 清单整块读不回来、跨轮累积静默失效。
+     * 真机实测（JVM 逐字复刻）：含尾注时解析到 0 个块，剥掉尾注后解析到 2 个块。
+     *
+     * 必须要求**有配对开标签**才算真块：只认闭标签位置的话，正文里一个孤立的
+     * `</read-files>`（模型叙述清单机制时会写）就会把它之后的正文全裁掉。
+     * 这个判据与 [parseTrailingBlocks] 同源（它也是先找 `\n<tag>` 再判定），保持读侧一致。
+     */
+    private fun trimToLastBlockClose(text: String): String {
+        var end = -1
+        for (close in BLOCK_CLOSE_ANY.findAll(text)) {
+            val tag = close.groupValues[1]
+            if (text.lastIndexOf("\n<$tag>", close.range.first) >= 0) end = close.range.last
+        }
+        return if (end < 0) text else text.substring(0, end + 1)
+    }
 
     private const val TAG_READ = "read-files"
     private const val TAG_MODIFIED = "modified-files"
@@ -727,7 +762,9 @@ internal object CompactionFileTracker {
      */
     private fun parseTrailingBlocks(content: String): Pair<List<String>, List<String>> {
         val found = mutableListOf<Pair<String, List<String>>>()
-        var body = content.trimEnd()
+        // 先裁到最后一个闭标签：摘要尾部还挂着可恢复提示与丢弃量注记，
+        // 不裁则 BLOCK_CLOSE 的尾锚点失配（详见 [trimToLastBlockClose]）。
+        var body = trimToLastBlockClose(content.trimEnd())
         while (true) {
             val close = BLOCK_CLOSE.find(body) ?: break
             val tag = close.groupValues[1]
@@ -760,7 +797,9 @@ internal object CompactionFileTracker {
      * 本函数只在尾部连续剥标签，遇到非块内容立即停，且要求标签前是行首（前一个字符为换行）。
      */
     private fun StringBuilder.appendSummaryBody(summary: String) {
-        var body = summary
+        // 先裁到最后一个闭标签：模型可能复读上轮摘要尾部的「可恢复提示/丢弃量注记」，
+        // 不裁则那些注记会逐轮累积（复核指出的低危项，这里顺手堵上）。
+        var body = trimToLastBlockClose(summary)
         while (true) {
             val close = BLOCK_CLOSE.find(body) ?: break
             val tag = close.groupValues[1]

@@ -54,6 +54,47 @@ class ModelContextPolicyTest {
         assertEquals(2_000, ModelContextPolicy.preserveRecentTokens(Int.MIN_VALUE))
     }
 
+    // ---------- 上限随窗口取宽：小窗口不回归、大窗口放宽 ----------
+
+    /** 128k 窗口下与旧行为完全一致（上限仍为基础上限 20000）。 */
+    @Test
+    fun preserveRecentTokens_smallWindowUnchanged() {
+        assertEquals(20_000, ModelContextPolicy.preserveRecentTokens(128_000, 128_000))
+        assertEquals(4_800, ModelContextPolicy.preserveRecentTokens(19_200, 128_000))
+        assertEquals(20_000, ModelContextPolicy.preserveRecentTokens(80_000, 128_000))
+    }
+
+    /** 1M 窗口下上限提到窗口的 10%，不再被 20k 卡住。 */
+    @Test
+    fun preserveRecentTokens_largeWindowWidened() {
+        // 阈值 900k（10% 上限 = 100k），旧实现会被 20k 截断
+        assertEquals(100_000, ModelContextPolicy.preserveRecentTokens(900_000, 1_000_000))
+        // 阈值 150k → 37500（旧实现 20000）
+        assertEquals(37_500, ModelContextPolicy.preserveRecentTokens(150_000, 1_000_000))
+    }
+
+    /** 大窗口下小阈值仍按下界保护，不会低于 MIN。 */
+    @Test
+    fun preserveRecentTokens_largeWindowStillRespectsMinimum() {
+        assertEquals(2_000, ModelContextPolicy.preserveRecentTokens(1_000, 1_000_000))
+    }
+
+    /** 约束：压缩后大小（tail + 摘要约 10k）必须小于触发阈值，否则压完立即再触发。 */
+    @Test
+    fun preserveRecentTokens_compactedSizeStaysUnderThreshold() {
+        val summaryTokens = 10_000
+        for (limit in listOf(128_000, 200_000, 1_000_000)) {
+            for (pct in listOf(15, 60, 90)) {
+                val threshold = limit * pct / 100
+                val tail = ModelContextPolicy.preserveRecentTokens(threshold, limit)
+                assertTrue(
+                    "窗口 $limit 阈值 ${pct}%：压缩后 ${tail + summaryTokens} 不应达到阈值 $threshold",
+                    tail + summaryTokens < threshold,
+                )
+            }
+        }
+    }
+
     // ---------- estimateTokens：(chars + 3) / 4 向上取整 ----------
 
     @Test
