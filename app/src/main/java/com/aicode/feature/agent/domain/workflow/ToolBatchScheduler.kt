@@ -7,18 +7,33 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * 工具批调度的变更性分类。
+ * 工具批调度的并发档位。
  *
- * 默认 fail-closed：只有显式列入只读名单的工具才允许并行，其余（含写操作、命令、
- * 动态 MCP 工具）一律按「变更」串行，避免同批并发写同一目标造成静默覆盖。
+ * 默认 fail-closed：只有显式列入只读名单的工具才允许跨会话并行，名单外的工具
+ * （含写操作、动态 MCP 工具）一律按 [FILE_MUTATING] 串行，避免并发写同一目标造成静默覆盖。
  */
-internal enum class ToolMutation { READ_ONLY, MUTATING }
+internal enum class ToolMutation {
+    /** 只读：无锁并行。 */
+    READ_ONLY,
+
+    /** 命令类：仅会话内串行；若识别为构建命令则再追全局锁，跨会话可并行。 */
+    COMMAND,
+
+    /** 文件/共享资源变更：会话内串行 + 全局串行（防跨会话写同一目标）。 */
+    FILE_MUTATING,
+}
+
+/** 会走 shell 的命令类工具。 */
+private val COMMAND_TOOLS: Set<String> = setOf("Bash", "Shizuku", "terminal")
 
 /**
- * 判断某工具名是否只读。名单外的工具（含 MCP 动态工具）一律视为变更。
+ * 判断工具的默认档位（不含命令文本判定）。名单外的一律 [ToolMutation.FILE_MUTATING]。
  */
-internal fun classifyToolMutation(toolName: String): ToolMutation =
-    if (toolName in READ_ONLY_TOOLS) ToolMutation.READ_ONLY else ToolMutation.MUTATING
+internal fun classifyToolMutation(toolName: String): ToolMutation = when {
+    toolName in READ_ONLY_TOOLS -> ToolMutation.READ_ONLY
+    toolName in COMMAND_TOOLS -> ToolMutation.COMMAND
+    else -> ToolMutation.FILE_MUTATING
+}
 
 /**
  * 明确的只读工具名单（与 ToolRegistry 注册名一致）。新增的写/命令类工具、
@@ -33,43 +48,102 @@ private val READ_ONLY_TOOLS: Set<String> = setOf(
     "webfetch",
     "retrieveToolResult",
     "diagnostics",
+    "loadSkill",
+    "sendFile",
 )
 
 /**
- * 工具批调度器：只读工具并行、变更工具串行。
+ * 工具批调度器。
  *
- * 这是对「同批工具一律 `async{}.awaitAll()` 并行」的收敛——写类工具并发执行可能
- * 互相覆盖文件。串行范围按**工作区**分片（同一工作区内串行；不同工作区互不阻塞），
- * 单工作区时退化为单锁。结果顺序始终与输入一致。
+ * 加锁分两层，键在进程内全局唯一（本类实例挂在 `@Singleton` 的 workflow 上）：
+ *  - **会话锁** `sess:<会话>`：同一会话内的变更类工具**互斥**（不并发），
+ *    避免同批 `[writeFile f, Bash "cat f"]` 这类依赖关系被并发打乱。
+ *    注意：只保证「不并发」，**不保证谁先谁后**——`async` 的抢占顺序无硬承诺，
+ *    需要严格先后的话应在调用方串行发起，不能靠本调度器。
+ *  - **资源锁**：跨会话共享的资源才加。构建命令用 `build:`（守护进程全局单实例），
+ *    文件与其它共享资源用工作区键。
+ *
+ * 只读工具不加任何锁；命令类不加资源锁（除构建外），这是跨会话并行度的来源。
+ *
+ * 结果顺序始终与输入顺序一致（`awaitAll` 保证返回列表对齐输入）。
  */
 internal class ToolBatchScheduler {
-    private val workspaceLocks = mutableMapOf<String, Mutex>()
+    private val locks = mutableMapOf<String, Mutex>()
     private val registryLock = Mutex()
 
-    private suspend fun lockFor(workspaceKey: String): Mutex =
-        registryLock.withLock { workspaceLocks.getOrPut(workspaceKey) { Mutex() } }
+    private suspend fun lockFor(key: String): Mutex =
+        registryLock.withLock { locks.getOrPut(key) { Mutex() } }
+
+    /**
+     * 按调用需要的锁键依次加锁后执行。
+     *
+     * 键**排序后**再加锁（全局一致的顺序）→ 任意两个调用的加锁序列无环，不会死锁。
+     */
+    private suspend fun <R> withLocks(keys: List<String>, block: suspend () -> R): R {
+        if (keys.isEmpty()) return block()
+        suspend fun acquire(index: Int): R {
+            if (index == keys.size) return block()
+            return lockFor(keys[index]).withLock { acquire(index + 1) }
+        }
+        return acquire(0)
+    }
+
+    /**
+     * 该调用需要持有的锁键（会话锁 + 资源锁，未排序）。
+     */
+    internal fun lockKeysFor(
+        toolName: String,
+        sessionKey: String,
+        commandText: String?,
+        workspaceKey: String,
+    ): List<String> {
+        val sessionLock = "sess:$sessionKey"
+        return when (classifyToolMutation(toolName)) {
+            ToolMutation.READ_ONLY -> emptyList()
+            ToolMutation.COMMAND ->
+                if (BuildCommandDetector.isBuildCommand(commandText)) {
+                    listOf(sessionLock, BUILD_LOCK_KEY)
+                } else {
+                    listOf(sessionLock)
+                }
+            ToolMutation.FILE_MUTATING -> listOf(sessionLock, "ws:$workspaceKey")
+        }
+    }
 
     /**
      * 按调度规则执行一批工具。
      *
      * @param calls 本批工具调用（含名称，用于分类）。
-     * @param workspaceKey 工作区标识，用于分片串行。
+     * @param sessionKey 会话标识：同会话内的变更类工具在此键上串行。
+     * @param workspaceKey 工作区标识：文件与共享资源类的跨会话互斥范围。
+     * @param toolNameOf 取调用名。
+     * @param commandTextOf 取调用承载的 shell 命令（非命令类工具返回 null）。
      * @param exec 单项执行体。
      * @return 与 [calls] 等长、顺序一致的结果列表。
      */
     suspend fun <C, R> dispatch(
         calls: List<C>,
+        sessionKey: String,
         workspaceKey: String,
         toolNameOf: (C) -> String,
+        commandTextOf: (C) -> String? = { null },
         exec: suspend (C) -> R,
     ): List<R> = coroutineScope {
         calls.map { call ->
             async {
-                when (classifyToolMutation(toolNameOf(call))) {
-                    ToolMutation.READ_ONLY -> exec(call)
-                    ToolMutation.MUTATING -> lockFor(workspaceKey).withLock { exec(call) }
-                }
+                val keys = lockKeysFor(
+                    toolName = toolNameOf(call),
+                    sessionKey = sessionKey,
+                    commandText = commandTextOf(call),
+                    workspaceKey = workspaceKey,
+                ).sorted()
+                withLocks(keys) { exec(call) }
             }
         }.awaitAll()
+    }
+
+    companion object {
+        /** 构建类命令的全局锁键：构建守护进程是进程级单实例，锁必须跨会话。 */
+        internal const val BUILD_LOCK_KEY = "build:global"
     }
 }
