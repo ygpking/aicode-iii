@@ -64,6 +64,27 @@ class EndpointSanitizerTest {
     }
 
     @Test
+    fun allowsLoopbackIpv6Literal() {
+        // 回归：`substringBefore(':')` 对 `[::1]:8787` 会取到 `"["`，使本机 IPv6 地址
+        // 被误判成公网、误报「公网地址必须使用 https」。带端口与不带端口两种形态都要放行。
+        assertEquals(
+            UrlCheck.Ok("http://[::1]:8787/mcp"),
+            EndpointSanitizer.sanitize("http://[::1]:8787/mcp"),
+        )
+        assertEquals(
+            UrlCheck.Ok("http://[::1]/v1"),
+            EndpointSanitizer.sanitize("http://[::1]/v1"),
+        )
+    }
+
+    @Test
+    fun stillRejectsPublicPlainHttpAfterIpv6Handling() {
+        // 反向锁：修正括号剥离后，公网地址仍必须被拒（不能因放宽而漏网）。
+        assertTrue(EndpointSanitizer.sanitize("http://8.8.8.8/v1") is UrlCheck.Rejected)
+        assertTrue(EndpointSanitizer.sanitize("http://[2001:4860:4860::8888]:8787/v1") is UrlCheck.Rejected)
+    }
+
+    @Test
     fun rejectsEmptyOrMissingScheme() {
         assertTrue(EndpointSanitizer.sanitize("") is UrlCheck.Rejected)
         assertTrue(EndpointSanitizer.sanitize("   ") is UrlCheck.Rejected)

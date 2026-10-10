@@ -67,12 +67,18 @@ object EndpointSanitizer {
         return UrlCheck.Ok(cleaned)
     }
 
-    /** 主机是否为私网/本机（允许明文 http）。 */
+    /**
+     * 主机是否为私网/本机（允许明文 http）。
+     *
+     * IPv6 字面量必须按 `[::1]:port` 的括号形态剥离，不能直接 `substringBefore(':')`：
+     * 对 `[::1]:8787` 那样取到的是 `"["`，导致本机 IPv6 地址被误判成公网、误报
+     * 「公网地址必须使用 https」。拆分方式与 [com.aicode.core.net.AppProxy.splitEntryHostPort] 一致。
+     */
     private fun isPrivateHost(authority: String): Boolean {
-        val host = authority.substringBefore(':').lowercase()
+        val host = hostOf(authority)
         if (host == "localhost" || host.endsWith(".localhost")) return true
         if (host == "127.0.0.1" || host.startsWith("127.")) return true
-        if (host == "::1" || host == "[::1]") return true
+        if (host == "::1") return true
         if (host.startsWith("10.")) return true
         if (host.startsWith("192.168.")) return true
         if (host.startsWith("172.")) {
@@ -81,5 +87,19 @@ object EndpointSanitizer {
         }
         if (host.startsWith("169.254.")) return true
         return false
+    }
+
+    /**
+     * 从 authority（`host`、`host:port`、`[v6]`、`[v6]:port`）取出主机名。
+     *
+     * 括号形态必须先处理：`[::1]:8787` 的首个冒号在 `[` 之后，按冒号截会得到 `"["`；
+     * 而无括号的纯 IPv6（含多个冒号）本就是完整 host、不含端口信息。
+     */
+    private fun hostOf(authority: String): String {
+        if (authority.startsWith("[")) {
+            val close = authority.indexOf(']')
+            if (close > 0) return authority.substring(1, close).lowercase()
+        }
+        return authority.substringBefore(':').lowercase()
     }
 }
