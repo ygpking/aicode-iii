@@ -130,11 +130,32 @@ class ManageMcpTool @Inject constructor(
             if (scope == McpScope.PROJECT) mcpConfigRepository.setProjectServers(servers) else mcpConfigRepository.setGlobalServers(servers)
         }
 
+        /**
+         * 与 [com.aicode.feature.agent.domain.mcp.McpConfigRepository.serialize] 结构一致，
+         * 但把 headers/env 的值替换为占位符，仅保留键名——让模型知道「有这个字段」
+         * 而不泄露其值。
+         *
+         * 仅用于回显给模型的路径（action="list"）。写盘路径必须继续使用未掩码的
+         * serialize()，否则读-改-写会丢字段。
+         */
+        fun serializeMasked(servers: List<McpServerConfig>): String {
+            val masked = servers.map { server ->
+                server.copy(
+                    headers = server.headers.mapValues { (_, v) -> if (v.isBlank()) "" else "[REDACTED]" },
+                    env = server.env.mapValues { (_, v) -> if (v.isBlank()) "" else "[REDACTED]" }
+                )
+            }
+            return mcpConfigRepository.serialize(masked)
+        }
+
         return try {
             when (action) {
                 "list" -> {
                     val servers = readServers()
-                    ToolResult.Success(JsonPrimitive(mcpConfigRepository.serialize(servers)))
+                    // 掩码化：serialize() 会把 headers/env 的明文凭据一并回吐，
+                    // 而本返回值直接进入模型上下文（并随之进入会话历史、备份包、
+                    // 轨迹日志）。用户执行「列出服务器」时不会预期它回吐 Token。
+                    ToolResult.Success(JsonPrimitive(serializeMasked(servers)))
                 }
                 "remove" -> {
                     val name = args["server_name"]?.jsonPrimitive?.contentOrNull ?: return ToolResult.Error("remove 缺少 server_name", "MISSING_SERVER_NAME")

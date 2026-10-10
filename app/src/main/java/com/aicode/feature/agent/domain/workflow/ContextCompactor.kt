@@ -17,6 +17,7 @@ import com.aicode.feature.agent.domain.provider.AIProvider
 import com.aicode.feature.agent.domain.provider.AIResponse
 import com.aicode.feature.agent.domain.provider.ProviderFailureKind
 import com.aicode.feature.agent.domain.provider.ProviderFailureTaxonomy
+import com.aicode.feature.agent.domain.tool.ToolOutputScrubber
 import com.aicode.feature.agent.presentation.MessageRole
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.settings.data.repository.CompactionModelSettingsRepository
@@ -315,7 +316,22 @@ class ContextCompactor @Inject constructor(
             compactionFailStreakBySession.remove(it)
             compactionCooldownUntilBySession.remove(it)
         }
-        val summaryText = CompactionFileTracker.append(summaryTrimmed, fileOps)
+        // 凭据脱敏：摘要是唯一「模型生成 → 直接落库 → 每轮回放」的文本。
+        //
+        // 工具输出侧由 ToolOutputStore 前置 scrub（ToolOutputStore.kt:134/216），
+        // 但本链路完全独立于它——全仓检索确认 ContextCompactor 与压缩 DAO
+        // 路径上没有任何脱敏调用点。未过 ToolOutputStore 的凭据
+        // （用户直接粘贴的 key、日志类工具输出、脱敏正则未覆盖的自定义
+        // token 格式）会经摘要誊抄后被永久持久化。
+        //
+        // 而 compact-summary.md 反而要求「标识符原文保留」，
+        // 进一步把这些明文固化进摘要。
+        //
+        // 在此统一收口：summaryText 的全部下游（落库、内存回放）
+        // 均取自本变量，一处过滤即全覆盖。
+        val summaryText = ToolOutputScrubber.scrub(
+            CompactionFileTracker.append(summaryTrimmed, fileOps)
+        )
         if (!fileOps.isEmpty) {
             FileLogger.i(TAG, "摘要已附加文件清单：读 ${fileOps.read.size} 个、改 ${fileOps.modified.size} 个")
         }
