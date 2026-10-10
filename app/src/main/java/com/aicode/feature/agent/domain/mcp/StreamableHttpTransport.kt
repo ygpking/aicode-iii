@@ -66,13 +66,11 @@ class StreamableHttpTransport(
                 }
 
                 // 防 OOM：带硬上限读取响应体，超硬限直接拒绝，不再无界 body.string()。
-                val bodyBytes = resp.body?.source()?.readByteArray(HARD_MAX_BYTES + 1)
+                val source = resp.body?.source()
                     ?: throw McpException(message = "$method 响应体为空")
-                if (bodyBytes.size > HARD_MAX_BYTES) {
-                    throw McpException(
-                        message = "$method 响应超过硬上限 ${HARD_MAX_BYTES / 1024 / 1024}MB，拒绝读取"
-                    )
-                }
+                // 声明长度用于与实收字节数对账（-1 表示 chunked/未知，跳过对账）。
+                val declaredLength = resp.body?.contentLength() ?: -1L
+                val bodyBytes = readBodyWithin(source, HARD_MAX_BYTES, declaredLength, method)
                 val rawBody = bodyBytes.toString(Charsets.UTF_8)
 
                 val contentType = resp.header("Content-Type").orEmpty()
@@ -142,6 +140,47 @@ class StreamableHttpTransport(
         validateJsonRpcResponse(response, expectedId, method)
         return response
     }
+}
+
+/**
+ * 有界读取响应体：最多读 [hardMaxBytes]，超过即报错；读到结尾后确认流已正常结束。
+ *
+ * 不能用 [okio.BufferedSource.readByteArray] 的**带参**重载：那个重载要求「**读满**指定字节数」，
+ * 不足就抛 EOFException（okio 3.6 实测：36 字节的响应配 `readByteArray(8MB+1)` 必抛 EOF）。
+ * 本函数与它对照使用时表现为「任何小于硬上限的响应都连接失败」——MCP 因此从未握手成功过。
+ * [okio.Source.read]（读满或读到源耗尽，返回实际字节数）才是有界读的正确语义。
+ *
+ * 结尾校验不可省：单靠 [okio.Source.read] 会**静默接受截断的响应**。实测（真实 OkHttp：声明 100 字节、
+ * 实际只发 50 字节就断连）该源会先返回 50、再以 -1 结束，**不抛异常**；半截 JSON 会被当完整响应
+ * 去解析，报出误导性的「JSON 解析失败」。而 [okio.Source.read] 是单次读、不保证读满，
+ * 故必须循环读到结束，并用 [declaredLength]（源自 `ResponseBody.contentLength()`）对账实收长度。
+ *
+ * @param declaredLength 服务端声明的字节数；`-1` 表示长度未知（chunked），此时跳过长度对账。
+ */
+internal fun readBodyWithin(
+    source: okio.Source,
+    hardMaxBytes: Long,
+    declaredLength: Long,
+    method: String
+): ByteArray {
+    val sink = okio.Buffer()
+    var total = 0L
+    while (total <= hardMaxBytes) {
+        val read = source.read(sink, hardMaxBytes + 1 - total)
+        if (read == -1L) break
+        total += read
+    }
+    if (total > hardMaxBytes) {
+        throw McpException(
+            message = "$method 响应超过硬上限 ${hardMaxBytes / 1024 / 1024}MB，拒绝读取"
+        )
+    }
+    if (declaredLength >= 0 && total != declaredLength) {
+        throw McpException(
+            message = "$method 响应长度与声明不符（声明 $declaredLength 字节、实收 $total 字节），传输可能中断"
+        )
+    }
+    return sink.readByteArray()
 }
 
 /**

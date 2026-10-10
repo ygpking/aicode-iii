@@ -87,14 +87,36 @@ class CompactionFileTrackerTest {
 
     @Test
     fun isolatedCloseTagInBodyDoesNotHideRealBlocks() {
-        // 正文里叙述清单机制时会写孤立闭标签（无配对开标签）。裁剪只认「有配对开标签」的真块，
-        // 否则会把孤立标签之后的正文与真块一起裁掉。
+        // 正文里叙述清单机制时会写孤立闭标签（无配对开标签）。
         val previous = AgentMessage.AssistantMessage(
             content = "摘要正文\n这里提到 </read-files> 这个标签\n重要正文不能丢\n\n" +
                 "<read-files>\nreal.kt\n</read-files>"
         )
         val ops = CompactionFileTracker.extract(listOf(previous))
         assertEquals(listOf("real.kt"), ops.read)
+    }
+
+    @Test
+    fun isolatedCloseTagAfterRealBlockDoesNotSwallowFollowingText() {
+        // 复核实测指出的漏洞：宽松配对（「闭标签前面能找到开标签即可」）会让真块**之后**
+        // 正文里的孤立 `</read-files>` 认领真块的开标签，把两者之间的正文全裁掉。
+        // 判据改为「独占行 + 紧邻同名配对」后，孤立标签找不到未配对的开标签，正文得以保留。
+        val previous = AgentMessage.AssistantMessage(
+            content = "摘要\n\n<read-files>\nreal.kt\n</read-files>\n\n" +
+                "后文提到 </read-files> 标签，这段说明不能丢。"
+        )
+        val ops = CompactionFileTracker.extract(listOf(previous))
+        assertEquals(listOf("real.kt"), ops.read)
+    }
+
+    @Test
+    fun appendKeepsTextThatFollowsTrailingBlock() {
+        // 写侧：重写摘要时只剔除清单块本身，块之后/之间的正文不得被吞。
+        val summary = "摘要正文末段。\n\n<read-files>\nold.kt\n</read-files>"
+        val out = CompactionFileTracker.append(summary, CompactionFileTracker.FileOps(read = listOf("new.kt")))
+        assertTrue("正文应保留，实际=$out", out.contains("摘要正文末段"))
+        assertTrue("新清单应写入，实际=$out", out.contains("new.kt"))
+        assertTrue("旧清单条目不应重复残留，实际=$out", !out.contains("old.kt"))
     }
 
     @Test

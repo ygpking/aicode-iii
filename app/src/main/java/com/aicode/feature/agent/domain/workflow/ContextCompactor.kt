@@ -681,31 +681,59 @@ internal object CompactionFileTracker {
      */
     private const val BLOCK_CHAR_BUDGET = 2_000
 
-    /** 块区末尾的闭合标签：从摘要尾部反向剥块，只认真正写在末尾的清单。 */
-    private val BLOCK_CLOSE = Regex("</(read-files|modified-files)>\\s*$")
-
-    /** 任意位置的清单块闭标签（无尾部锚点）——仅用于定位块结束位置。 */
-    private val BLOCK_CLOSE_ANY = Regex("</(read-files|modified-files)>")
+    /** 块开/闭标签行：要求独占一行（与 [parseTrailingBlocks] 的行首判据同源）。 */
+    private val BLOCK_TAG_LINE = Regex("""^[ \t]*<(/?)(read-files|modified-files)>[ \t]*$""", RegexOption.MULTILINE)
 
     /**
-     * 裁到**最后一个完整清单块**的闭标签为止，丢掉其后的追加内容。
+     * 找出所有**完整清单块**的区间 `[起始, 结束)`。
      *
-     * 为什么必须裁：[BLOCK_CLOSE] 的 `$` 是**整串结尾**锚点（无 MULTILINE）。摘要落库时
-     * 尾部还会拼上「本压缩块可恢复」提示与丢弃量注记，清单块因此不在串尾，
-     * [BLOCK_CLOSE].find 直接失配 → 清单整块读不回来、跨轮累积静默失效。
-     * 真机实测（JVM 逐字复刻）：含尾注时解析到 0 个块，剥掉尾注后解析到 2 个块。
+     * 判据（三个条件同时成立，缺一不可）：
+     * 1. 开闭标签各自**独占一行**；
+     * 2. 开标签与紧随其后的闭标签**同名**；
+     * 3. 两者之间不得再出现其它标签行。
      *
-     * 必须要求**有配对开标签**才算真块：只认闭标签位置的话，正文里一个孤立的
-     * `</read-files>`（模型叙述清单机制时会写）就会把它之后的正文全裁掉。
-     * 这个判据与 [parseTrailingBlocks] 同源（它也是先找 `\n<tag>` 再判定），保持读侧一致。
+     * 这套判据同时避开两个已实测的坑：
+     * - 无锚点匹配会把「正文里提到 `<read-files>` 与 `</read-files>`」当成真块，
+     *   把中间整段正文当路径收下（实测该块涨到 12235 字符而真实路径 0 条）；
+     * - 只要求「闭标签前面能找到开标签」的宽松配对，会让真块**之后**正文里的
+     *   孤立 `</read-files>` 认领真块的开标签，把两者之间的正文全裁掉
+     *   （复核与主代理均用 JVM 实测复现）。
+     *
+     * 本函数取代了原先「裁到最后一个闭标签」的做法——那个做法的前提是「清单块在串尾」，
+     * 而摘要落库时尾部还拼着可恢复提示与丢弃量注记，前提不成立（详见 [parseTrailingBlocks]）。
      */
-    private fun trimToLastBlockClose(text: String): String {
-        var end = -1
-        for (close in BLOCK_CLOSE_ANY.findAll(text)) {
-            val tag = close.groupValues[1]
-            if (text.lastIndexOf("\n<$tag>", close.range.first) >= 0) end = close.range.last
+    private fun blockRanges(text: String): List<IntRange> {
+        val tags = BLOCK_TAG_LINE.findAll(text).toList()
+        val ranges = mutableListOf<IntRange>()
+        var i = 0
+        while (i + 1 < tags.size) {
+            val open = tags[i]
+            val close = tags[i + 1]
+            val matched = open.groupValues[1].isEmpty() &&
+                close.groupValues[1].isNotEmpty() &&
+                open.groupValues[2] == close.groupValues[2]
+            if (matched) {
+                ranges += open.range.first..close.range.last
+                i += 2
+            } else {
+                i++
+            }
         }
-        return if (end < 0) text else text.substring(0, end + 1)
+        return ranges
+    }
+
+    /** 去掉所有完整清单块，保留其余内容（写侧用：重写摘要前先剔除旧清单）。 */
+    private fun removeBlocks(text: String): String {
+        val ranges = blockRanges(text)
+        if (ranges.isEmpty()) return text
+        val sb = StringBuilder(text.length)
+        var pos = 0
+        for (r in ranges) {
+            sb.append(text, pos, r.first)
+            pos = r.last + 1
+        }
+        sb.append(text, pos, text.length)
+        return sb.toString()
     }
 
     private const val TAG_READ = "read-files"
@@ -754,31 +782,30 @@ internal object CompactionFileTracker {
     }
 
     /**
-     * 只从消息**尾部**剥出清单块，要求标签各自独占行首。
+     * 从消息内容里读出所有**完整清单块**。
      *
-     * 不能用无锚点的 `findAll`：摘要里叙述清单机制时会自带 `<read-files>` 字样，
-     * 恰好凑成一对标签就会把中间整段正文当路径收下（实测该块涨到 12235 字符而真实路径为 0）；
-     * [append] 又把收下的脏行原样写回，故脏行逐轮自我累积。
+     * 用 [blockRanges] 的「独占行 + 紧邻同名配对」判据，而不是全文无锚点 findAll：
+     * 摘要在叙述清单机制时会自带 `<read-files>` 字样，恰好凑成一对就能把中间整段正文
+     * 当路径收下（实测该块涨到 12235 字符而真实路径为 0）。
      */
     private fun parseTrailingBlocks(content: String): Pair<List<String>, List<String>> {
         val found = mutableListOf<Pair<String, List<String>>>()
-        // 先裁到最后一个闭标签：摘要尾部还挂着可恢复提示与丢弃量注记，
-        // 不裁则 BLOCK_CLOSE 的尾锚点失配（详见 [trimToLastBlockClose]）。
-        var body = trimToLastBlockClose(content.trimEnd())
-        while (true) {
-            val close = BLOCK_CLOSE.find(body) ?: break
-            val tag = close.groupValues[1]
-            val openIndex = body.lastIndexOf("\n<$tag>", close.range.first)
-            if (openIndex < 0) break
-            val lines = body.substring(openIndex + tag.length + 3, close.range.first)
+        for (range in blockRanges(content)) {
+            val segment = content.substring(range.first, range.last + 1)
+            // 区间由 [blockRanges] 判定为「开标签行 + 内容 + 同名闭标签行」，
+            // 故恰有两个标签行；取首末即开与闭。
+            val matches = BLOCK_TAG_LINE.findAll(segment).toList()
+            if (matches.size < 2) continue
+            val open = matches.first()
+            val close = matches.last()
+            val tag = open.groupValues[2]
+            val lines = segment.substring(open.range.last + 1, close.range.first)
                 .lineSequence().map { it.trim() }.filter { it.isPathLike() }.toList()
             found.add(tag to lines)
-            body = body.substring(0, openIndex + 1)
         }
-        // 剥块是从尾部往头部走的，反过来才是文件里原有的先后顺序。
-        val ordered = found.asReversed()
-        return ordered.filter { it.first == TAG_READ }.flatMap { it.second } to
-            ordered.filter { it.first == TAG_MODIFIED }.flatMap { it.second }
+        // [blockRanges] 按文档顺序返回，故此处已是原先后顺序。
+        return found.filter { it.first == TAG_READ }.flatMap { it.second } to
+            found.filter { it.first == TAG_MODIFIED }.flatMap { it.second }
     }
 
     fun append(summary: String, ops: FileOps): String {
@@ -790,25 +817,18 @@ internal object CompactionFileTracker {
     }
 
     /**
-     * 先把摘要尾部已有的清单块剥干净再重新追加。
+     * 先把摘要里已有的清单块剔除干净再重新追加。
      *
-     * 不复用旧的全文 `findAll` 匹配：摘要里叙述清单机制时会自带标签字样，
-     * 无锚点的匹配会从第一个 `<read-files>` 一直吃到下一个 `</read-files>`，把中间正文整段切掉。
-     * 本函数只在尾部连续剥标签，遇到非块内容立即停，且要求标签前是行首（前一个字符为换行）。
+     * 用 [removeBlocks]（独占行 + 紧邻同名配对）而非全文无锚点匹配：后者会从第一个
+     * `<read-files>` 一直吃到下一个 `</read-files>`，把中间正文整段切掉。
+     * 剔除是「全部完整块」而非「仅尾部块」——块本就是待重写的元数据，
+     * 且模型复读上轮摘要尾部的注记也靠这一步清掉（否则逐轮累积）。
+     *
+     * 注意：块必须按 `read-files` → `modified-files` 顺序、不得交错。[blockRanges]
+     * 按标签出现顺序两两配对，交错嵌套（开 read → 开 mod → 闭 read → 闭 mod）会让两块都配不上、被整段漏读。
      */
     private fun StringBuilder.appendSummaryBody(summary: String) {
-        // 先裁到最后一个闭标签：模型可能复读上轮摘要尾部的「可恢复提示/丢弃量注记」，
-        // 不裁则那些注记会逐轮累积（复核指出的低危项，这里顺手堵上）。
-        var body = trimToLastBlockClose(summary)
-        while (true) {
-            val close = BLOCK_CLOSE.find(body) ?: break
-            val tag = close.groupValues[1]
-            val openIndex = body.lastIndexOf("\n<$tag>", close.range.first)
-            // 标签未行首开头，说明是正文里提到「<read-files>」而非真块，不动。
-            if (openIndex < 0) break
-            body = body.substring(0, openIndex + 1)
-        }
-        append(body.trimEnd())
+        append(removeBlocks(summary).trimEnd())
     }
 
     private fun StringBuilder.appendBlocks(ops: FileOps) {
