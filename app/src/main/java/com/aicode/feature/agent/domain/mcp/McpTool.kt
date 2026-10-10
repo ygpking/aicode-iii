@@ -73,7 +73,22 @@ class McpTool(
 
     override val description: String =
         descriptor.description ?: "MCP 工具 ${descriptor.name}（来自 ${client.serverName}）"
-    override val capabilities = setOf(ToolCapability.EXTERNAL_TOOL)
+
+    /**
+     * 能力集。
+     *
+     * 默认 [ToolCapability.EXTERNAL_TOOL]（含变更语义 → 批调度串行）。
+     * 当服务端在 tools/list 里声明 `annotations.readOnlyHint == true` 时，改判为
+     * [ToolCapability.READ_WORKSPACE]：这是 MCP 规范里唯一能证明「无副作用」的信号，
+     * 据此让只读 MCP 工具参与并行，避免多会话工具调用互锁。
+     * 判据是**显式 true 才采信**（`== true`），缺失/false 一律维持 EXTERNAL_TOOL（保守串行）。
+     */
+    override val capabilities: Set<ToolCapability> =
+        if (descriptor.annotations?.readOnlyHint == true) {
+            setOf(ToolCapability.READ_WORKSPACE)
+        } else {
+            setOf(ToolCapability.EXTERNAL_TOOL)
+        }
 
     // 所有 MCP 工具统一走工具权限：默认需审核，可「始终允许」记忆（见 ToolPermissionPolicyEngine）。
     override val permissionPolicy = ToolPermissionPolicy.ASK

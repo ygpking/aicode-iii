@@ -155,6 +155,16 @@ class VirtualScreenHostManager @Inject constructor(
         // daemon 能跨 App 进程存活（setsid 脱离会话）。若它已在跑**且** dex 已是最新，
         // 就不必重投重拉——省掉一轮 dex 投递与进程启停，直接确认就绪即可。
         // `ready` 是内存态，App 重启就会丢；没有这一步的话每次冷开 App 都要白跑一遍全套。
+        // dex 资源缺失时（APK 未含 assets/virtualscreen/host.dex，如构建期 buildVdHostDex
+        // 静默失败/被裁剪）不能让 FileNotFoundException 逃逸出 ensureReady：它绕过本方法的
+        // 全部降级路径，把「资源缺失」暴露成未处理异常。先探测一次，缺失即按可读原因返回。
+        val dexError = checkDexAsset()
+        if (dexError != null) {
+            state = VirtualScreenDaemonState.STOPPED
+            lastError = dexError
+            FileLogger.e(TAG, dexError)
+            return@withLock dexError
+        }
         if (ping() && dexUpToDate()) {
             ready = true
             state = VirtualScreenDaemonState.READY
@@ -231,6 +241,23 @@ class VirtualScreenHostManager @Inject constructor(
         ShizukuState.NOT_INSTALLED -> "未安装 Shizuku，虚拟屏不可用"
         ShizukuState.NOT_RUNNING -> "Shizuku 服务未运行，请先启动 Shizuku"
         ShizukuState.PERMISSION_DENIED -> "本应用尚未获得 Shizuku 授权"
+    }
+
+    /**
+     * 探测随包 dex 资源是否可读。缺失时返回可读原因，正常返回 null。
+     *
+     * `AssetManager.open` 对不存在的条目抛 [java.io.FileNotFoundException]。调用点（[ensureReady]）
+     * 把它当作「资源缺失」这一确定性失败处理，而不是任其冒泡——与「Shizuku 无权限」等
+     * 其它前置检查保持一致的降级语义。
+     */
+    private fun checkDexAsset(): String? = try {
+        context.assets.open(ASSET_PATH).use { it.read() }
+        null
+    } catch (e: java.io.FileNotFoundException) {
+        "虚拟屏宿主资源缺失（assets/$ASSET_PATH）：本次构建未把宿主 dex 打进 APK。" +
+            "虚拟屏功能不可用，其余功能不受影响；请重新完整构建安装包后重试。"
+    } catch (e: java.io.IOException) {
+        "虚拟屏宿主资源读取失败（assets/$ASSET_PATH）：${e.message}"
     }
 
     /**

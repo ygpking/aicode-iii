@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.workflow
 
+import com.aicode.feature.agent.domain.tool.ToolCapability
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -9,7 +10,7 @@ import kotlinx.coroutines.sync.withLock
 /**
  * 工具批调度的并发档位。
  *
- * 默认 fail-closed：只有显式列入只读名单的工具才允许跨会话并行，名单外的工具
+ * 默认 fail-closed：只有能证明「无副作用」的工具才允许跨会话并行，其余
  * （含写操作、动态 MCP 工具）一律按 [FILE_MUTATING] 串行，避免并发写同一目标造成静默覆盖。
  */
 internal enum class ToolMutation {
@@ -27,9 +28,44 @@ internal enum class ToolMutation {
 private val COMMAND_TOOLS: Set<String> = setOf("Bash", "Shizuku", "terminal")
 
 /**
- * 判断工具的默认档位（不含命令文本判定）。名单外的一律 [ToolMutation.FILE_MUTATING]。
+ * 「会改变外部状态」的能力集合。任一命中即非只读，必须串行。
+ *
+ * 判定采用**白名单式**（与变更能力集合**无交集**才只读），而非「含 READ_WORKSPACE 即只读」：
+ * 后者会把同时声明读+写的工具（如 `MemoryTool` = READ_AGENT_CONFIG + MODIFY_AGENT_CONFIG）
+ * 误判为只读 → 并发写静默覆盖。漏判一个写能力 = 数据损坏，比多串行一个只读工具严重得多。
  */
-internal fun classifyToolMutation(toolName: String): ToolMutation = when {
+private val MUTATING_CAPABILITIES: Set<ToolCapability> = setOf(
+    ToolCapability.WRITE_WORKSPACE,
+    ToolCapability.EXECUTE_COMMANDS,
+    ToolCapability.NETWORK_WRITE,
+    ToolCapability.MODIFY_AGENT_CONFIG,
+    ToolCapability.MODIFY_CONTAINER_ENV,
+    ToolCapability.USER_INTERACTION,
+    ToolCapability.MODIFY_SESSION_STATE,
+    ToolCapability.MODIFY_TODO_STATE,
+    ToolCapability.EXTERNAL_TOOL,
+)
+
+/**
+ * 判断工具的默认档位（不含命令文本判定）。
+ *
+ * 三级、全部 fail-closed：
+ * 1. 工具声明了能力集且与 [MUTATING_CAPABILITIES] 无交集 → 只读（可跨会话并行）；
+ * 2. 能力集为空（未声明，典型为动态 MCP 工具）→ 回退按工具名判定；
+ * 3. 都不命中 → [ToolMutation.FILE_MUTATING]。
+ *
+ * 能力优先于名单：名字在只读名单里但显式声明了写能力 → 以能力为准（保守）。
+ *
+ * @param toolName 工具注册名
+ * @param capabilities 该工具声明的能力集合；未知/未声明传空集
+ */
+internal fun classifyToolMutation(
+    toolName: String,
+    capabilities: Set<ToolCapability> = emptySet(),
+): ToolMutation = when {
+    capabilities.isNotEmpty() ->
+        if (capabilities.none { it in MUTATING_CAPABILITIES }) ToolMutation.READ_ONLY
+        else ToolMutation.FILE_MUTATING
     toolName in READ_ONLY_TOOLS -> ToolMutation.READ_ONLY
     toolName in COMMAND_TOOLS -> ToolMutation.COMMAND
     else -> ToolMutation.FILE_MUTATING
@@ -96,9 +132,10 @@ internal class ToolBatchScheduler {
         sessionKey: String,
         commandText: String?,
         workspaceKey: String,
+        capabilities: Set<ToolCapability> = emptySet(),
     ): List<String> {
         val sessionLock = "sess:$sessionKey"
-        return when (classifyToolMutation(toolName)) {
+        return when (classifyToolMutation(toolName, capabilities)) {
             ToolMutation.READ_ONLY -> emptyList()
             ToolMutation.COMMAND ->
                 if (BuildCommandDetector.isBuildCommand(commandText)) {
@@ -118,6 +155,7 @@ internal class ToolBatchScheduler {
      * @param workspaceKey 工作区标识：文件与共享资源类的跨会话互斥范围。
      * @param toolNameOf 取调用名。
      * @param commandTextOf 取调用承载的 shell 命令（非命令类工具返回 null）。
+     * @param capabilitiesOf 取该调用对应工具声明的能力集；返回空集表示未知/未声明（走名单兜底）。
      * @param exec 单项执行体。
      * @return 与 [calls] 等长、顺序一致的结果列表。
      */
@@ -127,6 +165,7 @@ internal class ToolBatchScheduler {
         workspaceKey: String,
         toolNameOf: (C) -> String,
         commandTextOf: (C) -> String? = { null },
+        capabilitiesOf: (C) -> Set<ToolCapability> = { emptySet() },
         exec: suspend (C) -> R,
     ): List<R> = coroutineScope {
         calls.map { call ->
@@ -136,6 +175,7 @@ internal class ToolBatchScheduler {
                     sessionKey = sessionKey,
                     commandText = commandTextOf(call),
                     workspaceKey = workspaceKey,
+                    capabilities = capabilitiesOf(call),
                 ).sorted()
                 withLocks(keys) { exec(call) }
             }
