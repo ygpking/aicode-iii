@@ -1069,11 +1069,14 @@ class StatefulAgentWorkflow @Inject constructor(
                         val executed = if (toRun.isEmpty()) {
                             emptyList()
                         } else {
-                            // 收敛：只读工具并行、变更工具在**同一工作区内串行**，避免同批写工具并发覆盖文件。
+                            // 收敛：只读工具并行；命令类仅会话内串行、跨会话并行；文件类保持全局互斥。
+                            // 构建类命令追加全局锁，防多会话争抢同一构建守护进程（实测并发 gradlew 互杀）。
                             toolBatchScheduler.dispatch(
                                 calls = toRun,
+                                sessionKey = currentContext.sessionId ?: currentContext.projectRoot,
                                 workspaceKey = currentContext.projectRoot,
                                 toolNameOf = { it.name },
+                                commandTextOf = { commandTextOf(it) },
                             ) { toolCall ->
                                 val tool = toolRegistry.getTool(toolCall.name)
                                 if (tool is StreamingAgentTool) {
@@ -1100,13 +1103,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         toolCalls.forEachIndexed { index, toolCall ->
                             val rr = runResults.getOrNull(index)
                             val args = toolCall.arguments
-                            val actionName = (args["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
-                            val command = when {
-                                toolCall.name == "Bash" -> (args["command"] as? JsonPrimitive)?.contentOrNull
-                                toolCall.name == "terminal" && actionName == "start" -> (args["command"] as? JsonPrimitive)?.contentOrNull
-                                toolCall.name == "terminal" && actionName == "send" -> (args["input"] as? JsonPrimitive)?.contentOrNull
-                                else -> null
-                            }
+                            val command = commandTextOf(toolCall)
                             // 写测试文件时比对前后内容，判定是否削弱了验证（删用例/加 skip/撇断言）。
                             // 只对写工具比对——任何带 path 参数的工具（含 readFile）都进来会把「读」当「写」，
                             // preWrite 里没它的旧内容，误按「新建文件」分支报作弊（真机已实咬）。
@@ -1545,6 +1542,23 @@ class StatefulAgentWorkflow @Inject constructor(
             if (!EvidenceGuard.isWriteTool(rec.toolName)) return@mapNotNull null
             val path = rec.path ?: return@mapNotNull null
             LedgerWrite(tool = rec.toolName, path = path, ts = now)
+        }
+    }
+
+    /**
+     * 取一次工具调用承载的 shell 命令文本。
+     *
+     * 三处共用（scheduler 的构建判定、sleep 守卫、账本的命令凭证），集中一处防漂移。
+     * `terminal` 只有 start/send 会起新进程，close/read/key 不承载命令。
+     */
+    private fun commandTextOf(toolCall: ToolCall): String? {
+        val args = toolCall.arguments
+        val action = (args["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
+        return when {
+            toolCall.name == "Bash" -> (args["command"] as? JsonPrimitive)?.contentOrNull
+            toolCall.name == "terminal" && action == "start" -> (args["command"] as? JsonPrimitive)?.contentOrNull
+            toolCall.name == "terminal" && action == "send" -> (args["input"] as? JsonPrimitive)?.contentOrNull
+            else -> null
         }
     }
 
