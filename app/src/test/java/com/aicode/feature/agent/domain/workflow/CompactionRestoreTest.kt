@@ -84,7 +84,7 @@ class CompactionRestoreTest {
 
     @Test
     fun restoredSegmentIsProtectedFromTheStartOfTheSegment() {
-        // 恢复段**不在**最前端（前面还有可压缩的旧消息）：段首必须以预算外方式整体进 tail，
+        // 恢复段**不在**最前端（前面还有可压缩的旧消息）：段首必须整体进 tail，
         // 否则下轮压缩会把刚恢复的消息再折回去，恢复白做。
         val messages = listOf(
             user("old1"),                        // 段首之前的旧消息（应留 head）
@@ -92,8 +92,26 @@ class CompactionRestoreTest {
             assistant("r2", restored = true),
             user("u1"), assistant("a1")           // 新消息
         )
-        // 预算只够 a1+u1+r2，r2 之后再放不下 r1 —— 但 r1 是恢复段首，必须整体进 tail。
+        // 预算给足（全部消息估算合计 22）——本用例验证的是「回溯在恢复段首截停」：
+        // old1 留在 head，tail 从 r1 开始。
         val split = CompactionTailSelector.compute(messages, budget = 60, estimate = ::estimate)
+        assertEquals(1, split)
+    }
+
+    @Test
+    fun restoredSegmentExemptFromBudget() {
+        // 恢复段的消息**即使超预算也不得被截断**（豁免语义），与「段首截停」是两条独立路径。
+        //
+        // 布局：旧消息 + 恢复段 + 新消息。预算取 8：新消息 a1/u1 恰好装满（各 4），
+        // 轮到恢复段 r2 时 8+4>8 —— 若无豁免会 break、split=3（恢复段被撕开）；
+        // 有豁免则继续走过 r2、r1，在段首截停得到 split=1。
+        val messages = listOf(
+            user("old1"),
+            user("r1", restored = true),
+            assistant("r2", restored = true),
+            user("u1"), assistant("a1")
+        )
+        val split = CompactionTailSelector.compute(messages, budget = 8, estimate = ::estimate)
         assertEquals(1, split)
     }
 
