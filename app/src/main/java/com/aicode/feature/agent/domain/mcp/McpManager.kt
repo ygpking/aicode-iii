@@ -60,11 +60,44 @@ class McpManager @Inject constructor(
     /**
      * MCP 专用 OkHttp 客户端：关闭透明重试（`tools/call` 非幂等，重试可能重复执行副作用），
      * 并给请求设有限读超时（共享客户端 readTimeout=0 为流式 LLM 设计，MCP 一问一答不能无限等）。
+     *
+     * 连接池刻意设为零空闲上限：MCP server 常在数秒内静默关闭空闲 keep-alive 连接，池中死连接
+     * 被复用时表现为 `unexpected end of stream`（EOFException: \n not found: limit=0 content=…，
+     * 即读响应状态行时缓冲区为空）；又因不能重试，只能把错误抛给用户。本地端点重建连接仅数毫秒，
+     * 放弃复用换取此类失败归零。
      */
     private val mcpHttpClient: OkHttpClient by lazy {
         okHttpClient.newBuilder()
             .retryOnConnectionFailure(false)
+            .connectionPool(okhttp3.ConnectionPool(0, 5, java.util.concurrent.TimeUnit.SECONDS))
             .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+            .eventListenerFactory(object : okhttp3.EventListener.Factory {
+                override fun create(call: okhttp3.Call): okhttp3.EventListener =
+                    object : okhttp3.EventListener() {
+                        private var newConnection = false
+
+                        override fun connectStart(
+                            call: okhttp3.Call,
+                            inetSocketAddress: java.net.InetSocketAddress,
+                            proxy: java.net.Proxy
+                        ) {
+                            newConnection = true
+                        }
+
+                        // 失败时留下连接来源，使「复用已关闭的 keep-alive」与「新连接也失败」可区分：
+                        // 前者是连接池/服务端 idle 超时的特征，后者指向服务端或网络本身。
+                        override fun callFailed(call: okhttp3.Call, ioe: java.io.IOException) {
+                            // 用 INFO 而非 DEBUG：release（非 debuggable）构建的默认门槛是 INFO，
+                            // DEBUG 会被整体丢弃，诊断日志便形同不存在。
+                            FileLogger.i(
+                                TAG,
+                                "MCP 请求失败 endpoint=${call.request().url.host}:${call.request().url.port} " +
+                                    "连接来源=${if (newConnection) "新建" else "复用（疑为已关闭的 keep-alive）"} " +
+                                    "异常=${ioe.javaClass.simpleName}"
+                            )
+                        }
+                    }
+            })
             .build()
     }
 
