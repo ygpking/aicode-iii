@@ -116,6 +116,24 @@ class CompactionRestoreTest {
     }
 
     @Test
+    fun frontAnchorDoesNotDisableProtectionForMiddleSegment() {
+        // 回归：同时存在「锚在最前端的恢复段」与「位于中部的恢复段」时，
+        // 前者不得让后者一并失去保护（旧实现全局取 indexOfFirst，中部段会跟着失效）。
+        // 布局：A 段（下标 0 起）+ 旧消息 + B 段（中部）
+        val messages = listOf(
+            user("a1", restored = true),          // A 段（锚在最前端，不保护）
+            user("a2", restored = true),
+            user("old1"),                         // 可压缩的旧消息
+            user("b1", restored = true),          // B 段（中部，应受保护）
+            assistant("b2", restored = true),
+            user("new1"), assistant("new2")
+        )
+        // 预算给足时的旧行为对照：不受保护会一路回溯到 0；受保护则停在 b1（下标 3）。
+        val split = CompactionTailSelector.compute(messages, budget = 100_000, estimate = ::estimate)
+        assertEquals(3, split)
+    }
+
+    @Test
     fun restoredSegmentStopsBacktrackAtSegmentStart() {
         // 恢复段在中间：回溯越过恢复段尾后，必须在段首停下（不让段首之前的消息进 tail）。
         val messages = listOf(
