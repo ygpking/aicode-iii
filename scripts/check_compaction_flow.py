@@ -17,6 +17,17 @@
 维护约定：改动 CompactionTailSelector / CompactionThreshold / ModelContextPolicy，
 或改 AgentMessageDao 的压缩块 SQL、MessagePersistenceUseCase.buildHistory 的筛选与配对时，
 须同步核对本脚本的建模并重跑。
+
+覆盖面与已知近似（勿把它当作全量权威）：
+  - **孤儿工具轮**：真实 buildHistoryUncached 会保留「全孤儿 assistant 轮」并给其补占位 tool 结果
+    （MessagePersistenceUseCase.kt:315-337），本脚本直接丢弃该轮。本脚本的场景数据均为成对调用，
+    故不影响判别力；但**不要**用本脚本推断孤儿轮行为。
+  - **触发口径**：只建模「本地估算触发」。真实的 `lastInputTokens > 0` 优先口径
+    （ContextCompactor.kt:162-164）与 `reachedHardLimit` 硬上限兜底触发**未建模**。
+  - **adjustSplitIndex**（ContextCompactor.kt:213,507）未建模：它在 splitIndex<=0 早退之后才调用，
+    不影响压缩能否发生。
+  - **SessionHistoryPager.pack 的「首条无条件放入」**未建模；在 MAX_CHARS_PER_MESSAGE(1200)
+    < MAX_TOTAL_CHARS(24000) 的现常量下两者等价，两常量关系若反转则模型会偏离。
 """
 
 import copy
