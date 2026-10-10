@@ -167,13 +167,45 @@ class SessionUseCase @Inject constructor(
             // 默认继承父会话 mode：权限引擎按会话 mode 判定写拦截，默认 BUILD 会让 PLAN
             // 模式下派出的子代理绕过只读限制，反过来 AUTO 模式的子代理又会弹授权窗打扰用户。
             // 自定义子代理可用定义的 mode 覆盖该默认值。
-            mode = mode?.name ?: parent.mode,
+            //
+            // 审计修正：原「可覆盖」是无方向的——定义文件既能收紧也能放松。
+            // 放松方向的后果：定义文件位于项目仓库（.aicode/agents/*.md 可随
+            // git 提交分发），提交一个 .md 即可让子代理获得比父会话更高的授权：
+            //   - mode=auto  → 落入 ToolPermissionPolicyEngine 的 auto 分支
+            //                  （除灾难性 rm 与 Shizuku 外一律 ALLOW 不弹窗），
+            //                  子代理比父会话更宽松。注意 AgentMode.AUTO 自身
+            //                  声明「仅用户手动可切换；AI 无法通过 planMode 进入」，
+            //                  本路径恰好构成绕过该声明的口子；
+            //   - mode=build → 让 PLAN 模式派出的子代理恢复写权限。
+            // 改为单调不放松：允许定义文件收紧，不允许放松。
+            mode = resolveStricterMode(mode, parent.mode).name,
             providerId = providerId ?: parent.providerId,
             model = model ?: parent.model,
             reasoningEffort = reasoningEffort ?: parent.reasoningEffort,
             parentId = parentId,
             subagentType = subagentType
         )
+    }
+
+    /**
+     * 取更严格的一方。严格度序：PLAN > BUILD > AUTO。
+     *
+     * 依据 [AgentMode] 的定义：BUILD 允许所有授权操作、PLAN 拦截修改类操作、
+     * AUTO 放行所有权限且「仅用户手动可切换；AI 无法通过 planMode 进入」。
+     * 因此 AUTO 严格度最低，PLAN 最高。
+     *
+     * 定义文件请求比父会话更宽松时忽略该请求并记录日志；
+     * 请求更严格或相同时照常采用（保留原有的「自定义子代理可收紧」能力）。
+     */
+    private fun resolveStricterMode(requested: AgentMode?, parentMode: String): AgentMode {
+        val parent = runCatching { AgentMode.valueOf(parentMode) }.getOrNull() ?: AgentMode.BUILD
+        if (requested == null) return parent
+        val rank = mapOf(AgentMode.AUTO to 0, AgentMode.BUILD to 1, AgentMode.PLAN to 2)
+        val stricter = if ((rank[requested] ?: 0) >= (rank[parent] ?: 0)) requested else parent
+        if (stricter != requested) {
+            FileLogger.w(TAG, "子代理定义请求 mode=${requested.name} 比父会话 ${parent.name} 更宽松，已回退")
+        }
+        return stricter
     }
 
     suspend fun upsertSession(entity: ChatSessionEntity) {
