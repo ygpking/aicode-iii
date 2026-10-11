@@ -503,38 +503,12 @@ class ContextCompactor @Inject constructor(
     }
 
     /**
-     * 调整拆分索引，确保 tail 不是以 ToolResultMessage 开头。
+     * 调整拆分索引，确保 tail 的起点既不会劈开 tool 调用配对，也不会劈开压缩 marker/summary 对。
      *
-     * OpenAI API 要求 role: "tool" 消息必须紧接在包含对应 tool_calls 的 assistant 消息之后。
-     * 如果 tail 以 ToolResultMessage 开头，压缩后其前面的 assistant 消息（摘要）不含 toolCalls，
-     * 该 tool 消息就变成了"孤立"的，API 会报 400 错误。
-     *
-     * 解决方案：向前回溯，把配对的 AssistantMessage(with toolCalls) 纳入 tail，
-     * 确保所有 tool 消息都有配对的 toolCalls。
+     * 规则与理由集中在纯逻辑 [CompactionSplitAdjuster]（含回归用例），此处只做委托。
      */
-    private fun adjustSplitIndex(messages: List<AgentMessage>, initialSplitIndex: Int): Int {
-        var splitIndex = initialSplitIndex
-
-        // 如果 tail 的第一条消息是 ToolResultMessage，
-        // 需要向前找到对应的 AssistantMessage(with toolCalls)
-        while (splitIndex > 0 && messages[splitIndex] is AgentMessage.ToolResultMessage) {
-            splitIndex--
-        }
-
-        // 现在 splitIndex 可能指向一个 AssistantMessage(with toolCalls) 或其他类型消息
-        // 如果是含 toolCalls 的 AssistantMessage，它必须和其后的 ToolResultMessage 一起在 tail 中
-        if (splitIndex >= 0 && messages[splitIndex] is AgentMessage.AssistantMessage) {
-            val assistantMsg = messages[splitIndex] as AgentMessage.AssistantMessage
-            if (assistantMsg.toolCalls.isNotEmpty()) {
-                // 这个 assistant 和紧随其后的 tool results 必须一起保留在 tail 中
-                // splitIndex 已经指向它，无需再调整
-                return splitIndex
-            }
-        }
-
-        // 如果 splitIndex 指向的是一个普通消息（非 tool 相关），直接使用
-        return splitIndex
-    }
+    private fun adjustSplitIndex(messages: List<AgentMessage>, initialSplitIndex: Int): Int =
+        CompactionSplitAdjuster.adjust(messages, initialSplitIndex)
 
     private fun selectTailStartIndex(messages: List<AgentMessage>, usableTokens: Int, contextLimit: Int): Int {
         val budget = ModelContextPolicy.preserveRecentTokens(usableTokens, contextLimit)
