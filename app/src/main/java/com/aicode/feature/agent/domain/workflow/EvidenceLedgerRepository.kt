@@ -62,6 +62,9 @@ class EvidenceLedgerRepository @Inject constructor(
         /** 环形保留的写文件记录条数。 */
         const val MAX_WRITES = 20
 
+        /** 环形保留的检索记录条数（检索比写频繁，稍大）。 */
+        const val MAX_READS = 30
+
         /** 账本保留时长：超过则在读取时顺手清理（不做定时器、不扫全目录）。 */
         const val RETENTION_MS = 7L * 24 * 60 * 60 * 1000
 
@@ -100,6 +103,7 @@ class EvidenceLedgerRepository @Inject constructor(
      * @param claim 本次收尾声明原文（仅失败时留存，供下次提示原样展示）
      * @param verifyCommands 本次 run 内**验证类**命令的执行记录（调用方已筛好）
      * @param writes 本次 run 内**成功的写文件**记录（供下轮跨回合汇报核对凭证）
+     * @param reads 本次 run 内**成功的检索**记录（供下轮「查过了」声明核对凭证，R5）
      */
     suspend fun record(
         sessionId: String,
@@ -107,6 +111,7 @@ class EvidenceLedgerRepository @Inject constructor(
         claim: String,
         verifyCommands: List<LedgerCommand>,
         writes: List<LedgerWrite> = emptyList(),
+        reads: List<LedgerRead> = emptyList(),
     ) = withContext(Dispatchers.IO) {
         val old = load(sessionId)
         val updated = EvidenceLedger.afterRecord(
@@ -115,9 +120,11 @@ class EvidenceLedgerRepository @Inject constructor(
             claim = claim,
             commands = verifyCommands,
             writes = writes,
+            reads = reads,
             now = System.currentTimeMillis(),
             maxCommands = MAX_COMMANDS,
             maxWrites = MAX_WRITES,
+            maxReads = MAX_READS,
         )
         write(sessionId, updated)
     }

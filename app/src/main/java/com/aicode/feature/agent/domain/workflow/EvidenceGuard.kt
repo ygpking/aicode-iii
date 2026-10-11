@@ -61,6 +61,13 @@ internal object EvidenceGuard {
     /** 写文件类工具：只有它们能作为「改了代码」的凭证。 */
     private val WRITE_TOOLS = setOf("editFile", "writeFile")
 
+    /**
+     * 检索/调研类工具：只有它们能作为「查过/核实过」的凭证（R5）。
+     *
+     * memory 不进表：工具名区分不了 read/save，把 save 当查证凭证不合理。
+     */
+    private val READ_TOOLS = setOf("readFile", "search", "list", "webfetch", "websearch", "viewImage", "task", "browser")
+
     private const val TAG = "EvidenceGuard"
 
     /**
@@ -70,6 +77,9 @@ internal object EvidenceGuard {
      * （本 bug 本身就是「比对处只看 path 不看工具名」与前两处白名单不一致的产物）。
      */
     internal fun isWriteTool(name: String): Boolean = name in WRITE_TOOLS
+
+    /** 该工具是否为「检索/调研」工具（供 workflow 的 readsOf 与本守卫共用）。 */
+    internal fun isReadTool(name: String): Boolean = name in READ_TOOLS
 
     /**
      * 从一次工具调用组装 [ToolRecord]，并判定写测试文件是否构成作弊。
@@ -116,6 +126,8 @@ internal object EvidenceGuard {
      * @param message 本回合最后一条模型正文（收尾声明所在）。
      * @param records 本次请求内累积的工具执行记录。
      * @param priorWrites 本会话账本里的历史写文件记录（跨回合汇报的凭证来源）。
+     * @param now 当前时刻（凭证窗口判定用）。
+     * @param priorReads 本会话账本里的历史检索记录（R5 跨回合查证的凭证来源）。
      * @return 违规说明列表；空表示声明都有凭证，放行收尾。
      */
     fun evaluate(
@@ -123,6 +135,7 @@ internal object EvidenceGuard {
         records: List<ToolRecord>,
         priorWrites: List<LedgerWrite> = emptyList(),
         now: Long = System.currentTimeMillis(),
+        priorReads: List<LedgerRead> = emptyList(),
     ): List<String> {
         if (message.isBlank()) return emptyList()
 
@@ -168,6 +181,16 @@ internal object EvidenceGuard {
             notices += "检测到对测试的改动可能削弱了验证（`${rec.path ?: "-"}`）：请说明为什么必须改测试，或改回测试并修真实问题。"
         }
 
+        // R5：声称查过/核实过，但没有任何检索凭证。对应坏习惯「推理没查证却说得像查过」
+        // （说「没有现成的/没有调用方」这类存在性断言必须拿检索记录来）。
+        // 凭证窗同 R2：上一轮查的、这一轮下结论是常态，run 级之外认会话账本近期检索。
+        val claimsRecall = !mentionsFailure && ClaimClassifier.claimsRecall(message)
+        if (claimsRecall && !hasAnyReadRecord(records) &&
+            !EvidenceLedger.hasRecentRead(priorReads, now)
+        ) {
+            notices += "你声称查过/核实过，但本回合没有检索类工具记录。请实际检索后再断言，或明确说明「凭记忆/未核实」。"
+        }
+
         return notices.distinct()
     }
 
@@ -197,6 +220,23 @@ internal object EvidenceGuard {
 
     private fun hasSuccessfulWriteTo(records: List<ToolRecord>, claimed: String): Boolean =
         records.any { !it.isError && isWriteTool(it.toolName) && pathMatches(it.path, claimed) }
+
+    /**
+     * 本回合有没有成功的检索动作：检索类工具调用，或只读检索命令。
+     *
+     * 只看本回合，跨回合的由账本 [EvidenceLedger.hasRecentRead] 兼管。
+     *
+     * 口径与 [hasSuccessfulVerifyCommand] 不同：失败信号只对命令分支生效——
+     * 命令跑了但输出报错不算「查过」的凭证；而 readFile 等工具读到的**内容**含失败字样
+     * （如读日志文件）不代表检索失败，不滤。
+     */
+    private fun hasAnyReadRecord(records: List<ToolRecord>): Boolean =
+        records.any { rec ->
+            !rec.isError &&
+                (isReadTool(rec.toolName) ||
+                    (rec.command != null && CommandOutcome.isReadonlySearchCommand(rec.command) &&
+                        !CommandOutcome.hasFailureSignal(rec.outputTail)))
+        }
 
     /** 路径匹配：等值、或一方是另一方的工作区相对路径（`app/x.kt` ↔ `/root/workspace/app/x.kt`）。 */
     private fun pathMatches(actual: String?, claimed: String): Boolean {

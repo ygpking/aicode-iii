@@ -652,7 +652,8 @@ class StatefulAgentWorkflow @Inject constructor(
                 val notices = EvidenceGuard.evaluate(
                     action.response.content,
                     evidenceRecords,
-                    priorWrites = ledger.recentWrites
+                    priorWrites = ledger.recentWrites,
+                    priorReads = ledger.recentReads
                 )
                 if (notices.isNotEmpty()) {
                     if (newState.evidenceGuardBlocks < EvidenceGuard.MAX_BLOCKS) {
@@ -689,7 +690,8 @@ class StatefulAgentWorkflow @Inject constructor(
                         failed = notices.isNotEmpty(),
                         claim = action.response.content,
                         verifyCommands = verifyCommandsOf(evidenceRecords),
-                        writes = writesOf(evidenceRecords)
+                        writes = writesOf(evidenceRecords),
+                        reads = readsOf(evidenceRecords)
                     )
                 }
             }
@@ -1542,6 +1544,27 @@ class StatefulAgentWorkflow @Inject constructor(
             if (!EvidenceGuard.isWriteTool(rec.toolName)) return@mapNotNull null
             val path = rec.path ?: return@mapNotNull null
             LedgerWrite(tool = rec.toolName, path = path, ts = now)
+        }
+    }
+
+    /**
+     * 把 run 级的工具记录筛成本账本用的**检索**记录。
+     *
+     * 检索类工具调用或只读检索命令都算——供下一轮「查过了」声明核对凭证（R5）。
+     * 失败的检索不入账：没查成的不能给声明背书。
+     */
+    private fun readsOf(records: List<EvidenceGuard.ToolRecord>): List<LedgerRead> {
+        val now = System.currentTimeMillis()
+        return records.mapNotNull { rec ->
+            if (rec.isError) return@mapNotNull null
+            val isRead = EvidenceGuard.isReadTool(rec.toolName) ||
+                (rec.command != null && CommandOutcome.isReadonlySearchCommand(rec.command))
+            if (!isRead) return@mapNotNull null
+            LedgerRead(
+                tool = rec.toolName,
+                target = (rec.path ?: rec.command ?: "").take(EvidenceLedgerRepository.CMD_MAX_CHARS),
+                ts = now,
+            )
         }
     }
 

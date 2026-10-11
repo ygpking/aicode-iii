@@ -122,6 +122,40 @@ internal object ClaimClassifier {
         return !isSuppressed(text) && splitSentences(text).any { s -> VERIFY_PATTERNS.any { it.containsMatchIn(s) } }
     }
 
+    /**
+     * 「声称查过/核实过」的短语结构（R5）。
+     *
+     * 动词集刻意收窄到「确认/核实/排查/搜索/查/搜」：它们的完成态几乎只用于查证语境；
+     * 「看/翻/检查」在日常叙述里太泛（「看了下效果」「检查下格式」），收进来误伤面失控。
+     * 裸完成态（「查了」）必须认：典型声明「查了，没有现成的」被逗号切句后只剩裸词。
+     * 英文不强制第一人称：「just checked / already confirmed」是真实查证的高频形态，
+     * 误伤面（booking confirmed 之类）在技术对话里可忽略。
+     */
+    private val RECALL_PATTERNS = listOf(
+        // 「已查一下」「已确认一下」是命令而非完成态，尾缀缺省分支加负前瞻排除；
+        // 其余动词「已X」单说即完成态（「已确认，没问题」）。
+        Regex("已(?:经)?(?:确认|核实|排查|搜索|搜|查)(?:过|了)?(?!一下|下)"),
+        Regex("(?:确认|核实|排查|搜索|搜|查)(?:过|了)"),
+        Regex("""(?i)\b(?:i\s+|we\s+|just\s+|already\s+)?(?:checked|searched|verified|confirmed|examined)\b"""),
+    )
+
+    /**
+     * R5 专属的句级否定：不进共享 [NEGATORS]——那里是整段抑制，加了会连坐
+     * 「我没查，但已修复了」这类混合句里的真实变更声明。
+     */
+    private val RECALL_NEGATORS = Regex(
+        "(?i)(?:(?:未|没|别|先不|没有)(?:排查|搜索|核实|确认|查|搜))" +
+            "|\\b(?:not|never|no|haven't|hasn't|hadn't|didn't|don't|doesn't|has not|have not|had not|do not|does not|did not)\\s+(?:\\w+\\s+){0,2}?(?:checked|searched|verified|confirmed|examined)\\b",
+    )
+
+    /** 是否声称「查过/核实过」。 */
+    fun claimsRecall(message: String): Boolean {
+        val text = stripFencedBlocks(message)
+        return !isSuppressed(text) && splitSentences(text)
+            .any { s -> !isMemoryDomainSentence(s) && !RECALL_NEGATORS.containsMatchIn(s) &&
+                RECALL_PATTERNS.any { it.containsMatchIn(s) } }
+    }
+
     /** 是否声称「改了东西」。 */
     fun claimsChange(message: String): Boolean {
         val text = stripFencedBlocks(message)
@@ -210,6 +244,8 @@ internal object ClaimClassifier {
             .filter { it.isNotEmpty() }
             .filterNot { it.endsWith("?") || it.endsWith("？") }
             .filterNot { it.endsWith("没有") || it.endsWith("了吗") || it.endsWith("了没") }
+            // 「吗/么」结尾必是疑问（无标点提问也拦）；修一处，R1 的 claimsVerification 与 R5 同时受益
+            .filterNot { it.endsWith("吗") || it.endsWith("么") }
             .filterNot { it.contains("有没有") || it.contains("是不是") }
             .filterNot { it.startsWith("是否") || it.contains("是否已") }
             .filterNot { CONDITION_MARKERS.any { m -> it.contains(m) } }
