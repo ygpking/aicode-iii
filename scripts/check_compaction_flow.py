@@ -22,8 +22,13 @@
   - **孤儿工具轮**：真实 buildHistoryUncached 会保留「全孤儿 assistant 轮」并给其补占位 tool 结果
     （MessagePersistenceUseCase.kt:315-337），本脚本直接丢弃该轮。本脚本的场景数据均为成对调用，
     故不影响判别力；但**不要**用本脚本推断孤儿轮行为。
-  - **触发口径**：只建模「本地估算触发」。真实的 `lastInputTokens > 0` 优先口径
-    （ContextCompactor.kt:162-164）与 `reachedHardLimit` 硬上限兜底触发**未建模**。
+  - **触发口径**：用 `fixed_overhead` 模拟「真实 usage 含 system prompt + tools」，
+    即 `usage = est + fixed_overhead`（对账 ContextCompactor 的 `lastInputTokens` 优先口径）。
+    但**触发阈值本身只建模 base_percent 与 fast_growth**，`reachedHardLimit` 硬上限兜底
+    仍未建模；`lastCompactionSizeBySession` 的口径对齐（Δ 带过）亦未建模。
+  - **摘要窗口**：已建模 head 超出「摘要模型窗口 × 70%」时的丢弃量化
+    （CompactionSummaryWindow），但**未建模** trimLeadingForCompaction 对超长工具输出的
+    前置截断（该截断会把 head 拉回预算内、减少丢弃量，故本模型偏保守）。
   - **adjustSplitIndex**（ContextCompactor.kt:213,507）未建模：它在 splitIndex<=0 早退之后才调用，
     不影响压缩能否发生。
   - **SessionHistoryPager.pack 的「首条无条件放入」**未建模；在 MAX_CHARS_PER_MESSAGE(1200)
@@ -45,6 +50,8 @@ DEFAULT_CONTEXT_TOKENS = 128_000      # ModelContextPolicy.DEFAULT_CONTEXT_TOKEN
 MAX_PRESERVE_RECENT_TOKENS = 20_000   # ModelContextPolicy.MAX_PRESERVE_RECENT_TOKENS
 PRESERVE_WINDOW_RATIO = 0.10          # ModelContextPolicy.PRESERVE_WINDOW_RATIO
 MIN_PRESERVE_RECENT_TOKENS = 2_000    # ModelContextPolicy.MIN_PRESERVE_RECENT_TOKENS
+SUMMARY_WINDOW_RESERVE_RATIO = 0.7    # ModelContextPolicy / ContextCompactor.SUMMARY_WINDOW_RESERVE_RATIO
+SUMMARY_TOKENS_ESTIMATE = 10_000      # ModelContextPolicy.SUMMARY_TOKENS_ESTIMATE
 ADAPTIVE_STEP = 15                    # CompactionThreshold.ADAPTIVE_STEP
 ADAPTIVE_FLOOR = 60                   # CompactionThreshold.ADAPTIVE_FLOOR
 GROWTH_RATIO = 0.15                   # CompactionThreshold.GROWTH_RATIO
@@ -88,6 +95,43 @@ def preserve_recent_tokens(usable_tokens, context_limit=DEFAULT_CONTEXT_TOKENS):
     """对账 ModelContextPolicy.preserveRecentTokens。"""
     cap = max(MAX_PRESERVE_RECENT_TOKENS, int(context_limit * PRESERVE_WINDOW_RATIO))
     return max(MIN_PRESERVE_RECENT_TOKENS, min(usable_tokens // 4, cap))
+
+
+def min_tail_for_summary_window(trigger, summary_window_tokens):
+    """对账 ModelContextPolicy.minTailForSummaryWindow：head 须装进摘要输入预算。"""
+    summary_input_budget = int(summary_window_tokens * SUMMARY_WINDOW_RESERVE_RATIO)
+    head_allowance = summary_input_budget - SUMMARY_TOKENS_ESTIMATE
+    return trigger - head_allowance
+
+
+def min_summary_window_for_feasibility():
+    """对账 ModelContextPolicy.minSummaryWindowForFeasibility：C1/C2 可行的最小摘要窗口。"""
+    return int(-(-(2 * SUMMARY_TOKENS_ESTIMATE + 1) // SUMMARY_WINDOW_RESERVE_RATIO))
+
+
+def tail_budget_plan(trigger, context_limit=DEFAULT_CONTEXT_TOKENS,
+                     summary_window_tokens=DEFAULT_CONTEXT_TOKENS):
+    """对账 ModelContextPolicy.tailBudgetPlan：返回 (tail, feasible, reason)。
+
+    修复点（128k 静默丢历史）：旧实现 tail 被 max(20000, 窗口*10%) 封顶，
+    128k 主 + 128k 摘要 + 90% 阈值下 head=95200 > 摘要预算 89600，每轮丢最旧 5600 token。
+    新实现用 C2 下界抬高 tail 把 head 压回摘要窗口内；C1/C2 无交集（摘要窗口 ≲28.6k）时
+    置 feasible=False，由调用方告警而非静默丢历史。
+    """
+    proportional = preserve_recent_tokens(trigger, context_limit)
+    lower = min_tail_for_summary_window(trigger, summary_window_tokens)
+    upper = max(MIN_PRESERVE_RECENT_TOKENS, trigger - SUMMARY_TOKENS_ESTIMATE - 1)
+    lo = max(MIN_PRESERVE_RECENT_TOKENS, lower)
+    feasible = lo <= upper
+    tail = min(max(proportional, lo), upper) if feasible else upper
+    reason = "C1 与 C2 同时满足" if feasible else "C1/C2 无交集"
+    return tail, feasible, reason
+
+
+def tail_budget(trigger, context_limit=DEFAULT_CONTEXT_TOKENS,
+                summary_window_tokens=DEFAULT_CONTEXT_TOKENS):
+    """对账 ModelContextPolicy.tailBudget（= tailBudgetPlan().tail）。"""
+    return tail_budget_plan(trigger, context_limit, summary_window_tokens)[0]
 
 
 def effective_percent(base_percent, fast_growth):
@@ -167,7 +211,8 @@ def compute_tail_split(msgs, budget, restored_ids):
 class Session:
     """对账 AgentMessageDao 的压缩块 SQL 语义 + 压缩流程。"""
 
-    def __init__(self, context_limit=1_000_000, base_percent=15, fixed_overhead=87_000):
+    def __init__(self, context_limit=1_000_000, base_percent=15, fixed_overhead=87_000,
+                 summary_window_tokens=None):
         self.entities = []
         self.seq = 0
         self.block_seq = 1
@@ -175,6 +220,10 @@ class Session:
         self.base_percent = base_percent
         self.fixed_overhead = fixed_overhead
         self.last_compacted_size = 0
+        # 摘要模型窗口：None 表示与主窗口一致（ContextCompactor 的 resolve 回退 128k）。
+        self.summary_window_tokens = (summary_window_tokens
+                                      if summary_window_tokens is not None
+                                      else context_limit)
 
     def add(self, role, content, tool_call_id=None, tool_calls=None):
         self.seq += 1
@@ -182,6 +231,40 @@ class Session:
                    tool_call_id=tool_call_id, tool_calls=tool_calls)
         self.entities.append(e)
         return e
+
+    def _guard_budget(self, trigger, est, msgs, budget):
+        """拆分点归零时的守卫（对账 ContextCompactor 的降级分支）。
+
+        返回 (forced_split, degraded)：None 表示「确实无内容可压」→ 正当跳过；
+        否则强制按返回下标拆分（划分逻辑异常，如恢复段保护吞掉全部）。
+
+        **必须与选择器同用 `budget`**：选择器判「全装得下 → split=0」，
+        守卫若用更小的预算就会把「无需压缩」误判成「划分失败」而折叠全部历史。
+        """
+        if est > budget and len(msgs) > 1:
+            return len(msgs) - 1, True
+        return None, False
+
+    def _summary_window_drop(self, head):
+        """对账 ContextCompactor 的摘要输入截断：head 装不进摘要窗口时丢弃最旧的消息。
+
+        返回 (kept_head, dropped_tokens)。仅在「清理后仍超预算」时丢——
+        真实实现会先 trimLeadingForCompaction 截断超长工具输出，本模型用 head 的
+        原始 token 近似该清理后的量（工具输出截断语义不在此建模，见文件头覆盖面）。
+        """
+        budget = int(self.summary_window_tokens * SUMMARY_WINDOW_RESERVE_RATIO)
+        total = sum(m.tok() for m in head)
+        if total <= budget:
+            return head, 0
+        kept, acc = [], 0
+        for m in reversed(head):
+            t = m.tok()
+            if kept and acc + t > budget:
+                break
+            acc += t
+            kept.append(m)
+        kept = list(reversed(kept))
+        return kept, total - acc
 
     def auto_compact(self):
         msgs, restored = build_history(self.entities)
@@ -193,26 +276,42 @@ class Session:
         if usage < trig:
             return "BELOW", {"usage": usage, "trigger": trig, "est": est}
 
-        budget = preserve_recent_tokens(trig, self.context_limit)
+        # 选择器与守卫共用同一预算（对账 ContextCompactor 的 budgetPlan 单次求值）：
+        # 历史 bug 是选择器用 tailBudget、守卫用更小的 preserveRecentTokens，把
+        # 「全装得下＝无需压缩」误判成「划分失败」→ 强制折叠全部历史。
+        budget, feasible, reason = tail_budget_plan(trig, self.context_limit, self.summary_window_tokens)
         split = compute_tail_split(msgs, budget, restored)
         if split <= 0:
-            return "ABANDON", {"usage": usage, "trigger": trig, "budget": budget,
-                               "est": est, "n": len(msgs)}
+            # 守卫走可注入方法（便于失败注入复现「口径分裂」形态）。
+            forced_split, degraded = self._guard_budget(trig, est, msgs, budget)
+            if forced_split is None:
+                return "SKIP_NO_CONTENT", {"usage": usage, "trigger": trig, "budget": budget,
+                                           "est": est, "n": len(msgs), "feasible": feasible,
+                                           "degraded": False}
+            split = forced_split
+        else:
+            degraded = False
 
         head, tail = msgs[:split], msgs[split:]
         kept_tok = sum(m.tok() for m in tail)
         verdict = "OK" if kept_tok <= budget else "OVER_BUDGET"
+        # 摘要窗口截断：head 装不下时丢最旧（本模型只量化丢弃量，供断言与回归）。
+        kept_head, dropped_tok = self._summary_window_drop(head)
 
         block_id = "B%d" % self.block_seq
         self.block_seq += 1
-        for m in head:
+        for m in kept_head:
             m.is_compacted = True
             m.block_id = block_id
         self._add_marker_summary(block_id, 10_000)      # 实测摘要约 10k 字符
         self.last_compacted_size = kept_tok + 10_000 // 3
         return verdict, {"usage": usage, "trigger": trig, "budget": budget,
-                         "split": split, "folded": len(head), "kept": len(tail),
-                         "kept_tok": kept_tok}
+                         "split": split, "folded": len(kept_head), "kept": len(tail),
+                         "kept_tok": kept_tok, "dropped_tok": dropped_tok,
+                         "head_tok": sum(m.tok() for m in head),
+                         "degraded": degraded, "feasible": feasible,
+                         "summary_budget": int(self.summary_window_tokens
+                                               * SUMMARY_WINDOW_RESERVE_RATIO)}
 
     def _add_marker_summary(self, block_id, summary_len):
         self.seq += 1
@@ -418,17 +517,17 @@ def suite_forward(rep):
     rep.check("解压后消息被标恢复段", after["restored_count"] > 0, True)
     rep.check("恢复条数等于块内折叠数", n_restored, n_in_block)
     r3, _ = s.auto_compact()
-    rep.check("解压后再压缩不 ABANDON", r3 != "ABANDON", True)
+    rep.check("解压后再压缩确实执行（非跳过/非空转）", r3 in ("OK", "OVER_BUDGET"), True)
 
     print("── 3. 恢复段锚在最前端（事故 A 形态）──")
     s = session_front_anchored()
     msgs, rs = build_history(s.entities)
     anchor = next((i for i in range(len(msgs)) if is_restored(msgs[i], rs)), None)
     rep.check("构造有效：恢复段起始下标为 0", anchor, 0)
-    budget = preserve_recent_tokens(trigger_tokens(1_000_000, 15, False), 1_000_000)
+    budget = tail_budget(trigger_tokens(1_000_000, 15, False), 1_000_000, 1_000_000)
     rep.check("段首为 0 时拆分点不为 0", compute_tail_split(msgs, budget, rs) > 0, True)
     r4, d4 = s.auto_compact()
-    rep.check("段首为 0 时压缩不 ABANDON", r4 != "ABANDON", True)
+    rep.check("段首为 0 时压缩确实执行（非跳过/非空转）", r4 in ("OK", "OVER_BUDGET"), True)
 
     print("── 4. 恢复段自身超预算（事故 B 形态）──")
     s = session_oversized_restored()
@@ -536,6 +635,117 @@ def suite_forward(rep):
     rep.check("limit 下钳", pager_clamp_limit(0), 1)
     rep.check("limit 上钳", pager_clamp_limit(999), MAX_LIMIT)
 
+    suite_128k(rep)
+    suite_summary_window(rep)
+
+
+def suite_128k(rep):
+    """128k 窗口 + 默认 90% 阈值：旧实现 tail 被 20000 封顶 → head 超摘要窗口 → 静默丢历史。
+
+    这是「设置 128k 时老是压缩失败」的回归点：压缩看起来成功（返回 OK），
+    但每轮都丢掉最旧的一段历史且不进摘要。
+    """
+    print("── 9. 128k 窗口 + 90% 阈值（静默丢历史回归）──")
+    # 数值层：直接锁定 tail 预算公式在 128k/90%/同窗口摘要模型下的输出。
+    trig_128k = trigger_tokens(128_000, 90, False)
+    rep.check("128k/90% 触发阈值", trig_128k, 115_200)
+    old_tail = preserve_recent_tokens(trig_128k, 128_000)          # 旧公式：20000
+    rep.check("旧公式 tail 被封顶在 20000", old_tail, 20_000)
+    rep.check("旧公式 head 超出摘要窗口（即丢历史）",
+              trig_128k - old_tail > int(128_000 * SUMMARY_WINDOW_RESERVE_RATIO), True)
+    new_tail = tail_budget(trig_128k, 128_000, 128_000)
+    rep.check("新公式 tail 抬到摘要下限之上", new_tail > old_tail, True)
+    rep.check("新公式 head 装得进摘要窗口",
+              trig_128k - new_tail <= int(128_000 * SUMMARY_WINDOW_RESERVE_RATIO), True)
+
+    # 全组合不变式：任何窗口/阈值/摘要窗口下 head 都不超摘要预算。
+    violations = []
+    for ctx in (32_000, 64_000, 128_000, 200_000, 400_000, 1_000_000):
+        for pct in (15, 60, 90):
+            trig = trigger_tokens(ctx, pct, False)
+            for sw in (128_000, 200_000, 1_000_000):
+                head = trig - tail_budget(trig, ctx, sw)
+                if head > int(sw * SUMMARY_WINDOW_RESERVE_RATIO):
+                    violations.append((ctx, pct, sw, head))
+    rep.check("所有组合下 head 均装得进摘要窗口", violations, [])
+
+    # 端到端：构造 128k 会话（约 100 轮使估算跨过 115200 触发阈值），
+    # 压缩后 dropped_tok 必须为 0（不丢历史）。
+    s = Session(context_limit=128_000, base_percent=90, fixed_overhead=0,
+                summary_window_tokens=128_000)
+    for i in range(1, 101):
+        tc = "r%d" % i
+        s.add(ROLE_USER, "用户第 %d 条：" % i + "要" * 200)
+        s.add(ROLE_ASSISTANT, "处理。" + "x" * 400, tool_calls=[(tc, "readFile")])
+        s.add(ROLE_TOOL, "输出 %d：" % i + "y" * 3000, tool_call_id=tc)
+    verdict, detail = s.auto_compact()
+    rep.check("128k 会话触发压缩", verdict, "OK")
+    rep.check("128k 压缩不丢任何历史（dropped_tok=0）", detail.get("dropped_tok"), 0)
+    rep.check("128k head 未超摘要预算",
+              detail.get("head_tok", 10 ** 9) <= detail.get("summary_budget", 0), True)
+
+
+def suite_summary_window(rep):
+    """摘要模型窗口远小于主窗口（如 1M 主 + 128k 摘要）时的丢弃量化与可见性。
+
+    用 400k 主窗口 + 128k 摘要模型（4 倍差，与真实 1M vs 128k 同形态但规模更小），
+    构造 head 必然超过 128k 摘要窗口输入预算的历史。
+    """
+    print("── 10. 摘要窗口截断的量化与可见性 ──")
+    drop_probe = Session(context_limit=400_000, base_percent=90, fixed_overhead=0,
+                         summary_window_tokens=128_000)
+    # 每条 2000 字符 CJK ≈ 666 token，100 条 ≈ 66600；400k@90% 阈值 360000 需更多。
+    for i in range(1, 601):
+        drop_probe.add(ROLE_USER, "大 %d：" % i + "z" * 2000)
+    v, d = drop_probe.auto_compact()
+    rep.check("主>摘要窗口时仍能压缩", v, "OK")
+    rep.check("丢弃量被量化（dropped_tok 字段存在）", "dropped_tok" in d, True)
+    # 该形态下丢弃是固有取舍（head 装不进 128k 摘要窗口）：要么 head 装得下，要么有丢弃记录。
+    rep.check("head 超预算时丢弃被记录",
+              (d.get("head_tok", 0) <= d.get("summary_budget", 0)) or d.get("dropped_tok", 0) > 0,
+              True)
+
+    suite_guard_consistency(rep)
+
+
+def suite_guard_consistency(rep):
+    """守卫与选择器必须同口径：否则「全装得下＝无需压缩」被误判成「划分失败」→ 折叠全部历史。
+
+    这是修复过程中**新引入**的缺陷形态（选择器用 tailBudget、守卫用更小的
+    preserveRecentTokens），比原 bug 更糟：用户点 /compress 自救时反而把整段历史折走并丢弃。
+    """
+    print("── 11. 拆分守卫与选择器同口径（防「无需压缩」被误判成「折叠全部」）──")
+    # 数值层：当 est_local 落在 (旧预算, 新预算] 区间时，选择器判「全装得下」，守卫必须同意。
+    trig = 115_200
+    new_budget, feasible, _ = tail_budget_plan(trig, 128_000, 128_000)
+    old_budget = preserve_recent_tokens(trig, 128_000)
+    rep.check("新预算 > 旧预算（区间非空，判别力成立）", new_budget > old_budget, True)
+    est = (old_budget + new_budget) // 2                 # 落在危险区间
+    rep.check("危险区间取值落在 (旧, 新] 内", old_budget < est <= new_budget, True)
+    # 同口径守卫：est <= budget → 判「无需压缩」（不折）
+    same_guard_folds = est > new_budget
+    rep.check("同口径守卫不误折（est<=newBudget 时判无内容）", same_guard_folds, False)
+    # 反例口径（历史 bug）：守卫用旧预算 → 误折
+    buggy_guard_folds = est > old_budget
+    rep.check("反例口径确实会误折（证明该检查有判别力）", buggy_guard_folds, True)
+
+    # 端到端：构造 est 落在危险区间（旧预算 < est ≤ 新预算）、且真实 usage 已达触发条件的会话。
+    # 这正是真实形态：system prompt + tools 的固定开销把 usage 顶过阈值，而消息本身还没那么大。
+    est_target = (old_budget + new_budget) // 2
+    overhead = 115_200 - est_target + 1_000          # 保证 usage ≥ trigger
+    s = Session(context_limit=128_000, base_percent=90, fixed_overhead=overhead,
+                summary_window_tokens=128_000)
+    # 每条 user 消息约 20 token（60 字符 → 20）；条数按 est_target 反推。
+    n = max(1, est_target // 20)
+    for i in range(1, n + 1):
+        s.add(ROLE_USER, "条%d" % i + "x" * 57)
+    v, d = s.auto_compact()
+    if v == "BELOW":
+        rep.check("构造有效：会话达到触发条件", False, True)
+    else:
+        rep.check("est 在危险区间时判「无内容可压」而非折叠", v, "SKIP_NO_CONTENT")
+        rep.check("未发生降级折叠", d.get("degraded", True), False)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # 六、失败注入（变异测试）——验证正向场景真有判别力
@@ -614,10 +824,28 @@ def mut_threshold_up(base_percent, fast_growth):
     return min(100, max(base_percent, ADAPTIVE_FLOOR) + ADAPTIVE_STEP)
 
 
+def mut_guard_old_budget(self, trigger, est, msgs, budget):
+    """守卫口径分裂（修复过程中新引入的缺陷形态）：守卫用旧预算 preserveRecentTokens，
+    选择器用新预算 tailBudget → 「全装得下＝无需压缩」被误判成「划分失败」→ 强制折叠全部历史。"""
+    old_budget = preserve_recent_tokens(trigger, self.context_limit)
+    if est > old_budget and len(msgs) > 1:
+        return len(msgs) - 1, True
+    return None, False
+
+
 def mut_budget_fixed(usable_tokens, context_limit=DEFAULT_CONTEXT_TOKENS):
     """tail 预算写死，不随窗口缩放。"""
     return max(MIN_PRESERVE_RECENT_TOKENS,
                min(usable_tokens // 4, MAX_PRESERVE_RECENT_TOKENS))
+
+
+def mut_budget_ignore_summary_window(trigger, context_limit=DEFAULT_CONTEXT_TOKENS,
+                                     summary_window_tokens=DEFAULT_CONTEXT_TOKENS):
+    """旧实现：tail 预算只看窗口比例，无视摘要窗口下限。
+
+    这正是 128k/90% 静默丢历史的旧行为——head 超出摘要窗口仍照压不误。
+    """
+    return preserve_recent_tokens(trigger, context_limit)
 
 
 def mut_restore_reversed(self, block_id):
@@ -665,6 +893,10 @@ def suite_mutation(rep):
         ("事故C（上界只验段自身）", {"compute_tail_split": mut_split_segment_only_cap}),
         ("阈值自适应方向写反", {"effective_percent": mut_threshold_up}),
         ("tail 预算写死", {"preserve_recent_tokens": mut_budget_fixed}),
+        ("tail 预算无视摘要窗口（128k 丢历史旧行为）",
+         {"tail_budget": mut_budget_ignore_summary_window}),
+        ("拆分守卫口径分裂（把『无需压缩』误判成『折叠全部』）",
+         {"Session._guard_budget": mut_guard_old_budget}),
         ("解压方向写反", {"Session.restore_block": mut_restore_reversed}),
     ]
     for name, patch in injections:
@@ -694,7 +926,7 @@ def main():
             print("  - %s" % f)
         return 1
     print("[OK] 上下文压缩全流程回归通过")
-    print("  - 正向场景 8 组 + 失败注入 6 项均已核对")
+    print("  - 正向场景 11 组 + 失败注入 8 项均已核对")
     print("  - 建模对账：CompactionTailSelector / CompactionThreshold / ModelContextPolicy /")
     print("    AgentMessageDao 压缩块 SQL / buildHistory 筛选与配对 / SessionHistoryPager")
     return 0
