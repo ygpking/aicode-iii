@@ -211,4 +211,94 @@ class ClaimClassifierTest {
         // 「刚才/前面」刻意不进词表：它们可指本回合真声明或位置指代。
         assertTrue(ClaimClassifier.claimsChange("刚才已修复该问题。"))
     }
+
+    // ── 查证声明（R5）──────────────────────────────────────
+
+    @Test
+    fun `中文查证声明`() {
+        assertTrue(ClaimClassifier.claimsRecall("查了，项目里没有现成的。"))
+        assertTrue(ClaimClassifier.claimsRecall("已确认没有其他调用方。"))
+        assertTrue(ClaimClassifier.claimsRecall("已核实过官方文档，没这个参数。"))
+        assertTrue(ClaimClassifier.claimsRecall("搜索过了，无结果。"))
+        assertTrue(ClaimClassifier.claimsRecall("排查了全部同类实例，仅此一处。"))
+    }
+
+    @Test
+    fun `英文查证声明`() {
+        assertTrue(ClaimClassifier.claimsRecall("I checked, there is no existing helper."))
+        assertTrue(ClaimClassifier.claimsRecall("Just checked - not there."))
+        assertTrue(ClaimClassifier.claimsRecall("I've verified the config."))
+    }
+
+    @Test
+    fun `查证的未来态与祈使态不算声明`() {
+        assertFalse(ClaimClassifier.claimsRecall("请确认后再汇报。"))
+        assertFalse(ClaimClassifier.claimsRecall("我先查一下再下结论。"))
+    }
+
+    @Test
+    fun `查证的否定态不算声明`() {
+        assertFalse(ClaimClassifier.claimsRecall("还没查，不能下结论。"))
+        assertFalse(ClaimClassifier.claimsRecall("未核实，凭记忆说的。"))
+        assertFalse(ClaimClassifier.claimsRecall("没查过，这个说法不对。"))
+    }
+
+    @Test
+    fun `疑问句与条件句不算查证声明`() {
+        assertFalse(ClaimClassifier.claimsRecall("是否已确认过这个参数？"))
+        assertFalse(ClaimClassifier.claimsRecall("如果查过没有问题的话就可以发版。"))
+    }
+
+    @Test
+    fun `回顾锚词句不算本轮查证`() {
+        assertFalse(ClaimClassifier.claimsRecall("上一轮已确认过该结论。"))
+        assertFalse(ClaimClassifier.claimsRecall("此前查过一遍，结论如上。"))
+    }
+
+    @Test
+    fun `记忆域的确认不算查证声明`() {
+        assertFalse(ClaimClassifier.claimsRecall("已确认待办里没有这条。"))
+    }
+
+    @Test
+    fun `混合句里否定查证只抑制本句`() {
+        // 「没查过 X」+「已确认 Y」：句级否定只压自己那句，另一句的查证断言仍生效
+        assertTrue(ClaimClassifier.claimsRecall("没查过官方文档。但已确认代码里没有调用方。"))
+    }
+
+    @Test
+    fun `英文否定态不算查证声明`() {
+        assertFalse(ClaimClassifier.claimsRecall("I haven't checked yet."))
+        assertFalse(ClaimClassifier.claimsRecall("not verified"))
+        assertFalse(ClaimClassifier.claimsRecall("haven't confirmed the list"))
+        assertFalse(ClaimClassifier.claimsRecall("has not been verified"))
+        // 否定只压本句；无否定的同词完成态仍算声明。
+        // 已知边界：splitSentences 不按英文句号切分，两句英文粘连时前句否定会抑制后句（漏报方向，可接受），
+        // 故混合句用逗号衔接（逗号在切分集里）验证「否定只压本句」。
+        assertTrue(ClaimClassifier.claimsRecall("Booking confirmed."))
+        assertTrue(ClaimClassifier.claimsRecall("I haven't checked the docs, but I have verified the config."))
+    }
+
+    @Test
+    fun `吗结尾疑问不算查证声明`() {
+        assertFalse(ClaimClassifier.claimsRecall("查过吗"))
+        assertFalse(ClaimClassifier.claimsRecall("确认过吗"))
+        assertFalse(ClaimClassifier.claimsRecall("已确认过吗"))
+        assertFalse(ClaimClassifier.claimsRecall("核实过吗"))
+        // splitSentences 修一处两受益：R1 的验证声明同样拦住无标点疑问
+        assertFalse(ClaimClassifier.claimsVerification("编译通过吗"))
+        assertTrue(ClaimClassifier.claimsVerification("编译通过。"))
+    }
+
+    @Test
+    fun `中文否定变体与命令态不算查证声明`() {
+        assertFalse(ClaimClassifier.claimsRecall("未排查过"))
+        assertFalse(ClaimClassifier.claimsRecall("未搜索过"))
+        assertFalse(ClaimClassifier.claimsRecall("没有查"))
+        assertFalse(ClaimClassifier.claimsRecall("已查一下"))
+        // 真完成态不受新规则影响
+        assertTrue(ClaimClassifier.claimsRecall("已排查过"))
+        assertTrue(ClaimClassifier.claimsRecall("已查了"))
+        assertTrue(ClaimClassifier.claimsRecall("已确认，没问题。"))
+    }
 }

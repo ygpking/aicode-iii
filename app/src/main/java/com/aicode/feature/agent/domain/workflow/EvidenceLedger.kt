@@ -29,6 +29,15 @@ data class LedgerWrite(
     val ts: Long,
 )
 
+/** 账本里一次成功检索的记录（供跨回合「查过/核实过」声明核对凭证，R5）。 */
+@Serializable
+data class LedgerRead(
+    val tool: String,
+    /** 路径、检索参数或命令正文（截断到 [EvidenceLedgerRepository.CMD_MAX_CHARS]）。 */
+    val target: String,
+    val ts: Long,
+)
+
 /**
  * 单个会话的账本内容。
  *
@@ -60,6 +69,13 @@ data class EvidenceLedger(
      * 而多轮任务里模型下一轮汇报上一轮的改动是常态（真机实证：不认会让每轮汇报都被拉回）。
      */
     val recentWrites: List<LedgerWrite> = emptyList(),
+    /**
+     * 最近的检索记录（环形，最多 [EvidenceLedgerRepository.MAX_READS] 条）。
+     *
+     * 供 R5 的 [hasRecentRead] 判「跨回合查证」，与 [recentWrites] 完全同构：
+     * 上一轮查的、这一轮下结论是常态，只认 run 级必产生同类误伤。
+     */
+    val recentReads: List<LedgerRead> = emptyList(),
 ) {
     companion object {
         /** 跨回合写凭证的时效：只认最近这么久的写入。太宽会拿旧成果给新声明背书。 */
@@ -72,6 +88,13 @@ data class EvidenceLedger(
          */
         fun hasRecentWrite(writes: List<LedgerWrite>, now: Long, path: String? = null): Boolean =
             writes.any { w -> now - w.ts <= PRIOR_WRITE_WINDOW_MS && (path == null || pathMatches(w.path, path)) }
+
+        /** 跨回合检索凭证的时效：与写凭证同窗（太宽会拿旧检索给新断言背书）。 */
+        const val PRIOR_READ_WINDOW_MS = PRIOR_WRITE_WINDOW_MS
+
+        /** 本会话窗内是否有过成功检索（R5 的跨回合凭证，与写凭证不同处：不认路径）。 */
+        fun hasRecentRead(reads: List<LedgerRead>, now: Long): Boolean =
+            reads.any { r -> now - r.ts <= PRIOR_READ_WINDOW_MS }
 
         /** 路径匹配：等值、或一方是另一方的路径后缀（`app/x.kt` ↔ `/root/workspace/app/x.kt`）。 */
         private fun pathMatches(actual: String, claimed: String): Boolean {
@@ -97,9 +120,11 @@ data class EvidenceLedger(
             claim: String,
             commands: List<LedgerCommand>,
             writes: List<LedgerWrite>,
+            reads: List<LedgerRead>,
             now: Long,
             maxCommands: Int,
             maxWrites: Int,
+            maxReads: Int,
         ): EvidenceLedger {
             val merged = (old.verifyCommands + commands)
                 .distinctBy { it.cmd to it.ts }
@@ -107,12 +132,16 @@ data class EvidenceLedger(
             val mergedWrites = (old.recentWrites + writes)
                 .distinctBy { it.tool to it.path to it.ts }
                 .takeLast(maxWrites)
+            val mergedReads = (old.recentReads + reads)
+                .distinctBy { it.tool to it.target to it.ts }
+                .takeLast(maxReads)
             return old.copy(
                 consecutiveFails = if (failed) old.consecutiveFails + 1 else 0,
                 lastFail = if (failed) LedgerFail(claim = claim.take(500), verdict = "FAIL", ts = now) else old.lastFail,
                 verifyCommands = merged,
                 redThenGreen = hasRedThenGreenIn(merged),
                 recentWrites = mergedWrites,
+                recentReads = mergedReads,
             )
         }
 

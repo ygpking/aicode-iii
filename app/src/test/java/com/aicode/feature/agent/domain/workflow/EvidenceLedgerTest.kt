@@ -72,7 +72,7 @@ class EvidenceLedgerTest {
     fun `写记录入账并按时间窗口判定`() {
         val w = LedgerWrite(tool = "editFile", path = "app/src/Foo.kt", ts = 1000)
         val ledger = EvidenceLedger.afterRecord(
-            EvidenceLedger(), false, "", emptyList(), listOf(w), 1000, 20, 20
+            EvidenceLedger(), false, "", emptyList(), listOf(w), emptyList(), 1000, 20, 20, 30
         )
         assertEquals(1, ledger.recentWrites.size)
         assertTrue(EvidenceLedger.hasRecentWrite(ledger.recentWrites, 1000 + 60_000))
@@ -89,11 +89,30 @@ class EvidenceLedgerTest {
     @Test
     fun `写记录去重与容量上限`() {
         val w = LedgerWrite(tool = "editFile", path = "a.kt", ts = 5)
-        val dup = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", emptyList(), listOf(w, w), 5, 20, 20)
+        val dup = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", emptyList(), listOf(w, w), emptyList(), 5, 20, 20, 30)
         assertEquals(1, dup.recentWrites.size)
         val many = (1..30).map { LedgerWrite(tool = "editFile", path = "f$it.kt", ts = it.toLong()) }
-        val capped = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", emptyList(), many, 1, 20, 20)
+        val capped = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", emptyList(), many, emptyList(), 1, 20, 20, 30)
         assertEquals(20, capped.recentWrites.size)
+    }
+
+    @Test
+    fun `检索记录入账并按时间窗口判定`() {
+        val r = LedgerRead(tool = "readFile", target = "app/src/Foo.kt", ts = 1000)
+        val ledger = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", emptyList(), emptyList(), listOf(r), 1000, 20, 20, 30)
+        assertEquals(1, ledger.recentReads.size)
+        assertTrue(EvidenceLedger.hasRecentRead(ledger.recentReads, 1000 + 60_000))
+        assertFalse(EvidenceLedger.hasRecentRead(ledger.recentReads, 1000 + EvidenceLedger.PRIOR_READ_WINDOW_MS + 1))
+    }
+
+    @Test
+    fun `检索记录去重与容量上限`() {
+        val r = LedgerRead(tool = "search", target = "foo bar", ts = 5)
+        val dup = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", emptyList(), emptyList(), listOf(r, r), 5, 20, 20, 30)
+        assertEquals(1, dup.recentReads.size)
+        val many = (1..40).map { LedgerRead(tool = "readFile", target = "f$it.kt", ts = it.toLong()) }
+        val capped = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", emptyList(), emptyList(), many, 1, 20, 20, 30)
+        assertEquals(30, capped.recentReads.size)
     }
 
     // ── 账本合并与清零（接线层核心语义）──────────────────────────
@@ -102,14 +121,14 @@ class EvidenceLedgerTest {
     fun `裁决通过时失败计数归零`() {
         // 不归零会让诚实修复后的长期会话永久背着「已累计 N 次」标签，提示文案失真。
         val old = EvidenceLedger(consecutiveFails = 3, lastFail = LedgerFail("已修复 X", "FAIL", 1))
-        val updated = EvidenceLedger.afterRecord(old, failed = false, claim = "", commands = emptyList(), now = 2, maxCommands = 20, writes = emptyList(), maxWrites = 20)
+        val updated = EvidenceLedger.afterRecord(old, failed = false, claim = "", commands = emptyList(), reads = emptyList(), now = 2, maxCommands = 20, writes = emptyList(), maxWrites = 20, maxReads = 30)
         assertEquals(0, updated.consecutiveFails)
     }
 
     @Test
     fun `裁决不通过时失败计数递增`() {
         val old = EvidenceLedger(consecutiveFails = 1)
-        val updated = EvidenceLedger.afterRecord(old, failed = true, claim = "已修复 X", commands = emptyList(), now = 2, maxCommands = 20, writes = emptyList(), maxWrites = 20)
+        val updated = EvidenceLedger.afterRecord(old, failed = true, claim = "已修复 X", commands = emptyList(), reads = emptyList(), now = 2, maxCommands = 20, writes = emptyList(), maxWrites = 20, maxReads = 30)
         assertEquals(2, updated.consecutiveFails)
         assertEquals("已修复 X", updated.lastFail?.claim)
     }
@@ -119,9 +138,9 @@ class EvidenceLedgerTest {
         // 典型场景：run A 测试失败被拉回，补跑成功且收尾通过（写账本）→ 下个 run 应判出针对性。
         // 旧实现在 PASS 路径不写账本，这条永远不成立。
         val runA = listOf(cmd("gradle-test", ok = false, ts = 100))
-        val ledgerA = EvidenceLedger.afterRecord(EvidenceLedger(), true, "已修复", runA, emptyList(), 100, 20, 20)
+        val ledgerA = EvidenceLedger.afterRecord(EvidenceLedger(), true, "已修复", runA, emptyList(), emptyList(), 100, 20, 20, 30)
         val runB = listOf(cmd("gradle-test", ok = true, ts = 200))
-        val ledgerB = EvidenceLedger.afterRecord(ledgerA, false, "", runB, emptyList(), 200, 20, 20)
+        val ledgerB = EvidenceLedger.afterRecord(ledgerA, false, "", runB, emptyList(), emptyList(), 200, 20, 20, 30)
         assertTrue(EvidenceLedger.hasRedThenGreenIn(ledgerB.verifyCommands))
     }
 
@@ -129,14 +148,14 @@ class EvidenceLedgerTest {
     fun `重复命令去重不挤占容量`() {
         // 同一 run 内拉回多次会重复携带全量记录，不去重会把环形容量挤满。
         val cmds = listOf(cmd("gradle-test", ok = false, ts = 100), cmd("gradle-test", ok = false, ts = 100))
-        val updated = EvidenceLedger.afterRecord(EvidenceLedger(), true, "x", cmds, emptyList(), 100, 20, 20)
+        val updated = EvidenceLedger.afterRecord(EvidenceLedger(), true, "x", cmds, emptyList(), emptyList(), 100, 20, 20, 30)
         assertEquals(1, updated.verifyCommands.size)
     }
 
     @Test
     fun `容量上限生效`() {
         val many = (1..30).map { cmd("gradle-test", ok = true, ts = it.toLong()) }
-        val updated = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", many, emptyList(), 1, 20, 20)
+        val updated = EvidenceLedger.afterRecord(EvidenceLedger(), false, "", many, emptyList(), emptyList(), 1, 20, 20, 30)
         assertEquals(20, updated.verifyCommands.size)
     }
 

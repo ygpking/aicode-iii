@@ -111,6 +111,21 @@ internal object CommandOutcome {
     fun isVerifyCommand(command: String): Boolean = VERIFY_COMMAND_RE.containsMatchIn(command)
 
     /**
+     * 只读检索类命令识别（R5「声称查过」的凭证判定）。
+     *
+     * 白名单而非黑名单：管道组合里只要有一段是真检索（`rg x && do-something`），
+     * 该次调用确实产生过查证动作，就算凭证（漏报方向，与守卫取向一致）。
+     * python/node 等脚本语言不进表——它们能干任何事，从命令行无法认定「只是查」。
+     */
+    private val READONLY_SEARCH_RE = Regex(
+        "(^|[|;&]\\s*)(rg|grep|egrep|fgrep|ls|find|cat|head|tail|wc|which|stat|du|diff|file|tree|whereis|locate)\\b" +
+            "|\\bgit\\s+(?:log|show|status|diff|branch|tag|ls-files|ls-remote|rev-parse|blame)\\b",
+        RegexOption.IGNORE_CASE,
+    )
+
+    fun isReadonlySearchCommand(command: String): Boolean = READONLY_SEARCH_RE.containsMatchIn(command)
+
+    /**
      * 验证命令的**类别**。
      *
      * 账本要判「同一验证任务先失败后成功」，不能比完整命令串——模型重跑时几乎必改参数

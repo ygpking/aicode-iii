@@ -116,6 +116,57 @@ class EvidenceGuardV2Test {
         assertEquals(3, EvidenceGuard.MAX_BLOCKS)
     }
 
+    // ── R5：查证声明核对 ──────────────────────────────────
+
+    @Test
+    fun `声称查过但无检索记录被拉回`() {
+        assertTrue(EvidenceGuard.evaluate("查过了，项目里没有现成的实现。", emptyList()).isNotEmpty())
+    }
+
+    @Test
+    fun `有检索工具记录放行`() {
+        val records = listOf(rec("readFile", path = "app/src/Foo.kt"))
+        assertEquals(emptyList<String>(), EvidenceGuard.evaluate("查过了，这里没有现成的。", records))
+    }
+
+    @Test
+    fun `有只读检索命令记录放行`() {
+        val records = listOf(rec("Bash", command = "rg -l 'foo' app/src"))
+        assertEquals(emptyList<String>(), EvidenceGuard.evaluate("搜过了，没有调用方。", records))
+    }
+
+    @Test
+    fun `账本窗内检索记录放行`() {
+        val prior = listOf(LedgerRead(tool = "readFile", target = "Foo.kt", ts = System.currentTimeMillis()))
+        assertEquals(emptyList<String>(), EvidenceGuard.evaluate("已确认没有现成的。", emptyList(), priorReads = prior))
+    }
+
+    @Test
+    fun `账本窗外检索记录不放行`() {
+        val prior = listOf(
+            LedgerRead(
+                tool = "readFile", target = "Foo.kt",
+                ts = System.currentTimeMillis() - EvidenceLedger.PRIOR_READ_WINDOW_MS - 1,
+            )
+        )
+        assertTrue(EvidenceGuard.evaluate("已确认没有现成的。", emptyList(), priorReads = prior).isNotEmpty())
+    }
+
+    @Test
+    fun `失败汇报不触发查证核对`() {
+        assertTrue(EvidenceGuard.evaluate("没查过这个，不确定。", emptyList()).isEmpty())
+    }
+
+    @Test
+    fun `失败输出的检索命令不算查证凭证`() {
+        // command 必须在只读检索白名单内（rg），否则测试只验证了「非检索命令不算凭证」，
+        // 守不住 hasFailureSignal 分支（删掉该分支此用例仍绿）。
+        val records = listOf(
+            rec("Bash", command = "rg 'foo' app/src", outputTail = "Error: assertion failed at line 3")
+        )
+        assertTrue(EvidenceGuard.evaluate("查过了，项目里没有现成的。", records).isNotEmpty())
+    }
+
     // ── 退出码语义（对照 truthguard check-exit-code.sh 的例外表）──────
 
     @Test
