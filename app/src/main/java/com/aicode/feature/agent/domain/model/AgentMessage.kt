@@ -102,5 +102,12 @@ data class AgentContext(
      * 本会话绑定的自定义子代理定义；非空表示这是一个按定义运行的子代理会话，
      * 系统提示词与工具集都按其配置组装（见 [com.aicode.feature.agent.domain.prompt.SystemPromptProvider]）。
      */
-    val agentDefinition: AgentDefinition? = null
+    val agentDefinition: AgentDefinition? = null,
+    /**
+     * 本轮用户消息的持久层 id：由 ViewModel 生成、落库与内存构造共用同一 id。
+     * 缺失它时 workflow 内存 UserMessage 的 id 为空串，与 DB 行 id 永远对不上——
+     * 新会话首个长 run 触发压缩时 head 全部匹配失败，被误判「head 内无已落库消息」
+     * 而整轮放弃折叠（实测 2026-10-11 会话 22ddb225）。
+     */
+    val userMessageId: String? = null
 )
