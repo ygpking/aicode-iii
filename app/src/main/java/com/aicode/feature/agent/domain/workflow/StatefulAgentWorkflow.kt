@@ -141,8 +141,6 @@ class StatefulAgentWorkflow @Inject constructor(
         const val USER_REJECTED_CODE = "USER_REJECTED"
         /** 完工证据守卫软拉回时，注入给模型的系统提示前缀。 */
         const val EVIDENCE_GUARD_NOTICE_PREFIX = "[系统提示] 完工证据核对未通过："
-        /** 守卫记录命令输出时保留的尾部字符数；只需覆盖 BUILD FAILED / AssertionError 等失败信号。 */
-        const val EVIDENCE_OUTPUT_TAIL_CHARS = 2000
         /** 提示里展示「上次声明」的截断长度（与账本存储侧共用同一口径）。 */
         const val CLAIM_PREVIEW_CHARS = 120
         /** 提权参数名；与 [ToolPermissionPolicyEngine] 同名常量对应。 */
@@ -1118,10 +1116,12 @@ class StatefulAgentWorkflow @Inject constructor(
                                     readFile = { p -> runCatchingCancellable { fileAccess.readFile(p) }.getOrNull() },
                                     preWrite = preWriteContents,
                                     command = command,
-                                    // 取结果尾部：工具层把非零退出包装成 Success（isError 恒 false），
-                                    // 只有输出尾部的 BUILD FAILED/AssertionError 能揭示真实失败。
+                                    // 取结果**头尾两端**：工具层把非零退出包装成 Success（isError 恒 false），
+                                    // 只有输出文本的失败信号能揭示真实失败。信号位置不固定——尾部有
+                                    // BUILD FAILED，头部有 Traceback / 行首 Error:（见 hasFailureSignal）。
+                                    // 只取尾部会漏掉长输出头部的信号，把失败误判为成功凭证（假 PASS）。
                                     outputTail = if (command != null) {
-                                        rr?.raw?.takeLast(EVIDENCE_OUTPUT_TAIL_CHARS)
+                                        rr?.raw?.let { CommandOutcome.outputEdges(it) }
                                     } else null
                                 )
                             )
@@ -1513,7 +1513,7 @@ class StatefulAgentWorkflow @Inject constructor(
      *
      * 只留验证类命令（其它命令与「声明是否成立」无关），带上类别与成败。
      * 成败不看 [EvidenceGuard.ToolRecord.isError]（工具层把非零退出包成 Success，恒为 false），
-     * 而看输出尾部有无失败信号（同 [CommandOutcome.hasFailureSignal] 的口径）。
+     * 而看输出有无失败信号（同 [CommandOutcome.hasFailureSignal] 的口径）。
      */
     private fun verifyCommandsOf(records: List<EvidenceGuard.ToolRecord>): List<LedgerCommand> {
         val now = System.currentTimeMillis()
