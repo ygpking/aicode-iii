@@ -102,8 +102,15 @@ sealed class AgentEvent {
      * 守卫拉回模型补做达到上限后，剩余的未通过项无法由模型自行纠正，
      * 此时必须**如实告知用户**而不是静默放行——否则守卫拦不住的最后一次谎报
      * 会被当成正常结束。由 ViewModel 按助手消息落库展示。
+     *
+     * @param redThenGreen 账本里是否出现过「同类验证命令先失败、后成功」（置信度信号）。
+     *   仅作**展示**，不作拦截依据——作弊者也能先故意制造失败再跑成功，
+     *   故只把它作为「该验证过程值得怀疑」的提示交给用户判断。
      */
-    data class EvidenceGuardReport(val notices: List<String>) : AgentEvent()
+    data class EvidenceGuardReport(
+        val notices: List<String>,
+        val redThenGreen: Boolean = false,
+    ) : AgentEvent()
 }
 
 interface AgentWorkflow {
