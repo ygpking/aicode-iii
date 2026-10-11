@@ -135,6 +135,8 @@ internal object AgentEventTracer {
         is AgentEvent.ModeChanged -> "mode_changed ${event.newMode} 原因=${event.reason.take(100)}"
 
         is AgentEvent.EvidenceGuardReport ->
-            "evidence_guard_report 未通过项=${event.notices.size} ${event.notices.firstOrNull()?.take(120) ?: ""}"
+            "evidence_guard_report 未通过项=${event.notices.size}" +
+                (if (event.redThenGreen) " 先红后绿=true" else "") +
+                " ${event.notices.firstOrNull()?.take(120) ?: ""}"
     }
 }

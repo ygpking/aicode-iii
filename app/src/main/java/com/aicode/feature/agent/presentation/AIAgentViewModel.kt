@@ -1743,10 +1743,16 @@ class AIAgentViewModel @Inject constructor(
                     is AgentEvent.EvidenceGuardReport -> {
                         // 守卫拉回达上限、声明仍无凭证：直接告诉用户（不经模型改写）。
                         val body = event.notices.joinToString("\n") { "· $it" }
+                        // 先红后绿：账本里出现过「同类验证命令先失败、后成功」——只作置信度提示，
+                        // 不改变拦截结论（作弊者也能先故意红再绿，故交由用户判断而非守卫自动加重）。
+                        val redGreen = if (event.redThenGreen) {
+                            "\n\n注：本次会话中曾出现同类验证命令「先失败、后通过」的记录，" +
+                                "属可自行制造的模式，仅供参考，不构成结论。"
+                        } else ""
                         messagePersistenceUseCase.persist(
                             sessionId,
                             MessageRole.ASSISTANT,
-                            "[完工证据核对未通过]\n$body\n\n以上声明未能由本次会话的工具执行记录佐证，请核实后再采信。"
+                            "[完工证据核对未通过]\n$body$redGreen\n\n以上声明未能由本次会话的工具执行记录佐证，请核实后再采信。"
                         )
                     }
                     is AgentEvent.ModeChanged -> {

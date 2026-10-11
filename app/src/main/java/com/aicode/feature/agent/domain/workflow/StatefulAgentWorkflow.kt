@@ -675,8 +675,14 @@ class StatefulAgentWorkflow @Inject constructor(
                     } else {
                         // 拉回次数用尽而声明仍无凭证：不再静默放行，而是把未通过的项直接告诉用户。
                         // 静默放行等于守卫拦不住的那一次谎报照旧被当成正常结束。
+                        // redThenGreen 取自**记录前**的账本：它反映的是「本次声明之前」历史上
+                        // 是否出现过同类命令先红后绿——正是本报告要提示用户的置信度信号。
+                        // 仅展示、不拦截：作弊者也能先故意红再绿，作拦截依据会被轻易博弈。
                         FileLogger.w(TAG, "完工证据守卫达上限仍不通过，向用户如实报告：${notices.joinToString("；")}")
-                        guardReports += AgentEvent.EvidenceGuardReport(notices)
+                        guardReports += AgentEvent.EvidenceGuardReport(
+                            notices = notices,
+                            redThenGreen = ledger.redThenGreen,
+                        )
                     }
                 }
                 // 账本写入覆盖**两种裁决**（不止违规时）：放行路径不写，则本 run 的成功验证命令
