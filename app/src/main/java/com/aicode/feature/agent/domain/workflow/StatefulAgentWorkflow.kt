@@ -193,6 +193,17 @@ class StatefulAgentWorkflow @Inject constructor(
         /** 模型返回空正文且无工具调用时的续写提示（空响应兜底用，注入一次）。 */
         const val EMPTY_RESPONSE_NOTICE =
             "（你刚才的回复为空。请基于现有上下文继续回答，不要重复之前的内容。）"
+        /**
+         * 上下文压缩完成后追加的续跑提示。
+         *
+         * 压缩后新上下文的末尾是 marker（"What did we do so far?"）+ 接手摘要，直接发送会让
+         * 模型把 marker 当作用户提问、重新输出一遍「到目前为止做了什么」而不继续干活
+         * （实测 2026-10-11 报障截图）。追加本提示让模型从摘要「下一步动作」接着干。
+         * 仅存于本次 run 的内存上下文（workflow 内加的 user 消息不经事件落库），
+         * 下次 run 从 DB 重建历史时自然消失，不残留。
+         */
+        const val COMPACTION_CONTINUATION_NOTICE =
+            "（系统提示：以上为上下文压缩后的接手摘要，早期对话已折叠。请直接继续执行摘要「下一步动作」与未完成的任务，不要重新输出总结或复述摘要。）"
         /** 单轮工具调用数上限：超出部分当轮不执行、回写说明让模型下一轮再调，避免一次梭哈。 */
         const val MAX_TOOLS_PER_ROUND = 12
 
@@ -245,7 +256,15 @@ class StatefulAgentWorkflow @Inject constructor(
     /** 改变状态的动作 (Action) */
     sealed interface AgentAction {
         data class InitRequest(val initialMessages: List<AgentMessage>) : AgentAction
-        data class LlmResponse(val response: AIResponse) : AgentAction
+        data class LlmResponse(
+            val response: AIResponse,
+            /**
+             * 本轮 assistant 消息的内存 id：随 [AgentEvent.AssistantText] 同步发给 ViewModel 落库复用，
+             * 保证内存态与 DB 行 id 一致（压缩标记按 id 匹配，两套 id 会让本 run 消息永远匹配不上）。
+             * 空串时 reduce 内自生成（防御其它构造点遗漏）。
+             */
+            val messageId: String = ""
+        ) : AgentAction
         data class LlmError(val error: String) : AgentAction
         data class PermissionEvaluated(
             val toolCall: ToolCall,
@@ -421,6 +440,7 @@ class StatefulAgentWorkflow @Inject constructor(
             }
             is AgentAction.LlmResponse -> {
                 val assistantMsg = AgentMessage.AssistantMessage(
+                    id = action.messageId.ifBlank { UUID.randomUUID().toString() },
                     content = action.response.content,
                     toolCalls = action.response.toolCalls,
                     reasoning = action.response.reasoning ?: "",
@@ -611,6 +631,7 @@ class StatefulAgentWorkflow @Inject constructor(
         actionQueue.addLast(
             AgentAction.InitRequest(
                 currentContext.history + AgentMessage.UserMessage(
+                    id = currentContext.userMessageId.orEmpty(),
                     content = userContent,
                     images = currentContext.inputImages
                 )
@@ -743,6 +764,15 @@ class StatefulAgentWorkflow @Inject constructor(
                                 send(event)
                             }
                             if (compactedMessages !== state.messages) {
+                                // 发送列表与 state 同步追加续跑提示：末尾是 marker+摘要，直接发送
+                                // 模型会回答「What did we do so far?」重新总结而不继续干活。
+                                // 同一 run 内多次压缩时旧 notice 会留在 tail，尾部已有则不重复追加。
+                                val alreadyNoticed = compactedMessages.asReversed().take(8)
+                                    .any { it is AgentMessage.UserMessage && it.content == COMPACTION_CONTINUATION_NOTICE }
+                                if (!alreadyNoticed) {
+                                    compactedMessages = compactedMessages +
+                                        AgentMessage.UserMessage(content = COMPACTION_CONTINUATION_NOTICE)
+                                }
                                 state = state.copy(messages = compactedMessages)
                             }
                         }
@@ -750,6 +780,8 @@ class StatefulAgentWorkflow @Inject constructor(
                         val acc = StringBuilder()
                         val reasoningAcc = StringBuilder()
                         var finalResponse: AIResponse? = null
+                        // 本轮 assistant 消息 id：事件与 reduce 共用，落库复用同一 id（见 AgentAction.LlmResponse）。
+                        val assistantMessageId = UUID.randomUUID().toString()
 
                         // 调用统计埋点：记录请求发出/首字/结束时刻与 usage，失败与取消同样留痕。
                         val callStartElapsed = SystemClock.elapsedRealtime()
@@ -878,14 +910,17 @@ class StatefulAgentWorkflow @Inject constructor(
                                         aiResponse.outputTokens,
                                         aiResponse.cachedInputTokens,
                                         aiResponse.thinkingBlocksJson ?: "",
-                                        attachments = attachments
+                                        attachments = attachments,
+                                        // 落库与内存共用同一 id，压缩标记才能按 id 匹配到本 run 的消息。
+                                        messageId = assistantMessageId
                                     )
                                 )
                             }
                             actionQueue.addLast(
                                 AgentAction.LlmResponse(
                                     if (persistedImages.isNotEmpty()) responseWithReasoning.copy(images = persistedImages)
-                                    else responseWithReasoning
+                                    else responseWithReasoning,
+                                    messageId = assistantMessageId
                                 )
                             )
                         } catch (e: CancellationException) {
@@ -919,9 +954,14 @@ class StatefulAgentWorkflow @Inject constructor(
                                     send(event)
                                 }
                                 if (!compactionAttemptFailed) {
-                                    state = state.copy(messages = compacted)
+                                    // 与自动压缩同理：仅当压缩真的生效（返回了新列表）才补续跑提示；
+                                    // 压缩未生效（如无可压缩内容）时原样重试，不添乱。
+                                    val resend = if (compacted !== state.messages) {
+                                        compacted + AgentMessage.UserMessage(content = COMPACTION_CONTINUATION_NOTICE)
+                                    } else compacted
+                                    state = state.copy(messages = resend)
                                     // 重新走一次 InitRequest：以压缩后的消息重发，等效于「压缩后的新轮」。
-                                    actionQueue.addFirst(AgentAction.InitRequest(compacted))
+                                    actionQueue.addFirst(AgentAction.InitRequest(resend))
                                     callError = "上下文超限：已自动压缩后重试"
                                 } else {
                                     actionQueue.addLast(AgentAction.LlmError("LLM 调用失败: ${e.message}"))

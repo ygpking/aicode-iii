@@ -25,7 +25,14 @@ sealed class AgentEvent {
         /** Anthropic thinking / redacted_thinking 内容块的原样快照（JSON 数组文本），随 reasoning 落库供后续轮原样回传。 */
         val thinkingBlocksJson: String = "",
         /** 模型直出图片（Gemini 图像模型）落盘后构造的文件卡片，随消息落库供 UI 渲染。 */
-        val attachments: List<com.aicode.feature.agent.presentation.AgentAttachment> = emptyList()
+        val attachments: List<com.aicode.feature.agent.presentation.AgentAttachment> = emptyList(),
+        /**
+         * 本条 assistant 消息的内存 id：由 workflow 生成，落库时必须复用同一 id。
+         * 落库另生成新 id 会让内存态与 DB 行 id 永远对不上，压缩标记时本 run 消息
+         * 全部匹配失败（同 [com.aicode.feature.agent.domain.model.AgentContext.userMessageId]）。
+         * 空串表示无对应内存消息（如流中断时的 partial 落库），由持久层自生成 id。
+         */
+        val messageId: String = ""
     ) : AgentEvent()
 
     /** 流式过程中模型逐字吐出的文字（[accumulated] 为本轮已累积的完整文本，用于 UI 实时渲染，不落库）。 */

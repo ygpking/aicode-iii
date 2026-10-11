@@ -122,12 +122,12 @@ class ContextCompactor @Inject constructor(
         val cooldownUntil = sessionId?.takeIf { !force }?.let { compactionCooldownUntilBySession[it] }
         if (cooldownUntil != null && SystemClock.elapsedRealtime() < cooldownUntil) {
             FileLogger.d(TAG, "压缩失败冷却中（剩余 ${(cooldownUntil - SystemClock.elapsedRealtime()) / 1000}s），跳过本次自动压缩")
-            return messages.toList()
+            return messages
         }
         // 单飞：抢不到租约说明同会话已有压缩在跑，直接返回原消息（持有者写完下轮自然读到新上下文）。
         if (sessionId != null && compactionInFlightBySession.putIfAbsent(sessionId, true) != null) {
             FileLogger.d(TAG, "同会话已有压缩在进行中，跳过本次并发压缩")
-            return messages.toList()
+            return messages
         }
         try {
             return compactIfNeededLocked(messages, aiProvider, sessionId, force, lastInputTokens, windowProvider, onEvent)
@@ -168,7 +168,7 @@ class ContextCompactor @Inject constructor(
         val reachedThreshold = currentTokens >= triggerThreshold
         val reachedHardLimit = currentTokens >= contextLimit
         if (messages.size <= 2 || (!force && !reachedThreshold && !reachedHardLimit)) {
-            return messages.toList()
+            return messages
         }
 
         val tokensSource = if (lastInputTokens > 0) "真实 usage" else "本地估算"
@@ -207,7 +207,7 @@ class ContextCompactor @Inject constructor(
                 )
             }
             onEvent(AgentEvent.CompactionFinished)
-            return messages.toList()
+            return messages
         }
 
         // 确保 tail 的第一条消息不是孤立的 ToolResultMessage：
@@ -230,7 +230,7 @@ class ContextCompactor @Inject constructor(
             // 否则会发出一条只有指令、没有材料的摘要请求，模型只能凭空编造并落库顶替真实历史。
             FileLogger.i(TAG, "无可压缩内容（head 清理后为空），跳过压缩")
             onEvent(AgentEvent.CompactionFinished)
-            return messages.toList()
+            return messages
         }
         // 压缩请求：head 原始消息数组 + 末尾一条压缩指令（Codex 式），tools 不发送。
         // 消息数组保留真实角色结构（user/assistant/tool 配对），比文本化拼接更利于模型理解。
@@ -286,7 +286,7 @@ class ContextCompactor @Inject constructor(
             // 异常多为快速失败（成本远低于输出打满那次），不属「慢性烧钱」场景。
             onEvent(AgentEvent.CompactionFailed(callError, transient))
             onEvent(AgentEvent.CompactionFinished)
-            return messages.toList() // 失败则原样返回，交由上层自行承担溢出风险
+            return messages // 失败则原样返回，交由上层自行承担溢出风险
         }
 
         val durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt()
@@ -401,6 +401,10 @@ class ContextCompactor @Inject constructor(
                 // head 的消息绝大多数早已落库，故仍只标记 DB 中确实存在的 id，
                 // 既消除竞态，也保留「绝不误标未落库/全部历史」的原设计初衷。
                 val persistedIds = dbEntities.mapTo(HashSet()) { it.id }
+                // tool 结果行落库 id 是 "tool_<callId>"，而内存 ToolResultMessage 的 id 是 toolCallId 本身
+                // （buildHistory 重建时也用 toolCallId）。不并入的话本 run 产生的 tool 结果永远匹配不上，
+                // 纯新会话的首个长 run 会误判 head 全部未落库（实测 2026-10-11 会话 22ddb225）。
+                dbEntities.forEach { e -> e.toolCallId?.let { persistedIds.add(it) } }
                 val headIdsToMark = CompactionMarkSelector.selectIdsToMark(head, persistedIds)
                 // head 整段都未落库（进程被杀导致内存消息未持久化，实测 31 次回合未见收尾）：
                 // 无法标记 → 重启后 buildHistory 会回放完整 head。若仍插入 marker+summary，
@@ -431,7 +435,8 @@ class ContextCompactor @Inject constructor(
                     // 摘要收尾：marker + summary 时间戳放在 tail 最后一条之后，回放/UI 顺序 = tail → 摘要，
                     // 与 Codex 一致（最近消息在前、接手摘要收尾），避免摘要插在历史最前导致观感混乱。
                     val tailLastTs = tail.asReversed().firstNotNullOfOrNull { msg ->
-                        dbEntities.find { it.id == msg.id }?.timestamp
+                        // tool 消息的内存 id 是 toolCallId，对应行 id 不同，两者都试。
+                        dbEntities.find { it.id == msg.id || it.toolCallId == msg.id }?.timestamp
                     }
                     val insertBase = maxOf(System.currentTimeMillis(), tailLastTs ?: 0L) + 1
                     agentMessageDao.insert(
@@ -512,7 +517,7 @@ class ContextCompactor @Inject constructor(
         }
         onEvent(AgentEvent.CompactionFailed(code, transient = false))
         onEvent(AgentEvent.CompactionFinished)
-        return messages.toList()
+        return messages
     }
 
     /**

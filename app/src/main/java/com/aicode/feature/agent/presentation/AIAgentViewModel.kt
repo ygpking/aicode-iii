@@ -1509,8 +1509,10 @@ class AIAgentViewModel @Inject constructor(
             val history = messagePersistenceUseCase.buildHistory(sessionId, SessionUseCase.PENDING_TOOL_MARKER)
             val isFirst = history.isEmpty()
 
+            // 用户消息 id 在落库与内存构造之间共用：workflow 侧 UserMessage 复用它，
+            // 压缩标记按 id 匹配时本 run 的用户消息才能命中 DB 行。
+            val userMsgId = UUID.randomUUID().toString()
             if (!isAutoTrigger) {
-                val userMsgId = UUID.randomUUID().toString()
                 messagePersistenceUseCase.persist(sessionId, MessageRole.USER, request, id = userMsgId, attachments = inputAttachments)
                 checkpointManager.createCheckpoint(sessionId, userMsgId, request)
                 if (isFirst && !skipTitleUpdate) {
@@ -1542,7 +1544,8 @@ class AIAgentViewModel @Inject constructor(
                 mode = mode,
                 modeBeforePlan = sessionDomain?.modeBeforePlan,
                 reasoningEffort = sessionDomain?.reasoningEffort?.apiValue,
-                agentDefinition = agentDefinition
+                agentDefinition = agentDefinition,
+                userMessageId = userMsgId
             )
 
             val allTools = toolRegistry.getAvailableTools()
@@ -1636,6 +1639,9 @@ class AIAgentViewModel @Inject constructor(
                             sessionId,
                             MessageRole.ASSISTANT,
                             normalized,
+                            // 复用 workflow 内存消息 id：压缩标记按 id 匹配 DB 行，另生成新 id 会让
+                            // 本 run 的 assistant 消息永远匹配不上（新会话首 run 会误判全部未落库）。
+                            id = event.messageId.ifBlank { UUID.randomUUID().toString() },
                             toolCalls = event.toolCalls,
                             reasoning = reasoning,
                             signature = event.signature.ifEmpty { null },
