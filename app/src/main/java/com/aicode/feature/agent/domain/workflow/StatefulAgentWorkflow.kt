@@ -651,7 +651,10 @@ class StatefulAgentWorkflow @Inject constructor(
                     action.response.content,
                     evidenceRecords,
                     priorWrites = ledger.recentWrites,
-                    priorReads = ledger.recentReads
+                    priorReads = ledger.recentReads,
+                    // 第几次核对（1 起）。守卫措辞按此分档：首次只给正向要求，
+                    // 再次起才提供免责出口，避免第一次就把「未验证」话术递给模型。
+                    attempt = newState.evidenceGuardBlocks + 1,
                 )
                 if (notices.isNotEmpty()) {
                     if (newState.evidenceGuardBlocks < EvidenceGuard.MAX_BLOCKS) {
