@@ -1509,8 +1509,10 @@ class AIAgentViewModel @Inject constructor(
             val history = messagePersistenceUseCase.buildHistory(sessionId, SessionUseCase.PENDING_TOOL_MARKER)
             val isFirst = history.isEmpty()
 
+            // 用户消息 id 在落库与内存构造之间共用：workflow 侧 UserMessage 复用它，
+            // 压缩标记按 id 匹配时本 run 的用户消息才能命中 DB 行。
+            val userMsgId = UUID.randomUUID().toString()
             if (!isAutoTrigger) {
-                val userMsgId = UUID.randomUUID().toString()
                 messagePersistenceUseCase.persist(sessionId, MessageRole.USER, request, id = userMsgId, attachments = inputAttachments)
                 checkpointManager.createCheckpoint(sessionId, userMsgId, request)
                 if (isFirst && !skipTitleUpdate) {
@@ -1542,7 +1544,8 @@ class AIAgentViewModel @Inject constructor(
                 mode = mode,
                 modeBeforePlan = sessionDomain?.modeBeforePlan,
                 reasoningEffort = sessionDomain?.reasoningEffort?.apiValue,
-                agentDefinition = agentDefinition
+                agentDefinition = agentDefinition,
+                userMessageId = userMsgId
             )
 
             val allTools = toolRegistry.getAvailableTools()
@@ -1636,6 +1639,9 @@ class AIAgentViewModel @Inject constructor(
                             sessionId,
                             MessageRole.ASSISTANT,
                             normalized,
+                            // 复用 workflow 内存消息 id：压缩标记按 id 匹配 DB 行，另生成新 id 会让
+                            // 本 run 的 assistant 消息永远匹配不上（新会话首 run 会误判全部未落库）。
+                            id = event.messageId.ifBlank { UUID.randomUUID().toString() },
                             toolCalls = event.toolCalls,
                             reasoning = reasoning,
                             signature = event.signature.ifEmpty { null },
@@ -1743,10 +1749,16 @@ class AIAgentViewModel @Inject constructor(
                     is AgentEvent.EvidenceGuardReport -> {
                         // 守卫拉回达上限、声明仍无凭证：直接告诉用户（不经模型改写）。
                         val body = event.notices.joinToString("\n") { "· $it" }
+                        // 先红后绿：账本里出现过「同类验证命令先失败、后成功」——只作置信度提示，
+                        // 不改变拦截结论（作弊者也能先故意红再绿，故交由用户判断而非守卫自动加重）。
+                        val redGreen = if (event.redThenGreen) {
+                            "\n\n注：本次会话中曾出现同类验证命令「先失败、后通过」的记录，" +
+                                "属可自行制造的模式，仅供参考，不构成结论。"
+                        } else ""
                         messagePersistenceUseCase.persist(
                             sessionId,
                             MessageRole.ASSISTANT,
-                            "[完工证据核对未通过]\n$body\n\n以上声明未能由本次会话的工具执行记录佐证，请核实后再采信。"
+                            "[完工证据核对未通过]\n$body$redGreen\n\n以上声明未能由本次会话的工具执行记录佐证，请核实后再采信。"
                         )
                     }
                     is AgentEvent.ModeChanged -> {

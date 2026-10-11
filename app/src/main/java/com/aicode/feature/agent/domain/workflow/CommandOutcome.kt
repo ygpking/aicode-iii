@@ -97,10 +97,34 @@ internal object CommandOutcome {
      * 输出文本里是否有明确的失败信号。
      *
      * 必要性见类 KDoc：工具层把非零退出包成 Success，故 `isError` 不可信，
-     * 必须从这里补判。只看输出尾部（调用方传尾部切片即可），避免全文扫描开销。
+     * 必须从这里补判。调用方应传入**头尾两端**的切片（见 [outputEdges]）而非只取尾部——
+     * 失败信号既可能在尾部（Gradle），也可能在头部（Traceback、行首 `Error:`）。
      */
     fun hasFailureSignal(output: String?): Boolean =
         !output.isNullOrBlank() && FAILURE_SIGNAL_RE.containsMatchIn(output)
+
+    /** [outputEdges] 头、尾各保留的字符数。 */
+    const val OUTPUT_EDGE_CHARS = 2000
+
+    /**
+     * 命令输出的**头尾两端**切片，供 [hasFailureSignal] 判定真实失败。
+     *
+     * 为何是"两端"而非只取尾部：失败信号在输出里的位置**不固定**——
+     *  - 尾部：[FAILURE_SIGNAL_RE] 里的 `BUILD FAILED`、`Execution failed for task`（Gradle 风格）；
+     *  - **头部**：同表里的 `Traceback (most recent call last)`、`COMPILATION ERROR`，
+     *    以及用**行首锚点** `^Error:`（等价 Kotlin 里的 `(?m)^Error:`）匹配的条目。
+     *
+     * 只取尾部时，长输出（构建日志、大测试套件）的头部信号会被切掉，使**失败的验证命令
+     * 被判为成功凭证**——直接产生 `hasFailureSignal` 声称要防的假 PASS。本函数修此缺口。
+     *
+     * 输出不超限时**原样返回**（不切片、不加分隔符）；超限时头尾各取 [OUTPUT_EDGE_CHARS]，
+     * 中间以换行分隔——保证头部段的 `^Error:` 行首锚点仍成立，也避免头尾直接粘连
+     * 造出跨段的虚假匹配。
+     */
+    fun outputEdges(output: String): String {
+        if (output.length <= OUTPUT_EDGE_CHARS * 2) return output
+        return output.take(OUTPUT_EDGE_CHARS) + "\n" + output.takeLast(OUTPUT_EDGE_CHARS)
+    }
 
     /**
      * 验证类命令识别。

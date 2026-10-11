@@ -130,12 +130,22 @@ internal object EvidenceGuard {
      * @param priorReads 本会话账本里的历史检索记录（R5 跨回合查证的凭证来源）。
      * @return 违规说明列表；空表示声明都有凭证，放行收尾。
      */
+    /**
+     * @param attempt 本次收尾是本请求内的第几次核对（1 起）。用于**分档措辞**：
+     *   第 1 次只给正向要求（补齐凭证）；从第 2 次起才追加免责出口（「若确实没做，请如实说明」）。
+     *
+     *   动机：免责出口（「或明确说明未验证」）本意是避免守卫强迫模型编造，但它同时是
+     *   一条**现成的免责话术**——第 1 次就摆出来，模型最省力的响应不是补做，而是照抄一句
+     *   「未验证/凭记忆」直接过关（且这类否定会被 [ClaimClassifier] 的否定器抑制，下轮不再命中）。
+     *   延后到第 2 次，先给模型一次真去补做的机会，再谈如实声明。
+     */
     fun evaluate(
         message: String,
         records: List<ToolRecord>,
         priorWrites: List<LedgerWrite> = emptyList(),
         now: Long = System.currentTimeMillis(),
         priorReads: List<LedgerRead> = emptyList(),
+        attempt: Int = 1,
     ): List<String> {
         if (message.isBlank()) return emptyList()
 
@@ -153,7 +163,14 @@ internal object EvidenceGuard {
 
         // R1：声称验证通过，但本回合没有成功的验证类命令。
         if (claimsVerify && !hasSuccessfulVerifyCommand(records)) {
-            notices += "你声称验证/测试通过，但本回合没有成功的命令执行记录。请实际运行验证后再报告，或明确说明「未验证」。"
+            notices += "你声称验证/测试通过，但本回合没有成功的命令执行记录。" +
+                (
+                    if (attempt <= 1) {
+                        "请实际运行验证后再报告；确实未跑就跑一遍，跑不了再说明原因。"
+                    } else {
+                        "请实际运行验证后再报告，或明确说明「未验证」。"
+                    }
+                    )
         }
 
         // R2：声称改完并解决，但本回合没有成功的文件修改。
@@ -161,7 +178,14 @@ internal object EvidenceGuard {
         if (claimsChange && !hasSuccessfulWrite(records) &&
             !EvidenceLedger.hasRecentWrite(priorWrites, now)
         ) {
-            notices += "你声称已完成/已修复，但本回合没有成功的文件修改记录。请确认是否已动手，或改为说明当前状态与下一步。"
+            notices += "你声称已完成/已修复，但本回合没有成功的文件修改记录。" +
+                (
+                    if (attempt <= 1) {
+                        "请确认是否已动手：若尚未动手请现在完成；若已完成请指出改动位置。"
+                    } else {
+                        "请确认是否已动手，或改为说明当前状态与下一步。"
+                    }
+                    )
         }
 
         // R3：点名说了改了某个文件，但本回合没有对该路径的成功写入。
@@ -171,7 +195,14 @@ internal object EvidenceGuard {
                 if (!hasSuccessfulWriteTo(records, claimed) &&
                     !EvidenceLedger.hasRecentWrite(priorWrites, now, claimed)
                 ) {
-                    notices += "你声称修改了 `$claimed`，但本回合没有对该文件的成功修改记录。请确认，或说明实际改动位置。"
+                    notices += "你声称修改了 `$claimed`，但本回合没有对该文件的成功修改记录。" +
+                        (
+                            if (attempt <= 1) {
+                                "请现在修改该文件，或指出实际改动所在的文件。"
+                            } else {
+                                "请确认，或说明实际改动位置。"
+                            }
+                            )
                 }
             }
         }

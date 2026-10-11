@@ -440,6 +440,53 @@ class EvidenceGuardV2Test {
         assertTrue(found.any { it.contains("恒真断言") })
     }
 
+    // ---------- outputEdges：长输出的头尾切片（回归：只取尾部会漏头部失败信号） ----------
+
+    @Test
+    fun `长输出头部有 Traceback 时不被尾部切片漏掉`() {
+        // 回归（本 bug）：只 takeLast 时，pytest 的 Traceback 在开头会被切掉，
+        // 失败的验证命令被判为成功凭证 → 假 PASS。outputEdges 必须保住头部。
+        val head = "Traceback (most recent call last):\n  File \"test_foo.py\", line 12\n    assert x == 1\n"
+        val filler = "\ncollected 500 items / running...\n".repeat(200) // 把开头顶出尾部窗口
+        val raw = head + filler + "\n===== short test summary info =====\n"
+        assertTrue("前置条件：输出应超过尾部窗口", raw.length > CommandOutcome.OUTPUT_EDGE_CHARS * 2)
+        assertTrue(
+            "outputEdges 后必须仍能识别头部 Traceback",
+            CommandOutcome.hasFailureSignal(CommandOutcome.outputEdges(raw)),
+        )
+    }
+
+    @Test
+    fun `长输出头部行首 Error 时不被尾部切片漏掉`() {
+        // 覆盖 FAILURE_SIGNAL_RE 里 `^Error:` 这类**行首锚点**——它只看行首，
+        // 头部被切掉即永久失配。
+        val raw = "Error: cannot find symbol\n" + "\ncompiling module...\n".repeat(200) + "\ndone\n"
+        assertTrue(raw.length > CommandOutcome.OUTPUT_EDGE_CHARS * 2)
+        assertTrue(CommandOutcome.hasFailureSignal(CommandOutcome.outputEdges(raw)))
+    }
+
+    @Test
+    fun `长输出尾部信号在 outputEdges 后仍可识别`() {
+        // 反向保护：改成头尾切片不能丢掉原本能识别的尾部信号（Gradle BUILD FAILED）。
+        val raw = "> Task :app:compile\n".repeat(300) + "BUILD FAILED in 42s\nFAILURE: Build failed\n"
+        assertTrue(raw.length > CommandOutcome.OUTPUT_EDGE_CHARS * 2)
+        assertTrue(CommandOutcome.hasFailureSignal(CommandOutcome.outputEdges(raw)))
+    }
+
+    @Test
+    fun `长成功的输出经 outputEdges 不误报`() {
+        // 头尾切片不得引入假阳性。
+        val raw = (1..400).joinToString("\n") { "PASSED test_$it" } + "\nBUILD SUCCESSFUL in 30s\n"
+        assertTrue(raw.length > CommandOutcome.OUTPUT_EDGE_CHARS * 2)
+        assertEquals(false, CommandOutcome.hasFailureSignal(CommandOutcome.outputEdges(raw)))
+    }
+
+    @Test
+    fun `输出不超限时 outputEdges 原样返回`() {
+        val raw = "Traceback (most recent call last):\nError: x"
+        assertEquals(raw, CommandOutcome.outputEdges(raw))
+    }
+
     // ── R6：范围声称核对 ──────────────────────────────
 
     @Test

@@ -141,8 +141,6 @@ class StatefulAgentWorkflow @Inject constructor(
         const val USER_REJECTED_CODE = "USER_REJECTED"
         /** 完工证据守卫软拉回时，注入给模型的系统提示前缀。 */
         const val EVIDENCE_GUARD_NOTICE_PREFIX = "[系统提示] 完工证据核对未通过："
-        /** 守卫记录命令输出时保留的尾部字符数；只需覆盖 BUILD FAILED / AssertionError 等失败信号。 */
-        const val EVIDENCE_OUTPUT_TAIL_CHARS = 2000
         /** 提示里展示「上次声明」的截断长度（与账本存储侧共用同一口径）。 */
         const val CLAIM_PREVIEW_CHARS = 120
         /** 提权参数名；与 [ToolPermissionPolicyEngine] 同名常量对应。 */
@@ -195,6 +193,17 @@ class StatefulAgentWorkflow @Inject constructor(
         /** 模型返回空正文且无工具调用时的续写提示（空响应兜底用，注入一次）。 */
         const val EMPTY_RESPONSE_NOTICE =
             "（你刚才的回复为空。请基于现有上下文继续回答，不要重复之前的内容。）"
+        /**
+         * 上下文压缩完成后追加的续跑提示。
+         *
+         * 压缩后新上下文的末尾是 marker（"What did we do so far?"）+ 接手摘要，直接发送会让
+         * 模型把 marker 当作用户提问、重新输出一遍「到目前为止做了什么」而不继续干活
+         * （实测 2026-10-11 报障截图）。追加本提示让模型从摘要「下一步动作」接着干。
+         * 仅存于本次 run 的内存上下文（workflow 内加的 user 消息不经事件落库），
+         * 下次 run 从 DB 重建历史时自然消失，不残留。
+         */
+        const val COMPACTION_CONTINUATION_NOTICE =
+            "（系统提示：以上为上下文压缩后的接手摘要，早期对话已折叠。请直接继续执行摘要「下一步动作」与未完成的任务，不要重新输出总结或复述摘要。）"
         /** 单轮工具调用数上限：超出部分当轮不执行、回写说明让模型下一轮再调，避免一次梭哈。 */
         const val MAX_TOOLS_PER_ROUND = 12
 
@@ -247,7 +256,15 @@ class StatefulAgentWorkflow @Inject constructor(
     /** 改变状态的动作 (Action) */
     sealed interface AgentAction {
         data class InitRequest(val initialMessages: List<AgentMessage>) : AgentAction
-        data class LlmResponse(val response: AIResponse) : AgentAction
+        data class LlmResponse(
+            val response: AIResponse,
+            /**
+             * 本轮 assistant 消息的内存 id：随 [AgentEvent.AssistantText] 同步发给 ViewModel 落库复用，
+             * 保证内存态与 DB 行 id 一致（压缩标记按 id 匹配，两套 id 会让本 run 消息永远匹配不上）。
+             * 空串时 reduce 内自生成（防御其它构造点遗漏）。
+             */
+            val messageId: String = ""
+        ) : AgentAction
         data class LlmError(val error: String) : AgentAction
         data class PermissionEvaluated(
             val toolCall: ToolCall,
@@ -423,6 +440,7 @@ class StatefulAgentWorkflow @Inject constructor(
             }
             is AgentAction.LlmResponse -> {
                 val assistantMsg = AgentMessage.AssistantMessage(
+                    id = action.messageId.ifBlank { UUID.randomUUID().toString() },
                     content = action.response.content,
                     toolCalls = action.response.toolCalls,
                     reasoning = action.response.reasoning ?: "",
@@ -613,6 +631,7 @@ class StatefulAgentWorkflow @Inject constructor(
         actionQueue.addLast(
             AgentAction.InitRequest(
                 currentContext.history + AgentMessage.UserMessage(
+                    id = currentContext.userMessageId.orEmpty(),
                     content = userContent,
                     images = currentContext.inputImages
                 )
@@ -653,7 +672,10 @@ class StatefulAgentWorkflow @Inject constructor(
                     action.response.content,
                     evidenceRecords,
                     priorWrites = ledger.recentWrites,
-                    priorReads = ledger.recentReads
+                    priorReads = ledger.recentReads,
+                    // 第几次核对（1 起）。守卫措辞按此分档：首次只给正向要求，
+                    // 再次起才提供免责出口，避免第一次就把「未验证」话术递给模型。
+                    attempt = newState.evidenceGuardBlocks + 1,
                 )
                 if (notices.isNotEmpty()) {
                     if (newState.evidenceGuardBlocks < EvidenceGuard.MAX_BLOCKS) {
@@ -677,8 +699,14 @@ class StatefulAgentWorkflow @Inject constructor(
                     } else {
                         // 拉回次数用尽而声明仍无凭证：不再静默放行，而是把未通过的项直接告诉用户。
                         // 静默放行等于守卫拦不住的那一次谎报照旧被当成正常结束。
+                        // redThenGreen 取自**记录前**的账本：它反映的是「本次声明之前」历史上
+                        // 是否出现过同类命令先红后绿——正是本报告要提示用户的置信度信号。
+                        // 仅展示、不拦截：作弊者也能先故意红再绿，作拦截依据会被轻易博弈。
                         FileLogger.w(TAG, "完工证据守卫达上限仍不通过，向用户如实报告：${notices.joinToString("；")}")
-                        guardReports += AgentEvent.EvidenceGuardReport(notices)
+                        guardReports += AgentEvent.EvidenceGuardReport(
+                            notices = notices,
+                            redThenGreen = ledger.redThenGreen,
+                        )
                     }
                 }
                 // 账本写入覆盖**两种裁决**（不止违规时）：放行路径不写，则本 run 的成功验证命令
@@ -736,6 +764,15 @@ class StatefulAgentWorkflow @Inject constructor(
                                 send(event)
                             }
                             if (compactedMessages !== state.messages) {
+                                // 发送列表与 state 同步追加续跑提示：末尾是 marker+摘要，直接发送
+                                // 模型会回答「What did we do so far?」重新总结而不继续干活。
+                                // 同一 run 内多次压缩时旧 notice 会留在 tail，尾部已有则不重复追加。
+                                val alreadyNoticed = compactedMessages.asReversed().take(8)
+                                    .any { it is AgentMessage.UserMessage && it.content == COMPACTION_CONTINUATION_NOTICE }
+                                if (!alreadyNoticed) {
+                                    compactedMessages = compactedMessages +
+                                        AgentMessage.UserMessage(content = COMPACTION_CONTINUATION_NOTICE)
+                                }
                                 state = state.copy(messages = compactedMessages)
                             }
                         }
@@ -743,6 +780,8 @@ class StatefulAgentWorkflow @Inject constructor(
                         val acc = StringBuilder()
                         val reasoningAcc = StringBuilder()
                         var finalResponse: AIResponse? = null
+                        // 本轮 assistant 消息 id：事件与 reduce 共用，落库复用同一 id（见 AgentAction.LlmResponse）。
+                        val assistantMessageId = UUID.randomUUID().toString()
 
                         // 调用统计埋点：记录请求发出/首字/结束时刻与 usage，失败与取消同样留痕。
                         val callStartElapsed = SystemClock.elapsedRealtime()
@@ -871,14 +910,17 @@ class StatefulAgentWorkflow @Inject constructor(
                                         aiResponse.outputTokens,
                                         aiResponse.cachedInputTokens,
                                         aiResponse.thinkingBlocksJson ?: "",
-                                        attachments = attachments
+                                        attachments = attachments,
+                                        // 落库与内存共用同一 id，压缩标记才能按 id 匹配到本 run 的消息。
+                                        messageId = assistantMessageId
                                     )
                                 )
                             }
                             actionQueue.addLast(
                                 AgentAction.LlmResponse(
                                     if (persistedImages.isNotEmpty()) responseWithReasoning.copy(images = persistedImages)
-                                    else responseWithReasoning
+                                    else responseWithReasoning,
+                                    messageId = assistantMessageId
                                 )
                             )
                         } catch (e: CancellationException) {
@@ -890,6 +932,8 @@ class StatefulAgentWorkflow @Inject constructor(
                             // 而落库的接力消息又没产生，表现为「思考显示后凭空消失且无报错」。
                             // 有正文或有思考其一即落库；两者皆空则不写空消息。
                             if (partial.isNotEmpty() || reasoning.isNotBlank()) {
+                                // 中断 partial 落库用自生成 id（不传 messageId）：此刻内存无对应
+                                // AssistantMessage（异常路径不经 reduce），该消息也永不参与后续压缩匹配。
                                 send(AgentEvent.AssistantText(partial, emptyList(), reasoning))
                             }
                             // 自愈闭环：上下文超限 → 强制机械压缩后重试一次（原错误不再上报）。
@@ -912,9 +956,19 @@ class StatefulAgentWorkflow @Inject constructor(
                                     send(event)
                                 }
                                 if (!compactionAttemptFailed) {
-                                    state = state.copy(messages = compacted)
+                                    // 与自动压缩同理：仅当压缩真的生效（返回了新列表）才补续跑提示；
+                                    // 压缩未生效（如无可压缩内容）时原样重试，不添乱。
+                                    val resend = if (compacted !== state.messages) {
+                                        // 与自动压缩分支同款尾部去重：自愈压缩可能多次触发，
+                                        // 旧 notice 留在保留段时不再叠加。
+                                        val alreadyNoticed = compacted.asReversed().take(8)
+                                            .any { it is AgentMessage.UserMessage && it.content == COMPACTION_CONTINUATION_NOTICE }
+                                        if (alreadyNoticed) compacted
+                                        else compacted + AgentMessage.UserMessage(content = COMPACTION_CONTINUATION_NOTICE)
+                                    } else compacted
+                                    state = state.copy(messages = resend)
                                     // 重新走一次 InitRequest：以压缩后的消息重发，等效于「压缩后的新轮」。
-                                    actionQueue.addFirst(AgentAction.InitRequest(compacted))
+                                    actionQueue.addFirst(AgentAction.InitRequest(resend))
                                     callError = "上下文超限：已自动压缩后重试"
                                 } else {
                                     actionQueue.addLast(AgentAction.LlmError("LLM 调用失败: ${e.message}"))
@@ -1079,6 +1133,12 @@ class StatefulAgentWorkflow @Inject constructor(
                                 workspaceKey = currentContext.projectRoot,
                                 toolNameOf = { it.name },
                                 commandTextOf = { commandTextOf(it) },
+                                // 只读判定优先读各工具声明的 capabilities（经 effectiveCapabilities 按实参求值）：
+                                // 声明了能力集就以能力为准，未声明（含动态 MCP 工具）回退按名判定，仍不确定一律串行。
+                                capabilitiesOf = { call ->
+                                    toolRegistry.getTool(call.name)?.effectiveCapabilities(call.arguments)
+                                        ?: emptySet()
+                                },
                             ) { toolCall ->
                                 val tool = toolRegistry.getTool(toolCall.name)
                                 if (tool is StreamingAgentTool) {
@@ -1118,10 +1178,12 @@ class StatefulAgentWorkflow @Inject constructor(
                                     readFile = { p -> runCatchingCancellable { fileAccess.readFile(p) }.getOrNull() },
                                     preWrite = preWriteContents,
                                     command = command,
-                                    // 取结果尾部：工具层把非零退出包装成 Success（isError 恒 false），
-                                    // 只有输出尾部的 BUILD FAILED/AssertionError 能揭示真实失败。
+                                    // 取结果**头尾两端**：工具层把非零退出包装成 Success（isError 恒 false），
+                                    // 只有输出文本的失败信号能揭示真实失败。信号位置不固定——尾部有
+                                    // BUILD FAILED，头部有 Traceback / 行首 Error:（见 hasFailureSignal）。
+                                    // 只取尾部会漏掉长输出头部的信号，把失败误判为成功凭证（假 PASS）。
                                     outputTail = if (command != null) {
-                                        rr?.raw?.takeLast(EVIDENCE_OUTPUT_TAIL_CHARS)
+                                        rr?.raw?.let { CommandOutcome.outputEdges(it) }
                                     } else null
                                 )
                             )
@@ -1513,7 +1575,7 @@ class StatefulAgentWorkflow @Inject constructor(
      *
      * 只留验证类命令（其它命令与「声明是否成立」无关），带上类别与成败。
      * 成败不看 [EvidenceGuard.ToolRecord.isError]（工具层把非零退出包成 Success，恒为 false），
-     * 而看输出尾部有无失败信号（同 [CommandOutcome.hasFailureSignal] 的口径）。
+     * 而看输出有无失败信号（同 [CommandOutcome.hasFailureSignal] 的口径）。
      */
     private fun verifyCommandsOf(records: List<EvidenceGuard.ToolRecord>): List<LedgerCommand> {
         val now = System.currentTimeMillis()

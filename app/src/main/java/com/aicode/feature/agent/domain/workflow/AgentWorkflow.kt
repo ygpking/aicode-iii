@@ -25,7 +25,14 @@ sealed class AgentEvent {
         /** Anthropic thinking / redacted_thinking 内容块的原样快照（JSON 数组文本），随 reasoning 落库供后续轮原样回传。 */
         val thinkingBlocksJson: String = "",
         /** 模型直出图片（Gemini 图像模型）落盘后构造的文件卡片，随消息落库供 UI 渲染。 */
-        val attachments: List<com.aicode.feature.agent.presentation.AgentAttachment> = emptyList()
+        val attachments: List<com.aicode.feature.agent.presentation.AgentAttachment> = emptyList(),
+        /**
+         * 本条 assistant 消息的内存 id：由 workflow 生成，落库时必须复用同一 id。
+         * 落库另生成新 id 会让内存态与 DB 行 id 永远对不上，压缩标记时本 run 消息
+         * 全部匹配失败（同 [com.aicode.feature.agent.domain.model.AgentContext.userMessageId]）。
+         * 空串表示无对应内存消息（如流中断时的 partial 落库），由持久层自生成 id。
+         */
+        val messageId: String = ""
     ) : AgentEvent()
 
     /** 流式过程中模型逐字吐出的文字（[accumulated] 为本轮已累积的完整文本，用于 UI 实时渲染，不落库）。 */
@@ -102,8 +109,15 @@ sealed class AgentEvent {
      * 守卫拉回模型补做达到上限后，剩余的未通过项无法由模型自行纠正，
      * 此时必须**如实告知用户**而不是静默放行——否则守卫拦不住的最后一次谎报
      * 会被当成正常结束。由 ViewModel 按助手消息落库展示。
+     *
+     * @param redThenGreen 账本里是否出现过「同类验证命令先失败、后成功」（置信度信号）。
+     *   仅作**展示**，不作拦截依据——作弊者也能先故意制造失败再跑成功，
+     *   故只把它作为「该验证过程值得怀疑」的提示交给用户判断。
      */
-    data class EvidenceGuardReport(val notices: List<String>) : AgentEvent()
+    data class EvidenceGuardReport(
+        val notices: List<String>,
+        val redThenGreen: Boolean = false,
+    ) : AgentEvent()
 }
 
 interface AgentWorkflow {

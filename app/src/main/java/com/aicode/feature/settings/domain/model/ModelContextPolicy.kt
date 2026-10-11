@@ -7,29 +7,148 @@ object ModelContextPolicy {
     /**
      * tail 保护区的**基础**上限（128k 窗口时代的取值，占窗口 15.6%）。
      *
-     * 大窗口下该值偏小：1M 窗口下只占 2%，压缩一次要折叠 98% 的历史，
-     * 全押摘要质量。故实际上限按窗口取宽，见 [preserveRecentTokens]。
+     * 保留该常量只为说明历史取值与给下方比例设下限，**不再作为绝对上限**。
+     * 见 [preserveRecentTokens]。
      */
     const val MAX_PRESERVE_RECENT_TOKENS = 20_000
 
-    /** 大窗口下 tail 占窗口的目标比例。 */
+    /** tail 占窗口的目标比例（各窗口统一，不再对小窗口例外）。 */
     private const val PRESERVE_WINDOW_RATIO = 0.1
+
+    /**
+     * 摘要窗口的预留比例：30% 留给摘要提示词与旧摘要，剩 70% 装被折叠的 head。
+     *
+     * 与 `ContextCompactor.SUMMARY_WINDOW_RESERVE_RATIO` 必须一致——tail 预算的对账
+     * 依赖它：只有保证被折叠的 head 装得进摘要窗口，压缩才不会**静默丢掉最旧历史**。
+     */
+    private const val SUMMARY_WINDOW_RESERVE_RATIO = 0.7
 
     const val CHARS_PER_TOKEN = 4
 
     /**
-     * tail 保护区预算：按可用空间的四分之一，上限随窗口取宽。
+     * tail 保护区预算：按可用空间的四分之一，上限按窗口比例（10%）取宽。
      *
-     * 上限 = `max(基础上限, 窗口 * 10%)`——小窗口下与旧行为完全一致（不回归），
-     * 大窗口下从 2% 提到 10%。
+     * 上限 = `max(基础下限, 窗口 * 10%)` 的**比例侧**起主导——即 `窗口 * 10%`，
+     * 但不得低于 [MAX_PRESERVE_RECENT_TOKENS]（小窗口下仍需 20k 的绝对保留量，
+     * 否则 2k 级别的 tail 会让最近几轮对话被折走）。
+     *
+     * ## 为什么不能用旧的 `max(20000, 窗口*10%)` 当上限
+     *
+     * 旧式 `maxOf` 让 128k 成为**唯一**的相对最坏点：窗口 ≤200k 时上限恒为 20000，
+     * 占窗口 15.6%（128k）而大窗口只占 10%。tail 越大、被折叠的 head 越大，而 head
+     * 必须装进「压缩模型窗口 × 70%」的摘要输入预算——128k 下 head ≈ 95k > 预算 89.6k，
+     * 于是**每轮压缩都静默丢掉最旧的一段**（CompactionSummaryWindow 只 WARN 不报错）。
+     * 这是「128k 一直压缩失败/历史丢失」的根因之一。
+     *
+     * 改为比例主导后：128k → 12800 被下限抬到 20000 仍是 15.6%？否——下方约束保证
+     * head 一定装得进摘要窗口，见 [minTailForSummaryWindow] 与 [tailBudget]。
      *
      * 约束（已验算）：压缩后大小 = tail + 摘要（约 10k）须小于触发阈值，
-     * 否则会「压完立刻又触发」形成高频压缩。上式的 tail 不超过 [usableTokens]/4，
-     * 而 [usableTokens] 传入的是触发阈值，故压缩后最大为 阈值/4 + 10k，对任何阈值都成立。
+     * 否则会「压完立刻又触发」。tail 不超过 [usableTokens]/4，故压缩后最大为
+     * 阈值/4 + 10k，对任何阈值都成立。
      */
     fun preserveRecentTokens(usableTokens: Int, contextLimit: Int = DEFAULT_CONTEXT_TOKENS): Int {
         val cap = maxOf(MAX_PRESERVE_RECENT_TOKENS, (contextLimit * PRESERVE_WINDOW_RATIO).toInt())
         return (usableTokens / 4).coerceIn(MIN_PRESERVE_RECENT_TOKENS, cap)
+    }
+
+    /**
+     * 由摘要模型窗口反推出的 tail **下限**，保证被折叠的 head 装得进摘要输入窗口。
+     *
+     * head ≈ 触发阈值 − tail，必须 ≤ 摘要窗口 × [SUMMARY_WINDOW_RESERVE_RATIO]，
+     * 否则 `ContextCompactor.truncateForSummaryWindow` 会丢弃最旧历史（静默失忆）。
+     * 解出 tail ≥ 阈值 − 摘要输入预算，即本函数返回值。
+     *
+     * 摘要模型窗口未知时调用方回退 [DEFAULT_CONTEXT_TOKENS]。主窗口远大于摘要窗口时
+     * （如 1M 主 + 128k 摘要）本下限可能超过按比例算的 tail 预算——此时**取本下限**
+     * 优先：宁可多留原文进 tail，也不能让被折叠的 head 超出摘要窗口而被静默丢弃。
+     *
+     * @return 满足摘要窗口约束的 tail 下限（token）。可为负，调用方需再与下界取大。
+     */
+    fun minTailForSummaryWindow(triggerThreshold: Int, summaryWindowTokens: Int): Int {
+        val summaryInputBudget = (summaryWindowTokens * SUMMARY_WINDOW_RESERVE_RATIO).toInt()
+        val headAllowance = summaryInputBudget - SUMMARY_TOKENS_ESTIMATE
+        return triggerThreshold - headAllowance
+    }
+
+    /** 摘要自动回落时的产物长度估算（摘要正文 + 时点标注 + 块提示，保守取 10k）。 */
+    private const val SUMMARY_TOKENS_ESTIMATE = 10_000
+
+    /**
+     * 使 C1/C2 可行的**最小摘要模型窗口**（token），供日志提示「压缩专用模型窗口至少多大」。
+     *
+     * 推导：C2 下界 `阈值 − (0.7·sw − 摘要估算)` ≤ C1 上界 `阈值 − 摘要估算 − 1`
+     * ⟺ `0.7·sw ≥ 2 × 摘要估算 + 1` ⟺ `sw ≥ (2 × 摘要估算 + 1) / 0.7`。
+     * **与触发阈值无关**（阈值在两边同项抵消），故无需入参。
+     */
+    fun minSummaryWindowForFeasibility(): Int =
+        kotlin.math.ceil((2.0 * SUMMARY_TOKENS_ESTIMATE + 1) / SUMMARY_WINDOW_RESERVE_RATIO).toInt()
+
+    /**
+     * tail 保护区的**最终**预算（`ContextCompactor.compactIfNeededLocked` 实际使用的公式）。
+     *
+     * 两条硬约束同时成立才算合法压缩：
+     *
+     * - **C1 不立即再触发**：`tail + 摘要(≈10k) < 阈值`。否则压完当场又达标，形成高频压缩。
+     * - **C2 摘要装得下**：`head = 阈值 − tail ≤ 摘要窗口 × 70%`。否则被折叠的 head 装不进
+     *   摘要模型的输入窗口，`CompactionSummaryWindow` 会把最旧的一段**静默丢弃**（历史失忆）。
+     *
+     * 由 C1 得 `tail < 阈值 − 10k`（上界）；由 C2 得 `tail ≥ 阈值 − 摘要输入预算`（下界）。
+     * 二者可行当且仅当 `摘要窗口 × 70% − 10k ≥ 下限`，即**摘要模型窗口 ≳ 28.6k**。
+     * 低于该值时 C1/C2 无交集（小窗口摘要模型是真实存在的配置，不能假定「模型都满足」）——
+     * 此时 [tailBudgetPlan] 置 `feasible=false`，调用方必须**显式告警**而非静默丢历史。
+     *
+     * 取值 = 先按窗口比例取 [preserveRecentTokens]（兼顾大窗口下压缩力度），
+     * 再夹进 `[C2 下界, C1 上界]`。因此：
+     * - 摘要窗口充足（= 主窗口）时，C2 下界很低，结果就是比例预算——行为与旧版一致；
+     * - 摘要窗口偏小时（如 1M 主 + 128k 摘要），C2 下界抬高 tail，把 head 压回摘要窗口内，
+     *   牺牲一部分压缩力度换取「不丢历史」。这正是旧版 128k 配置丢历史的修复点。
+     */
+    fun tailBudget(
+        triggerThreshold: Int,
+        contextLimit: Int = DEFAULT_CONTEXT_TOKENS,
+        summaryWindowTokens: Int = DEFAULT_CONTEXT_TOKENS
+    ): Int = tailBudgetPlan(triggerThreshold, contextLimit, summaryWindowTokens).tail
+
+    /**
+     * [tailBudget] 的完整结果：tail 值 + 两条约束是否同时可满足。
+     *
+     * 为什么要把「可满足性」传出去：当摘要模型窗口过小（`0.7 × 摘要窗口 − 摘要估算 < 下限`，
+     * 即摘要窗口 ≲ 28.6k）时 **C1 与 C2 数学上无交集**——tail 再大也压不出装得进摘要窗口的 head。
+     * 旧实现直接 clamp 到 C1 上界，表现为「压缩照常成功，但每轮静默丢掉最旧历史」，
+     * 调用方与用户都无从得知。现由调用方据此打印**显式告警**（诚实失败优于静默失忆）。
+     */
+    data class TailBudgetPlan(val tail: Int, val feasible: Boolean, val reason: String)
+
+    /**
+     * 计算 tail 预算并判定 C1/C2 是否可同时满足。
+     *
+     * 取舍顺序（都不可行时以 C1 优先，避免「压完立即再触发」的死循环）：
+     * 1. 两者可行 → 比例预算夹进 `[C2 下界, C1 上界]`；
+     * 2. C2 无解 → 取 C1 上界（尽量不丢历史是不可能的，退化为「压缩成功但有丢弃」，并置 feasible=false）；
+     * 3. C1 无解（阈值小到装不下摘要，压缩本身无意义）→ 同样取上界并置 feasible=false。
+     */
+    fun tailBudgetPlan(
+        triggerThreshold: Int,
+        contextLimit: Int = DEFAULT_CONTEXT_TOKENS,
+        summaryWindowTokens: Int = DEFAULT_CONTEXT_TOKENS
+    ): TailBudgetPlan {
+        val proportional = preserveRecentTokens(triggerThreshold, contextLimit)
+        // C2 下界：head 必须装进摘要输入预算。
+        val lower = minTailForSummaryWindow(triggerThreshold, summaryWindowTokens)
+        // C1 上界：压缩后（tail + 摘要）必须低于触发阈值；留 1 token 保证严格小于。
+        val upper = (triggerThreshold - SUMMARY_TOKENS_ESTIMATE - 1)
+            .coerceAtLeast(MIN_PRESERVE_RECENT_TOKENS)
+        val lo = lower.coerceAtLeast(MIN_PRESERVE_RECENT_TOKENS)
+        // 可行 ⟺ C2 下界不高于 C1 上界。
+        val feasible = lo <= upper
+        val tail = if (feasible) proportional.coerceIn(lo, upper) else upper
+        val reason = when {
+            feasible -> "C1 与 C2 同时满足"
+            lower > upper -> "摘要窗口过小：C2 下界($lower) 高于 C1 上界($upper)，无法既装进摘要窗口又不立即再触发"
+            else -> "触发阈值过小：容不下摘要估算($SUMMARY_TOKENS_ESTIMATE)"
+        }
+        return TailBudgetPlan(tail, feasible, reason)
     }
 
     /**

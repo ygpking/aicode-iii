@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.workflow
 
+import com.aicode.feature.agent.domain.tool.ToolCapability
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -166,5 +167,119 @@ class ToolBatchSchedulerTest {
         assertEquals(emptyList<String>(), scheduler.lockKeysFor("readFile", "s1", null, "/ws"))
         // terminal 不承载命令时（close/read/key）不触发构建锁
         assertEquals(listOf("sess:s1"), scheduler.lockKeysFor("terminal", "s1", null, "/ws").sorted())
+    }
+
+    // ── 基于 capabilities 的判定（本次新增）────────────────────────────────────
+
+    /**
+     * 声明了能力集时，判定以能力为准：与变更能力集合无交集 → 只读（无锁并行）。
+     * 这让「协议声明只读」的 MCP 工具（McpTool 在 readOnlyHint=true 时声明 READ_WORKSPACE）
+     * 能跨会话并行，而不是因名字不在名单里被判为 FILE_MUTATING。
+     */
+    @Test
+    fun declaredReadWorkspaceCapabilityIsReadOnly() {
+        assertEquals(
+            ToolMutation.READ_ONLY,
+            classifyToolMutation("someMcpReadTool", setOf(ToolCapability.READ_WORKSPACE)),
+        )
+        // NETWORK_READ 属只读（web 类语义）
+        assertEquals(
+            ToolMutation.READ_ONLY,
+            classifyToolMutation("someFetchTool", setOf(ToolCapability.NETWORK_READ)),
+        )
+        // 只读工具拿到的锁键为空
+        assertEquals(
+            emptyList<String>(),
+            ToolBatchScheduler().lockKeysFor(
+                "someMcpReadTool", "s1", null, "/ws", setOf(ToolCapability.READ_WORKSPACE),
+            ),
+        )
+    }
+
+    /**
+     * 关键回归：同时声明读+写的工具**绝不能**判为只读，否则同批并发写会静默覆盖。
+     * 这正是简单用 `capabilities.contains(READ_WORKSPACE)` 判定会踩的坑（如 MemoryTool）。
+     */
+    @Test
+    fun toolWithBothReadAndWriteCapabilitiesIsMutating() {
+        assertEquals(
+            ToolMutation.FILE_MUTATING,
+            classifyToolMutation(
+                "memory",
+                setOf(ToolCapability.READ_AGENT_CONFIG, ToolCapability.MODIFY_AGENT_CONFIG),
+            ),
+        )
+        assertEquals(
+            ToolMutation.FILE_MUTATING,
+            classifyToolMutation(
+                "generateImage",
+                setOf(ToolCapability.NETWORK_WRITE, ToolCapability.WRITE_WORKSPACE),
+            ),
+        )
+        // MCP 工具的默认能力 EXTERNAL_TOOL 含变更语义 → 仍串行
+        assertEquals(
+            ToolMutation.FILE_MUTATING,
+            classifyToolMutation("mcp__server__tool", setOf(ToolCapability.EXTERNAL_TOOL)),
+        )
+    }
+
+    @Test
+    fun declaredCapabilitiesTakePrecedenceOverBuiltinNameList() {
+        // 名字在只读名单里，但显式声明了写能力 → 以能力为准（保守，串行）
+        assertEquals(
+            ToolMutation.FILE_MUTATING,
+            classifyToolMutation("search", setOf(ToolCapability.WRITE_WORKSPACE)),
+        )
+        // 名字不在名单里，但显式声明了只读能力 → 并行
+        assertEquals(
+            ToolMutation.READ_ONLY,
+            classifyToolMutation("customReadOnly", setOf(ToolCapability.READ_WORKSPACE)),
+        )
+        // 能力集为空 → 回退按名判定（不改变原有行为）
+        assertEquals(ToolMutation.READ_ONLY, classifyToolMutation("readFile"))
+        assertEquals(ToolMutation.COMMAND, classifyToolMutation("Bash"))
+        assertEquals(ToolMutation.FILE_MUTATING, classifyToolMutation("mcp__srv__x"))
+    }
+
+    @Test
+    fun readOnlyCapabilityToolsRunInParallelAcrossSessions(): Unit = runBlocking {
+        val probe = Probe()
+        val scheduler = ToolBatchScheduler()
+        coroutineScope {
+            listOf("s1", "s2", "s3").map { session ->
+                async {
+                    scheduler.dispatch(
+                        calls = listOf("mcp__a__read"),
+                        sessionKey = session,
+                        workspaceKey = "/ws",
+                        toolNameOf = { it },
+                        capabilitiesOf = { setOf(ToolCapability.READ_WORKSPACE) },
+                    ) {
+                        probe.begin()
+                        try { delay(40) } finally { probe.end() }
+                        1
+                    }
+                }
+            }.awaitAll()
+        }
+        assertTrue("声明只读能力的工具应跨会话并行，实测峰值=${probe.peak()}", probe.peak() > 1)
+    }
+
+    @Test
+    fun unspecifiedCapabilityToolsStillSerializeWithinSession(): Unit = runBlocking {
+        val probe = Probe()
+        val scheduler = ToolBatchScheduler()
+        scheduler.dispatch(
+            calls = listOf("mcp__a__x", "mcp__b__y", "mcp__c__z"),
+            sessionKey = "s1",
+            workspaceKey = "/ws",
+            toolNameOf = { it },
+            capabilitiesOf = { emptySet() },   // 未声明能力 → 回退按名 → 未知 → FILE_MUTATING
+        ) {
+            probe.begin()
+            try { delay(40) } finally { probe.end() }
+            1
+        }
+        assertEquals("未声明能力的未知工具仍串行（fail-closed）", 1, probe.peak())
     }
 }
