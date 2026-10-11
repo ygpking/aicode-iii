@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.data
 
 import com.aicode.feature.agent.data.local.dao.AgentMessageDao
+import com.aicode.feature.agent.domain.model.stripSummaryTimestampNotice
 import com.aicode.feature.agent.domain.session.CompactionBlockOverview
 import com.aicode.feature.agent.domain.session.SessionHistoryItem
 import com.aicode.feature.agent.domain.session.SessionHistoryRepository
@@ -49,6 +50,9 @@ class SessionHistoryRepositoryImpl @Inject constructor(
                 maxTimestamp = row.maxTimestamp,
                 summaryPreview = agentMessageDao.getCompactionBlockSummary(sessionId, row.blockId)
                     .orEmpty()
+                    // 摘要头部带时点标注（见 AgentMessage.summaryTimestampNotice）：
+                    // 若不剥，每块 preview 恒为同一句标注，模型无法凭内容选块。
+                    .let(::stripSummaryTimestampNotice)
                     .lineSequence().firstOrNull { it.isNotBlank() }
                     ?.take(CompactionBlockOverview.SUMMARY_PREVIEW_CHARS)
                     .orEmpty()

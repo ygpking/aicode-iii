@@ -61,6 +61,22 @@ data class AgentImage(
 const val CONTEXT_COMPACTION_MARKER = "What did we do so far?"
 const val CONTEXT_SUMMARY_LEGACY_PREFIX = "【系统提示：早期的对话已被压缩，以下是之前的核心状态摘要】"
 
+/** 摘要头部时点标注的稳定识别前缀（生成与剥离共用）。 */
+const val CONTEXT_SUMMARY_TIMESTAMP_PREFIX = "【摘要时点】"
+
+/** 摘要头部时点标注：摘要与压缩保留段（tail 原文）拼在一起时状态可能矛盾，接手者据此以保留段为准。 */
+fun summaryTimestampNotice(generatedAt: String): String =
+    "$CONTEXT_SUMMARY_TIMESTAMP_PREFIX 本摘要生成于 $generatedAt，仅总结此前被折叠的对话历史；" +
+        "其后压缩保留的最近消息可能有更新进展，与本摘要矛盾时以保留消息原文为准。\n\n"
+
+/** 滚动压缩取旧摘要时剥掉时点标注，防标注被摘要模型抄进新摘要。 */
+fun stripSummaryTimestampNotice(text: String): String =
+    if (text.startsWith(CONTEXT_SUMMARY_TIMESTAMP_PREFIX)) {
+        text.substringAfter('\n', "").trimStart()
+    } else {
+        text
+    }
+
 val AgentMessage.id: String
     get() = when (this) {
         is AgentMessage.UserMessage -> id

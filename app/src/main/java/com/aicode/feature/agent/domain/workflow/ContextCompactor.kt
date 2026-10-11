@@ -11,6 +11,8 @@ import com.aicode.feature.agent.data.local.entity.LlmCallRecordEntity
 import com.aicode.feature.agent.domain.model.AgentMessage
 import com.aicode.feature.agent.domain.model.CONTEXT_COMPACTION_MARKER
 import com.aicode.feature.agent.domain.model.CONTEXT_SUMMARY_LEGACY_PREFIX
+import com.aicode.feature.agent.domain.model.summaryTimestampNotice
+import com.aicode.feature.agent.domain.model.stripSummaryTimestampNotice
 import com.aicode.feature.agent.domain.model.id
 import com.aicode.feature.agent.domain.prompt.SystemPromptProvider
 import com.aicode.feature.agent.domain.provider.AIProvider
@@ -335,7 +337,13 @@ class ContextCompactor @Inject constructor(
         // search/Bash 的输出里提取不到），而附加的清单块会常驻上下文。改由摘要提示词要求模型
         // 在「涉及的文件」小节自行逐条列出。
         val summaryText = summaryTrimmed
-        FileLogger.i(TAG, "上下文压缩完成，摘要长度：${summaryText.length}")
+        // 时点标注：摘要只总结折叠边界前的历史，与保留段（边界前最后几轮原文）拼接时状态可能矛盾，
+        // 接手者需要知道哪个更新（实测 cd700c44 会话：轻量模型需专门取证才能分辨）。
+        val stampedSummary = summaryTimestampNotice(
+            java.time.LocalDateTime.now()
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+        ) + summaryText
+        FileLogger.i(TAG, "上下文压缩完成，摘要长度：${stampedSummary.length}")
 
         val markerId = UUID.randomUUID().toString()
         val compactedId = UUID.randomUUID().toString()
@@ -361,7 +369,7 @@ class ContextCompactor @Inject constructor(
         // 会把「摘要里没有」当成「从未发生」，而实际是「发生但未纳入摘要」——两者后果完全不同。
         val droppedNotice = headForSummary.notice()
         val compactedMessageWithHint = compactedMessage.copy(
-            content = summaryText + droppedNotice + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
+            content = stampedSummary + droppedNotice + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
                 "如摘要缺关键细节（报错原文、代码片段、精确数值）：先用 restoreCompactedRange 的 preview 模式" +
                 "检索定位（返回截断预览，省 token），确认需要完整原文再以 action=restore 恢复整块；" +
                 "不要为复核上下文而无谓恢复。"
@@ -649,7 +657,9 @@ class ContextCompactor @Inject constructor(
     }
 
     private fun String.cleanSummary(): String =
-        removePrefix(CONTEXT_SUMMARY_LEGACY_PREFIX).trimStart()
+        removePrefix(CONTEXT_SUMMARY_LEGACY_PREFIX)
+            .let(::stripSummaryTimestampNotice)
+            .trimStart()
 
     private fun String.truncateForSummary(): String {
         if (length <= TOOL_OUTPUT_MAX_CHARS) return this
