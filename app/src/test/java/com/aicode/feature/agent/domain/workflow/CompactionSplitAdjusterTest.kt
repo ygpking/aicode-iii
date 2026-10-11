@@ -139,4 +139,32 @@ class CompactionSplitAdjusterTest {
         )
         assertEquals(3, CompactionSplitAdjuster.adjust(messages, initialSplitIndex = 3))
     }
+
+    @Test
+    fun pairAdvanceMustBeFollowedByToolBacktrack() {
+        // 回归：约束 2 的前移会把一个新的 tool 结果暴露到 tail 开头，必须在结尾复查约束 1。
+        // 构造 [u0, mk1, asst+tc2, tool3, u4]，split=2 落在 mk 与 asst+tc 之间。
+        //  → 前移得 3：tail=[tool3, u4]，开头是孤立 tool 结果！
+        //  → 结尾复查约束 1 回溯到 2（asst+tc），tail=[asst+tc, tool, u] 配对完整。
+        val messages = listOf(
+            user("u1"),
+            marker(),
+            assistantWithToolCall("a2"),
+            toolResult("t3"),
+            user("u4"),
+        )
+        assertEquals(
+            "前移后必须再回溯，否则 tail 以孤立 tool 结果开头 → API 400",
+            2,
+            CompactionSplitAdjuster.adjust(messages, initialSplitIndex = 2),
+        )
+    }
+
+    @Test
+    fun pairAdvanceWithNonToolSummaryIsUnchanged() {
+        // 反向保护：summary 为普通 assistant（其后非 tool 结果）时，复查不应改变结果，
+        // 避免把新加的复查循环变成过度回溯。
+        val messages = listOf(user("u1"), marker(), assistant("sm"), user("u2"), assistant("a2"))
+        assertEquals(3, CompactionSplitAdjuster.adjust(messages, initialSplitIndex = 2))
+    }
 }
