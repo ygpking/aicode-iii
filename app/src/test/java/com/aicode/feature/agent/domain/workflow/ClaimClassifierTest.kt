@@ -301,4 +301,42 @@ class ClaimClassifierTest {
         assertTrue(ClaimClassifier.claimsRecall("已查了"))
         assertTrue(ClaimClassifier.claimsRecall("已确认，没问题。"))
     }
+
+    // ── claimsScope（R6 范围声称）─────────────────────────────
+
+    @Test
+    fun `范围声称正例_语料原型`() {
+        // 三个原型均来自真实日志（2026-10-11 语料）
+        assertTrue(ClaimClassifier.claimsScope("本次任务只改了两个文件；工作区另有我在途改动。"))
+        assertTrue(ClaimClassifier.claimsScope("未改其它；未 push、未发版、未 commit。"))
+        assertTrue(ClaimClassifier.claimsScope("只改了 Go，Rust 未动。"))
+        assertTrue(ClaimClassifier.claimsScope("已同步 3、5 两节，未动其它节。"))
+        assertTrue(ClaimClassifier.claimsScope("只改了仓库文档。"))
+    }
+
+    @Test
+    fun `范围声称英文正例`() {
+        assertTrue(ClaimClassifier.claimsScope("only changed Foo.kt and Bar.kt"))
+        assertTrue(ClaimClassifier.claimsScope("no other changes in this PR"))
+    }
+
+    @Test
+    fun `范围声称_命令态与零改动不触发`() {
+        assertFalse(ClaimClassifier.claimsScope("先只改一下配置试试。"))
+        assertFalse(ClaimClassifier.claimsScope("分析完成，没改任何文件。"))
+        assertFalse(ClaimClassifier.claimsScope("本轮只做了分析，无代码变更。"))
+    }
+
+    @Test
+    fun `范围声称_记忆域与引述豁免`() {
+        assertFalse(ClaimClassifier.claimsScope("只改了记忆里的偏好设置。"))
+        // 复述守卫拉回文案：句级「声称」过滤器豁免，防拉回循环
+        assertFalse(ClaimClassifier.claimsScope("守卫说我声称了改动范围（如「只改了 X」「未改其它」），我已跑 git status。"))
+    }
+
+    @Test
+    fun `全绿属于验证通过声明`() {
+        assertTrue(ClaimClassifier.claimsVerification("全绿（含单测）；v1.18.4 已发布。"))
+        assertTrue(ClaimClassifier.claimsVerification("all green, shipping now"))
+    }
 }

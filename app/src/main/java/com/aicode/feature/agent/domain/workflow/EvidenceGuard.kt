@@ -222,6 +222,15 @@ internal object EvidenceGuard {
             notices += "你声称查过/核实过，但本回合没有检索类工具记录。请实际检索后再断言，或明确说明「凭记忆/未核实」。"
         }
 
+        // R6：声称改动范围（「只改了…」「未改其它」），但本回合没有 git status/diff 对账记录。
+        // 对应坏习惯「范围虚报/清单漏报」：排他性表述本身就是可对账的断言。
+        // 凭证只看本回合、不进账本：git 对账秒级，被拉回跑一次即过（先窄后宽，与 R2/R5 扩窗不同源）。
+        // 文案含「声称」：模型复述守卫文案时命中句级引文过滤器，防拉回循环（R5 同机制）。
+        val claimsScope = !mentionsFailure && ClaimClassifier.claimsScope(message)
+        if (claimsScope && !hasGitReconcileRecord(records)) {
+            notices += "你声称了改动范围（如「只改了 X」「未改其它」），但本回合没有 git status/diff 对账记录。请先跑 git status 对账，或去掉排他性表述、如实列出改动清单。"
+        }
+
         return notices.distinct()
     }
 
@@ -267,6 +276,16 @@ internal object EvidenceGuard {
                 (isReadTool(rec.toolName) ||
                     (rec.command != null && CommandOutcome.isReadonlySearchCommand(rec.command) &&
                         !CommandOutcome.hasFailureSignal(rec.outputTail)))
+        }
+
+    /** 范围对账凭证（R6）：本回合有成功的 git status/diff。git log 等看不到工作区范围，不算。 */
+    private val GIT_RECONCILE_RE = Regex("""(?i)\bgit\s+(?:status|diff)\b""")
+
+    private fun hasGitReconcileRecord(records: List<ToolRecord>): Boolean =
+        records.any { rec ->
+            !rec.isError && rec.command != null &&
+                GIT_RECONCILE_RE.containsMatchIn(rec.command) &&
+                !CommandOutcome.hasFailureSignal(rec.outputTail)
         }
 
     /** 路径匹配：等值、或一方是另一方的工作区相对路径（`app/x.kt` ↔ `/root/workspace/app/x.kt`）。 */

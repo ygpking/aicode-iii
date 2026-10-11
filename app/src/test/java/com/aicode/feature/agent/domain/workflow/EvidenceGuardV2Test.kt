@@ -486,4 +486,43 @@ class EvidenceGuardV2Test {
         val raw = "Traceback (most recent call last):\nError: x"
         assertEquals(raw, CommandOutcome.outputEdges(raw))
     }
+
+    // ── R6：范围声称核对 ──────────────────────────────
+
+    @Test
+    fun `声称改动范围但无git对账被拉回`() {
+        val notices = EvidenceGuard.evaluate(
+            "本次任务只改了两个文件，未改其它。",
+            listOf(rec("editFile", path = "/root/workspace/a.kt")),
+        )
+        assertTrue(notices.any { it.contains("git status") })
+    }
+
+    @Test
+    fun `有git_status凭证放行`() {
+        val notices = EvidenceGuard.evaluate(
+            "本次任务只改了两个文件，未改其它。",
+            listOf(
+                rec("editFile", path = "/root/workspace/a.kt"),
+                rec("Bash", command = "git status --short", outputTail = " M a.kt\n?? b.txt"),
+            ),
+        )
+        assertTrue(notices.isEmpty())
+    }
+
+    @Test
+    fun `git_log不算范围对账凭证`() {
+        val notices = EvidenceGuard.evaluate(
+            "只改了两个文件，未改其它。",
+            listOf(rec("Bash", command = "git log --oneline -3", outputTail = "abc123 fix x")),
+        )
+        assertTrue(notices.isNotEmpty())
+    }
+
+    @Test
+    fun `全绿无验证命令仍被R1拉回`() {
+        // 补词「全绿」进 R1：与「测试通过」同口径
+        val notices = EvidenceGuard.evaluate("CI 全绿（含单测），本轮收工。", emptyList())
+        assertTrue(notices.isNotEmpty())
+    }
 }
