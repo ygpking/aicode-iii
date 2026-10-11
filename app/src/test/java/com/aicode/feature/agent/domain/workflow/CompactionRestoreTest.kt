@@ -37,7 +37,7 @@ class CompactionRestoreTest {
         )
     }
 
-    // ---------- tail 保护区（selectTailStartIndex 对恢复段的优先容纳） ----------
+    // ---------- tail 保护区（CompactionTailSelector 对恢复段的优先容纳） ----------
 
     /** 与 ContextCompactor 同口径的 token 估算下界：纯 ASCII 按 2.5 字/token。 */
     private fun estimate(msg: AgentMessage): Int =

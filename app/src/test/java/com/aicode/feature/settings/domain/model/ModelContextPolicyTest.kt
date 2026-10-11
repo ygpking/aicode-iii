@@ -1,6 +1,7 @@
 package com.aicode.feature.settings.domain.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -92,6 +93,186 @@ class ModelContextPolicyTest {
                     tail + summaryTokens < threshold,
                 )
             }
+        }
+    }
+
+    // ---------- minTailForSummaryWindow：保证被折叠的 head 装得进摘要窗口 ----------
+
+    /**
+     * 回归：128k 主窗口 + 128k 摘要模型、阈值 90% 时，旧实现 tail 被 20000 封顶，
+     * head≈95200 > 摘要输入预算 89600，每轮压缩静默丢弃最旧历史。
+     * 新下限必须把 tail 抬到「head ≤ 预算」以上。
+     */
+    @Test
+    fun minTailForSummaryWindow_128kSameWindow_preventsSilentDrop() {
+        val trigger = 115_200 // 128k * 90%
+        val floor = ModelContextPolicy.minTailForSummaryWindow(trigger, 128_000)
+        val head = trigger - floor
+        val summaryBudget = (128_000 * 0.7).toInt() // 89600
+        assertTrue(
+            "128k/90% 下 head=$head 必须 ≤ 摘要输入预算 $summaryBudget，floor=$floor",
+            head <= summaryBudget,
+        )
+    }
+
+    /** 主窗口远大于摘要窗口（1M 主 + 128k 摘要）：下限应远大于按比例的 tail 预算。 */
+    @Test
+    fun minTailForSummaryWindow_largeMainSmallSummary_exceedsProportionalBudget() {
+        val trigger = 900_000 // 1M * 90%
+        val floor = ModelContextPolicy.minTailForSummaryWindow(trigger, 128_000)
+        val proportional = ModelContextPolicy.preserveRecentTokens(trigger, 1_000_000)
+        assertTrue("摘要下限 $floor 应大于比例预算 $proportional", floor > proportional)
+        assertTrue("head 应装进摘要预算", trigger - floor <= (128_000 * 0.7).toInt())
+    }
+
+    /** 摘要窗口足够大时下限为负或很小——调用方会再与 MIN 取大，不产生约束。 */
+    @Test
+    fun minTailForSummaryWindow_hugeSummaryWindow_isNonBinding() {
+        val floor = ModelContextPolicy.minTailForSummaryWindow(115_200, 1_000_000)
+        assertTrue("大摘要窗口下下限应为负（无约束），实测 $floor", floor <= 0)
+    }
+
+    /** 下限随摘要窗口单调：摘要窗口越大，所需 tail 越小。 */
+    @Test
+    fun minTailForSummaryWindow_monotonicInSummaryWindow() {
+        val trigger = 500_000
+        val small = ModelContextPolicy.minTailForSummaryWindow(trigger, 128_000)
+        val large = ModelContextPolicy.minTailForSummaryWindow(trigger, 400_000)
+        assertTrue("摘要窗口越大 tail 下限越小：$small vs $large", small > large)
+    }
+
+    // ---------- tailBudget：比例预算与摘要下限取大的组合（128k 静默丢历史的回归点）----------
+
+    /**
+     * C1：tail + 摘要估算必须严格小于阈值，否则压完立即再触发。
+     *
+     * 仅在「阈值 > 摘要估算（10k）」时有解——阈值小于摘要本身时压缩本身无意义
+     * （上下文还没摘要长），该退化情形不在本约束覆盖范围。
+     */
+    @Test
+    fun tailBudget_compactedSizeStaysUnderTrigger() {
+        for (ctx in listOf(32_000, 128_000, 200_000, 1_000_000)) {
+            for (pct in listOf(15, 60, 90)) {
+                val trigger = (ctx * pct / 100.0).toInt()
+                if (trigger <= 10_000 + ModelContextPolicy.MIN_PRESERVE_RECENT_TOKENS) continue
+                for (summaryWindow in listOf(128_000, 200_000, 1_000_000)) {
+                    val tail = ModelContextPolicy.tailBudget(trigger, ctx, summaryWindow)
+                    assertTrue(
+                        "ctx=$ctx pct=$pct% sw=$summaryWindow: tail+摘要=${tail + 10_000} 应 < 阈值 $trigger",
+                        tail + 10_000 < trigger,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * C2：head = 阈值 − tail 必须装进摘要输入预算。
+     *
+     * **仅对可行配置断言**（摘要窗口 ≥ minSummaryWindowForFeasibility）。摘要窗口过小时
+     * C1/C2 无交集，此时不变量本就无法成立，由 [tailBudgetPlan] 的 feasible=false 兜住——
+     * 故这里显式跳过，避免把「不可行」误当成「实现 bug」。
+     */
+    @Test
+    fun tailBudget_headAlwaysFitsSummaryWindow() {
+        val minSw = ModelContextPolicy.minSummaryWindowForFeasibility()
+        for (ctx in listOf(32_000, 64_000, 128_000, 200_000, 400_000, 1_000_000)) {
+            for (pct in listOf(15, 60, 90)) {
+                val trigger = (ctx * pct / 100.0).toInt()
+                for (summaryWindow in listOf(128_000, 200_000, 1_000_000)) {
+                    if (summaryWindow < minSw) continue
+                    val tail = ModelContextPolicy.tailBudget(trigger, ctx, summaryWindow)
+                    val head = trigger - tail
+                    val summaryBudget = (summaryWindow * 0.7).toInt()
+                    assertTrue(
+                        "ctx=$ctx pct=$pct% sw=$summaryWindow: head=$head 应 ≤ 摘要预算 $summaryBudget (tail=$tail)",
+                        head <= summaryBudget,
+                    )
+                }
+            }
+        }
+    }
+
+    // ---------- tailBudgetPlan：C1/C2 可满足性与不可行时的显式信号 ----------
+
+    /** 摘要窗口足够大时 feasible=true，且可行性与触发阈值无关。 */
+    @Test
+    fun tailBudgetPlan_feasibleWhenSummaryWindowLargeEnough() {
+        val minSw = ModelContextPolicy.minSummaryWindowForFeasibility()
+        for (trig in listOf(19_200, 115_200, 900_000)) {
+            assertTrue(
+                "sw=$minSw 应可行（trig=$trig）",
+                ModelContextPolicy.tailBudgetPlan(trig, 1_000_000, minSw).feasible,
+            )
+        }
+    }
+
+    /**
+     * 摘要窗口过小（< 28573）时 C1/C2 无交集——必须 feasible=false，
+     * 而不是静默 clamp 成「压缩成功但每轮丢历史」。
+     */
+    @Test
+    fun tailBudgetPlan_infeasibleWhenSummaryWindowTooSmall() {
+        val minSw = ModelContextPolicy.minSummaryWindowForFeasibility()
+        for (sw in listOf(4_096, 8_192, 16_384, minSw - 1)) {
+            val plan = ModelContextPolicy.tailBudgetPlan(115_200, 128_000, sw)
+            assertFalse("sw=$sw 应判不可行", plan.feasible)
+            assertTrue("应给出原因", plan.reason.isNotBlank())
+        }
+    }
+
+    /** 不可行时仍须给出一个可用 tail（取 C1 上界），避免调用方拿到 0 而崩。 */
+    @Test
+    fun tailBudgetPlan_infeasibleStillReturnsUsableTail() {
+        val plan = ModelContextPolicy.tailBudgetPlan(115_200, 128_000, 8_192)
+        assertTrue("tail 应 ≥ MIN", plan.tail >= ModelContextPolicy.MIN_PRESERVE_RECENT_TOKENS)
+        assertTrue("tail + 摘要应 < 阈值（C1 优先，不制造死循环）", plan.tail + 10_000 < 115_200)
+    }
+
+    /** 可行性阈值自洽：恰好 min 可行、min-1 不可行。 */
+    @Test
+    fun minSummaryWindowForFeasibility_isExactBoundary() {
+        val minSw = ModelContextPolicy.minSummaryWindowForFeasibility()
+        assertTrue(ModelContextPolicy.tailBudgetPlan(115_200, 128_000, minSw).feasible)
+        assertFalse(ModelContextPolicy.tailBudgetPlan(115_200, 128_000, minSw - 1).feasible)
+    }
+
+    /** 128k 主窗口 + 128k 摘要模型 + 90% 阈值的具体数值锁定（旧实现丢弃 5600 token）。 */
+    @Test
+    fun tailBudget_128kRegression_noLongerDrops() {
+        val trigger = 115_200
+        val tail = ModelContextPolicy.tailBudget(trigger, 128_000, 128_000)
+        // 旧实现 tail=20000 → head=95200 > 89600（丢 5600）
+        assertTrue("新 tail=$tail 应大于旧实现 20000", tail > 20_000)
+        assertTrue("head=${trigger - tail} 应 ≤ 摘要预算 89600", trigger - tail <= 89_600)
+    }
+
+    /** 128k 是旧实现的相对最坏点；新实现下各窗口的 head/预算比不应在 128k 处突起。 */
+    @Test
+    fun tailBudget_noWorstCaseAt128k() {
+        val ratios = listOf(64_000, 128_000, 200_000).map { ctx ->
+            val trigger = (ctx * 0.9).toInt()
+            val tail = ModelContextPolicy.tailBudget(trigger, ctx, ctx)
+            (trigger - tail).toDouble() / (ctx * 0.7)
+        }
+        // 新实现下三者都应 ≤1（head 装得下），不存在 128k 特有的尖峰
+        assertTrue("各窗口 head/摘要预算比均应 ≤1：$ratios", ratios.all { it <= 1.0 })
+    }
+
+    /**
+     * 摘要窗口与主窗口一致时，C2 下界不高于比例预算，结果不小于比例预算——
+     * 大窗口下不牺牲压缩力度（相对旧版不回归）。
+     */
+    @Test
+    fun tailBudget_sameSummaryWindow_notBelowProportional() {
+        for (ctx in listOf(128_000, 1_000_000)) {
+            val trigger = (ctx * 0.9).toInt()
+            val proportional = ModelContextPolicy.preserveRecentTokens(trigger, ctx)
+            val budget = ModelContextPolicy.tailBudget(trigger, ctx, ctx)
+            assertTrue(
+                "主/摘要同窗口时应 ≥ 比例预算（ctx=$ctx: $budget vs $proportional）",
+                budget >= proportional,
+            )
         }
     }
 

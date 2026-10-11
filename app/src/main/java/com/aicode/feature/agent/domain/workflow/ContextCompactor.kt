@@ -78,6 +78,18 @@ class ContextCompactor @Inject constructor(
         const val TOOL_OUTPUT_MAX_CHARS = 2_000
         const val COMPACT_PROMPT_FILE = "agent/compact-summary.md"
 
+        /** 压缩请求的系统提示词：明确「只输出摘要、不要思考」，与模板里的同类约束呼应。 */
+        const val COMPACTION_SYSTEM_PROMPT =
+            "你是一个上下文压缩引擎。本次请求中的对话历史仅作为输入材料，不要继续其中任何任务，" +
+                "不要调用任何工具，只输出接手摘要。不要输出任何思考、推理或分析过程" +
+                "（不要 reasoning_content），直接从摘要正文开始。"
+
+        /**
+         * 摘要为空/截断时的一次性补救档位：最低推理档，把输出预算尽量留给正文。
+         * 适配器会把不支持的档位归一到各 provider 的最低合法档（如 none→low）。
+         */
+        const val REASONING_EFFORT_MINIMAL = "minimal"
+
         /** 摘要窗口预留比例：30% 留给摘要提示词与旧摘要，故可用 70%。 */
         const val SUMMARY_WINDOW_RESERVE_RATIO = 0.7f
 
@@ -161,10 +173,14 @@ class ContextCompactor @Inject constructor(
         // 下调**只降不升**，策略与判据集中在 [CompactionThreshold]（含回归用例）。
         val basePercent = generalSettingsRepository.compactionThresholdPercent()
         val lastCompactedSize = sessionId?.let { lastCompactionSizeBySession[it] } ?: 0
-        val fastGrowth = CompactionThreshold.isFastGrowth(lastCompactedSize, estimatedTokens, contextLimit)
-        val triggerThreshold = CompactionThreshold.triggerTokens(contextLimit, basePercent, fastGrowth)
-        // 真实 usage 优先（含 system prompt + tools，与上下文窗口同口径）；取不到（0）回退本地估算
+        // 口径统一：真实 usage（含 system prompt + tools）优先，本地估算只在取不到真实值时使用。
+        // 增长速率与触发判断必须用**同一个** currentTokens，否则「账本记 A、触发比 B」
+        // 会让 fastGrowth 长期漏判（本地估算不含 system+tools，系统性偏小 → 增长幅度被低估
+        // → 阈值不下调 → 128k 下钉死在 90% 最坏点）。账本写入侧（见下方 lastCompactionSize
+        // 与 updateLastInputTokens）也已同步统一，保证两端可比。
         val currentTokens = lastInputTokens.takeIf { it > 0 } ?: estimatedTokens
+        val fastGrowth = CompactionThreshold.isFastGrowth(lastCompactedSize, currentTokens, contextLimit)
+        val triggerThreshold = CompactionThreshold.triggerTokens(contextLimit, basePercent, fastGrowth)
         val reachedThreshold = currentTokens >= triggerThreshold
         val reachedHardLimit = currentTokens >= contextLimit
         if (messages.size <= 2 || (!force && !reachedThreshold && !reachedHardLimit)) {
@@ -183,31 +199,50 @@ class ContextCompactor @Inject constructor(
         onEvent(AgentEvent.CompactionStarted(currentTokens))
 
         // 拆分 Head（需要压缩的老数据）和 Tail（保留的新数据）
-        var splitIndex = selectTailStartIndex(messages, triggerThreshold, contextLimit)
+        // tail 预算受「摘要窗口」反推的下限约束：head = 阈值 − tail 必须装得进摘要输入窗口，
+        // 否则会静默丢掉最旧历史（128k 主窗口 + 128k 摘要模型下 head≈95k > 预算 89.6k，每轮都丢）。
+        // 详见 ModelContextPolicy.tailBudgetPlan。
+        val summaryWindowTokensForSplit = summaryMetadata.contextTokens.takeIf { it > 0 }
+            ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
+        // 预算只算一次，供选择器与下方守卫**共用同一数**：两处若各算各的（历史上一次
+        // 选择器用 tailBudget、守卫用更小的 preserveRecentTokens），会把「全装得下＝无需压缩」
+        // 误判成「划分失败」并强制折叠全部历史。
+        val budgetPlan = ModelContextPolicy.tailBudgetPlan(triggerThreshold, contextLimit, summaryWindowTokensForSplit)
+        if (!budgetPlan.feasible) {
+            FileLogger.w(
+                TAG,
+                "压缩预算不可行：${budgetPlan.reason}（触发阈值 $triggerThreshold，摘要模型窗口 $summaryWindowTokensForSplit）。" +
+                    "本次压缩仍执行，但被折叠的 head 可能超出摘要窗口而被丢弃——" +
+                    "建议把「压缩专用模型」换为窗口 ≥ ${ModelContextPolicy.minSummaryWindowForFeasibility()} 的模型。"
+            )
+        }
+        val tailBudget = budgetPlan.tail
+        var splitIndex = CompactionTailSelector.compute(messages, tailBudget) { estimateTokens(it) }
         if (force && splitIndex <= 0 && messages.size > 1) {
             splitIndex = messages.size - 1
         }
         if (splitIndex <= 0) {
-            // 两种完全不同的成因必须分开记，否则误诊：
+            // 成因必须分开记，否则误诊：
             // ① 消息本地估算总量 <= tail 预算 → 确实无历史可压（正当跳过）；
-            // ② 总量 > 预算却仍归零 → 划分逻辑有缺陷（如恢复段保护把回溯拉到 0），是 bug。
-            // 实测教训：旧文案把两者混为「无可压缩内容」，曾导致把 ②（真 bug）误判为 ①。
-            val budget = ModelContextPolicy.preserveRecentTokens(triggerThreshold, contextLimit)
-            if (estimatedTokens > budget) {
+            // ② 总量 > 预算却仍归零 → 划分逻辑有缺陷（如恢复段保护把回溯拉到 0）。
+            // 判据与选择器同用 [tailBudget]：口径一致才能区分「全装得下」与「真异常」。
+            // 降级（②）打 WARN 后按最小粒度强制拆一次，避免「划分 bug → 压缩彻底停摆」。
+            if (estimatedTokens > tailBudget && messages.size > 1) {
                 FileLogger.w(
                     TAG,
-                    "压缩异常：拆分点落在最前端但消息估算 ${estimatedTokens} > tail 预算 ${budget}（${messages.size} 条）——" +
-                        "划分逻辑未产出可压缩段，疑为 bug，本次跳过"
+                    "压缩降级：拆分点落在最前端但消息估算 ${estimatedTokens} > tail 预算 ${tailBudget}（${messages.size} 条）——" +
+                        "划分逻辑未产出可压缩段，改用最小 tail 预算强制拆分"
                 )
+                splitIndex = adjustSplitIndex(messages, messages.size - 1)
             } else {
                 FileLogger.i(
                     TAG,
-                    "压缩跳过：消息估算 ${estimatedTokens} <= tail 预算 ${budget}（${messages.size} 条），" +
+                    "压缩跳过：消息估算 ${estimatedTokens} <= tail 预算 ${tailBudget}（${messages.size} 条），" +
                         "全部历史均需保留，无可压缩内容"
                 )
+                onEvent(AgentEvent.CompactionFinished)
+                return messages
             }
-            onEvent(AgentEvent.CompactionFinished)
-            return messages
         }
 
         // 确保 tail 的第一条消息不是孤立的 ToolResultMessage：
@@ -220,12 +255,32 @@ class ContextCompactor @Inject constructor(
         val previousSummary = extractPreviousSummary(messages)
         val summaryWindowTokens = summaryMetadata.contextTokens.takeIf { it > 0 }
             ?: ModelContextPolicy.DEFAULT_CONTEXT_TOKENS
-        val headForSummary = removeCompactionPairs(head)
-            .truncateForSummaryWindow(summaryWindowTokens)
-        val headMessages = headForSummary.kept.trimLeadingForCompaction()
+        // 摘要输入预算：head 必须装得进「摘要模型窗口 × 70%」。装不下时旧实现直接
+        // 从最旧处截断丢弃（内容不进摘要 = 静默失忆）。这里改为**优先压缩材料**再截断：
+        // trimLeadingForCompaction 会把超长工具输出截到 2000 字符，通常足以把 head 拉回预算内。
+        // 先清理再判预算，避免「按未清理的原始 head 判定超限 → 无谓丢历史」。
+        val cleanedHead = removeCompactionPairs(head).trimLeadingForCompaction()
+        val summaryInputBudget = (summaryWindowTokens * SUMMARY_WINDOW_RESERVE_RATIO).toInt()
+        val cleanedHeadTokens = cleanedHead.sumOf { estimateTokens(it) }
+        val headForSummary = if (cleanedHeadTokens <= summaryInputBudget) {
+            // 清理后已装得下：不丢任何消息。
+            CompactionSummaryWindow.Result(cleanedHead)
+        } else {
+            CompactionSummaryWindow.selectTail(cleanedHead, summaryInputBudget) { estimateTokens(it) }
+        }
+        val headMessages = headForSummary.kept
+        if (headForSummary.hasDrop) {
+            // 清理后仍超预算才真的丢（压缩模型窗口远小于主窗口时的固有取舍）。
+            // 丢弃量进日志与摘要产物，杜绝「摘要里没有 = 从未发生」的误读。
+            FileLogger.w(
+                TAG,
+                "head 超出压缩模型窗口预算：清理后仍丢弃 ${headForSummary.droppedCount} 条最旧消息" +
+                    "（约 ${headForSummary.droppedTokens} token，预算 $summaryInputBudget token）——这部分内容不会进摘要",
+            )
+        }
         if (headMessages.isEmpty()) {
             // 空只可能来自前两步：重复压缩时 head 只剩旧的 marker+summary 对（被 removeCompactionPairs 删光），
-            // 或整体超出摘要窗口预算被 truncateForSummaryWindow 截空。
+            // 或整体超出摘要窗口预算被截空。
             // 检查放在清理**之后**：清理会改变消息集，必须按最终要发送的内容判空，
             // 否则会发出一条只有指令、没有材料的摘要请求，模型只能凭空编造并落库顶替真实历史。
             FileLogger.i(TAG, "无可压缩内容（head 清理后为空），跳过压缩")
@@ -242,7 +297,6 @@ class ContextCompactor @Inject constructor(
         val callStartElapsed = SystemClock.elapsedRealtime()
         val callStartWall = System.currentTimeMillis()
         var callError: String? = null
-        var callCompleted = false
         var callUsage: AIResponse? = null
 
         val summaryResponse = try {
@@ -261,7 +315,6 @@ class ContextCompactor @Inject constructor(
                 disablePromptCaching = true
             )
             callUsage = response
-            callCompleted = true
             response.content
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -289,7 +342,68 @@ class ContextCompactor @Inject constructor(
             return messages // 失败则原样返回，交由上层自行承担溢出风险
         }
 
-        val durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt()
+        // 空摘要/截断保护：思考型压缩模型（如 glm-5.3）可能把输出预算全花在推理上（reasoning_content），
+        // 正文为空或被打满截断。照常持久化会把会话上下文替换成空摘要，历史静默丢失
+        // （实测：13:50 压缩 48000 output tokens 全耗在推理、content=""，摘要长度 0 照样入库并替换上下文）。
+        // 截断判定复用 [AIResponse.isTruncated] 的同一口径（TRUNCATION_STOP_REASONS 已含
+        // OpenAI `length` / Anthropic `max_tokens` / Gemini `MAX_TOKENS`）——不能只认 "length"，
+        // 否则压缩模型配成 Anthropic/Gemini 时，被截断的**半截非空摘要**会绕过保护入库替换上下文。
+        // 失败则保留原上下文并进入冷却，防下一轮原地重试死循环。
+        var summaryTextRaw = summaryResponse.trim()
+        var summaryTruncated = callUsage?.isTruncated == true
+        if (summaryTextRaw.isEmpty() || summaryTruncated) {
+            // 一次性补救：思考型压缩模型把输出预算耗在推理上是**用户可见「压缩失败」的主因**
+            // （128k 阈值高、head 大、摘要请求更长，思考模型更易打满）。
+            // 用最低推理档重试**一次**（不循环）：思考开销最小化，正文更可能产出；
+            // 仍失败即真失败，交 failCompaction 走冷却/熔断，不把确定性失败拖成每轮重试。
+            val retryStartElapsed = SystemClock.elapsedRealtime()
+            val retryStartWall = System.currentTimeMillis()
+            var retryError: String? = null
+            val retry = try {
+                aiProvider.complete(
+                    systemPrompt = COMPACTION_SYSTEM_PROMPT,
+                    messages = summaryRequestMessages,
+                    tools = emptyList(),
+                    reasoningEffort = REASONING_EFFORT_MINIMAL,
+                    disablePromptCaching = true
+                )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                retryError = e.message ?: e.javaClass.simpleName
+                null
+            }
+            // 补救调用同样要入账：它是真实成本，漏记会让成本审计看不见「压缩一度失败」的真实开销。
+            runCatchingCancellable {
+                llmCallRecordDao.insert(
+                    LlmCallRecordEntity(
+                        sessionId = sessionId,
+                        providerId = aiProvider.providerId.ifBlank { null },
+                        model = aiProvider.model,
+                        kind = "compaction_retry",
+                        inputTokens = retry?.inputTokens ?: 0,
+                        outputTokens = retry?.outputTokens ?: 0,
+                        cachedInputTokens = retry?.cachedInputTokens ?: 0,
+                        cacheCreationTokens = retry?.cacheCreationTokens ?: 0,
+                        ttfbMillis = null,
+                        durationMillis = (SystemClock.elapsedRealtime() - retryStartElapsed).toInt(),
+                        status = if (retry != null) "success" else "error",
+                        errorMessage = retryError,
+                        stopReason = retry?.stopReason,
+                        createdAt = retryStartWall
+                    )
+                )
+            }
+            val retryText = retry?.content?.trim().orEmpty()
+            if (retry != null && retryText.isNotEmpty() && retry.isTruncated != true) {
+                FileLogger.i(TAG, "摘要首次为空/截断，最低推理档重试成功（output ${retry.outputTokens} tokens）")
+                summaryTextRaw = retryText
+                summaryTruncated = false
+                callUsage = retry
+            }
+        }
+        // 调用统计埋点移到补救之后：记录**最终生效**的调用（重试成功记重试那次，
+        // 否则记首次失败那次）。原先在补救前落库，会把重试的 token/时长记成 0 且状态错位。
         runCatchingCancellable {
             llmCallRecordDao.insert(
                 LlmCallRecordEntity(
@@ -302,25 +416,16 @@ class ContextCompactor @Inject constructor(
                     cachedInputTokens = callUsage?.cachedInputTokens ?: 0,
                     cacheCreationTokens = callUsage?.cacheCreationTokens ?: 0,
                     ttfbMillis = null,
-                    durationMillis = durationMillis,
-                    status = if (callCompleted) "success" else "error",
+                    durationMillis = (SystemClock.elapsedRealtime() - callStartElapsed).toInt(),
+                    // 成功 ⟺ 最终拿到了可用摘要（首次或补救）；否则为 error（含被截断/空正文）。
+                    status = if (summaryTextRaw.isNotEmpty() && !summaryTruncated) "success" else "error",
                     errorMessage = callError,
                     stopReason = callUsage?.stopReason,
                     createdAt = callStartWall
                 )
             )
         }
-
-        // 空摘要/截断保护：思考型压缩模型（如 glm-5.3）可能把输出预算全花在推理上（reasoning_content），
-        // 正文为空或被打满截断。照常持久化会把会话上下文替换成空摘要，历史静默丢失
-        // （实测：13:50 压缩 48000 output tokens 全耗在推理、content=""，摘要长度 0 照样入库并替换上下文）。
-        // 截断判定复用 [AIResponse.isTruncated] 的同一口径（TRUNCATION_STOP_REASONS 已含
-        // OpenAI `length` / Anthropic `max_tokens` / Gemini `MAX_TOKENS`）——不能只认 "length"，
-        // 否则压缩模型配成 Anthropic/Gemini 时，被截断的**半截非空摘要**会绕过保护入库替换上下文。
-        // 失败则保留原上下文并进入冷却，防下一轮原地重试死循环。
-        val summaryTrimmed = summaryResponse.trim()
-        val truncatedByLimit = callUsage?.isTruncated == true
-        if (summaryTrimmed.isEmpty() || truncatedByLimit) {
+        if (summaryTextRaw.isEmpty() || summaryTruncated) {
             return failCompaction(
                 messages, sessionId, "empty_or_truncated_summary",
                 "摘要正文为空或输出被截断(stopReason=${callUsage?.stopReason})",
@@ -349,7 +454,7 @@ class ContextCompactor @Inject constructor(
         //
         // 在此统一收口：summaryText 的全部下游（落库、内存回放）均取自本变量，
         // 一处过滤即全覆盖。
-        val summaryText = ToolOutputScrubber.scrub(summaryTrimmed)
+        val summaryText = ToolOutputScrubber.scrub(summaryTextRaw)
         // 时点标注：摘要只总结折叠边界前的历史，与保留段（边界前最后几轮原文）拼接时状态可能矛盾，
         // 接手者需要知道哪个更新（实测 cd700c44 会话：轻量模型需专门取证才能分辨）。
         val stampedSummary = summaryTimestampNotice(
@@ -478,11 +583,19 @@ class ContextCompactor @Inject constructor(
         // 记录压缩后基准，供下次触发判断计算增长速率（自适应阈值）。
         if (sessionId != null) {
             val newSize = estimateTokens(newMessages)
-            lastCompactionSizeBySession[sessionId] = newSize
+            // 口径对齐：newSize 是**本地估算**（不含 system prompt + tools），而账本另一端
+            // currentTokens 优先取真实 usage（含二者）。直接把 newSize 当基准会让两边差一个
+            // 固定开销 Δ，fastGrowth 每轮都少算 Δ、长期漏判。
+            // 故用「本次触发时的真实 usage − 本次触发时的本地估算」把 Δ 显式带过来：
+            // 无真实 usage 时 Δ=0，退化为纯本地估算（与旧行为一致）。
+            val usageOverhead = if (lastInputTokens > 0) (lastInputTokens - estimatedTokens).coerceAtLeast(0) else 0
+            val ledgerSize = newSize + usageOverhead
+            lastCompactionSizeBySession[sessionId] = ledgerSize
             // 死循环修复：压缩成功后立即把会话的 lastInputTokens 写回压缩后大小。
             // 否则旧大值（如 1M 窗口时代记录的 27 万）恒超 128k 阈值，每轮都触发压缩。
+            // 同样带上 Δ，使写回值与下一轮真实 usage 同口径、不再来回震荡。
             runCatchingCancellable {
-                chatSessionDao.updateLastInputTokens(sessionId, newSize)
+                chatSessionDao.updateLastInputTokens(sessionId, ledgerSize)
             }
         }
 
@@ -527,11 +640,6 @@ class ContextCompactor @Inject constructor(
      */
     private fun adjustSplitIndex(messages: List<AgentMessage>, initialSplitIndex: Int): Int =
         CompactionSplitAdjuster.adjust(messages, initialSplitIndex)
-
-    private fun selectTailStartIndex(messages: List<AgentMessage>, usableTokens: Int, contextLimit: Int): Int {
-        val budget = ModelContextPolicy.preserveRecentTokens(usableTokens, contextLimit)
-        return CompactionTailSelector.compute(messages, budget) { msg -> estimateTokens(msg) }
-    }
 
     private fun estimateTokens(messages: List<AgentMessage>): Int =
         messages.sumOf { estimateTokens(it) }
@@ -658,25 +766,5 @@ class ContextCompactor @Inject constructor(
         return take(TOOL_OUTPUT_MAX_CHARS) + "\n[Tool output truncated for compaction]"
     }
 
-    /**
-     * 按压缩模型窗口预算截断 head：从新到旧保留消息，超预算丢弃更旧的消息。
-     * 预算用与全局一致的 CJK 感知 token 口径（[ModelContextPolicy.estimateTokens]），预留 30%
-     * 给摘要提示词与旧摘要（故乘 0.7）；不使用「字符数」的第二套口径，避免中文截不干净。
-     *
-     * 选取与丢弃量统计在 [CompactionSummaryWindow]（含回归用例）；
-     * 丢弃量会进 WARN 日志与摘要产物，避免「更早的历史没进摘要」被当成「从未发生」。
-     */
-    private fun List<AgentMessage>.truncateForSummaryWindow(contextTokens: Int): CompactionSummaryWindow.Result<AgentMessage> {
-        val budgetTokens = (contextTokens * SUMMARY_WINDOW_RESERVE_RATIO).toInt()
-        val result = CompactionSummaryWindow.selectTail(this, budgetTokens) { estimateTokens(it) }
-        if (result.hasDrop) {
-            FileLogger.w(
-                TAG,
-                "head 超出压缩模型窗口预算：丢弃 ${result.droppedCount} 条最旧消息" +
-                    "（约 ${result.droppedTokens} token，预算 $budgetTokens token）——这部分内容不会进摘要",
-            )
-        }
-        return result
-    }
 }
 
