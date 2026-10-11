@@ -100,19 +100,37 @@ class CompactionRestoreTest {
 
     @Test
     fun restoredSegmentExemptFromBudget() {
-        // 恢复段的消息**即使超预算也不得被截断**（豁免语义），与「段首截停」是两条独立路径。
+        // 豁免语义：保护启用时，回溯途中预算耗尽也**不截断**恢复段（段不拆开），
+        // 继续走到段首截停。启用前提由新上界（段首到末尾合计 <= 预算）保证。
         //
-        // 布局：旧消息 + 恢复段 + 新消息。预算取 8：新消息 a1/u1 恰好装满（各 4），
-        // 轮到恢复段 r2 时 8+4>8 —— 若无豁免会 break、split=3（恢复段被撕开）；
-        // 有豁免则继续走过 r2、r1，在段首截停得到 split=1。
+        // 布局：旧消息 + 恢复段 + 新消息，预算 16（=段首到末尾合计）：
+        // 从尾回溯 a1(4)+u1(4)+r2(4)=12，r1 处 12+4=16 恰不超限，到段首截停。
         val messages = listOf(
             user("old1"),
             user("r1", restored = true),
             assistant("r2", restored = true),
             user("u1"), assistant("a1")
         )
-        val split = CompactionTailSelector.compute(messages, budget = 8, estimate = ::estimate)
+        // 段首到末尾合计 = 4+4+4+4 = 16，预算 16 → 上界恰好成立，保护启用；
+        // （预算小于 16 时上界不成立、保护退位，见 restoredSegmentSplitWhenTailOverBudget）
+        val split = CompactionTailSelector.compute(messages, budget = 16, estimate = ::estimate)
         assertEquals(1, split)
+    }
+
+    @Test
+    fun restoredSegmentSplitWhenTailOverBudget() {
+        // 上界按「段首到末尾」验的另一面：预算装不下段+段后时，保护退位、段可被折回。
+        // 同布局预算 6：段首到末尾合计 16 > 6 → 保护退位 → 按普通预算回溯，
+        // a1(4)+u1(4)=8 已超 6，回溯 a1 后 u1 超限截停，split=4（恢复段整体进 head 被折回）。
+        // 这是修复的预期代价：段后积累超预算时，宁可折回恢复段也不能让压缩空转。
+        val messages = listOf(
+            user("old1"),
+            user("r1", restored = true),
+            assistant("r2", restored = true),
+            user("u1"), assistant("a1")
+        )
+        val split = CompactionTailSelector.compute(messages, budget = 6, estimate = ::estimate)
+        assertEquals(4, split)
     }
 
     @Test
@@ -145,6 +163,27 @@ class CompactionRestoreTest {
         val split = CompactionTailSelector.compute(messages, budget = 10_000, estimate = ::estimate)
         // 预算充足时回溯应停在恢复段首（index=2），old1/old2 仍在 head。
         assertEquals(2, split)
+    }
+
+    @Test
+    fun oversizedAfterSegmentDisablesProtection() {
+        // 事故 C 回归（2026-10-11 真实事故）：恢复段自身装得下预算，但**段后积累**超预算。
+        // 旧上界只验段自身 → 保护启用 → 段后全部免预算进 tail → 每轮压缩空转
+        // （实测 9 轮压缩全空转，上下文 701k→754k 只涨不降）。
+        // 新语义：上界按「段首到末尾全部」验，超预算则保护退位，恢复段按普通预算折回。
+        val messages = listOf(
+            user("old1"),
+            user("r1", restored = true),           // 恢复段首
+            assistant("r2", restored = true),
+            user("big1"),                          // 段后大消息（远超预算）
+            user("big2"),
+            assistant("a1")
+        )
+        val split = CompactionTailSelector.compute(messages, budget = 8, estimate = ::estimate)
+        // 保护退位后按普通预算回溯：a1(3) 后 big2(6) 3+6>8 截停，split=5。
+        // 旧实现（上界只验段自身）会保护段首 → 免预算走完段+段后全部 → split=1，
+        // tail 远超预算、压缩空转。
+        assertEquals(5, split)
     }
 
     @Test

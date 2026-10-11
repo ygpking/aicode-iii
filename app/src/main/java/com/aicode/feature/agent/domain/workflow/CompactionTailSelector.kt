@@ -16,13 +16,15 @@ import com.aicode.feature.agent.domain.model.AgentMessage
  * 连续 25 次「压缩放弃：拆分点落在消息最前端」，上下文从 220k 一路涨到 253k 再也压不动。
  * 此时该段按普通预算划分：保护它的收益，小于「压缩彻底不动」的代价。
  *
- * 多段并存：按「各恢复段独立保护」处理——取所有**段首 > 0** 的恢复段中最靠左的段首作为
+ * 多段并存：按「各恢复段独立保护」处理——取所有**段首 > 0** 的恢复段中最靠左的段首作为回溯终点。
  *
- * 保护的成立条件：仅当**恢复段自身**的估算不超过 tail 预算时才启用。
+ * 保护的成立条件：仅当**恢复段及其后全部消息**的估算合计不超过 tail 预算时才启用。
  * 恢复标记由「未折叠 + 带块归属」实时推导（见 MessagePersistenceUseCase），而保护恰恰阻止折叠，
- * 因此一旦启用就**永久**生效、没有退出路径。恢复段超过预算时，每轮压缩只能折掉前面寥寥几条，
- * 上下文只涨不降——实测：恢复 87 条原文后会话 341k→346k→355k→370k，每轮只折叠上一轮刚生成的摘要。
- * 此时与「锚在最前端」取同一取舍：宁可让恢复段被折回，也不能让压缩失效。
+ * 因此一旦启用就**永久**生效、没有退出路径；且 tail 是连续区间，保护段首必然连带其后的
+ * 所有新消息免预算。上界只验段自身会漏掉段后积累——实测事故：恢复 87 条原文（段自身约
+ * 3 万 token ≤ 预算 37500）后，其后一夜积累的 70 万 token 全部免预算进 tail，此后每轮压缩
+ * 的 head 只剩折叠头与旧摘要，9 轮压缩全部空转，上下文 701k→754k 只涨不降。
+ * 段后消息超出预算时，与「锚在最前端」取同一取舍：宁可让恢复段被折回，也不能让压缩失效。
  */
 object CompactionTailSelector {
 
@@ -48,11 +50,11 @@ object CompactionTailSelector {
         val restoreAnchor = messages.indices.firstOrNull { index ->
             index > 0 && isRestored(messages[index]) && !isRestored(messages[index - 1])
         }
-        // 仅当恢复段自身装得下预算时才保护：保护无退出路径，超预算段会让压缩永久失效（见类注释）。
+        // 仅当「段及其后全部」装得下预算时才保护：tail 是连续区间，保护段首必然连带其后
+        // 所有新消息免预算，上界必须按段首到末尾合计验（只验段自身会让段后积累无限膨胀，
+        // 见类注释的 70 万 token 空转事故）。
         val protectedStart = restoreAnchor?.takeIf { anchor ->
-            val segmentEnd = (anchor until messages.size).firstOrNull { !isRestored(messages[it]) }
-                ?: messages.size
-            messages.subList(anchor, segmentEnd).sumOf { estimate(it) } <= budget
+            messages.subList(anchor, messages.size).sumOf { estimate(it) } <= budget
         }
 
         for (index in messages.indices.reversed()) {

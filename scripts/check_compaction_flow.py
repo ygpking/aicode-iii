@@ -147,13 +147,11 @@ def compute_tail_split(msgs, budget, restored_ids):
             break
     protected = anchor                         # 修复 A：段首为 0 时不保护（anchor 非 None 才算）
     if anchor is not None:
-        seg_end = len(msgs)
-        for i in range(anchor, len(msgs)):
-            if not is_restored(msgs[i], restored_ids):
-                seg_end = i
-                break
-        if sum(m.tok() for m in msgs[anchor:seg_end]) > budget:
-            protected = None                   # 修复 B：恢复段自身超预算则不保护
+        # 修复 B（v2）：上界按「段首到末尾全部」验，不是只验段自身——
+        # tail 是连续区间，保护段首必然连带其后所有新消息免预算，只验段自身
+        # 会让段后积累无限膨胀（实测 70 万 token 空转事故）。
+        if sum(m.tok() for m in msgs[anchor:]) > budget:
+            protected = None                   # 段后消息超预算则不保护，恢复段按普通预算折回
     for idx in range(len(msgs) - 1, -1, -1):
         in_restored = protected is not None and idx >= protected
         nxt = msgs[idx].tok()
@@ -370,6 +368,26 @@ def session_oversized_restored():
     return s
 
 
+def session_oversized_after_restored():
+    """事故 C：恢复段自身装得下预算，但段后积累超预算（旧修复漏掉的形态）。
+    结构对齐 2026-10-11 真实事故：折叠头 → 恢复段（87 条原文，自身约 3 万 token）
+    → 段后大量新消息（一夜积累 70 万 token）。旧上界只验段自身 → 保护启用 →
+    段后全部免预算进 tail → 每轮压缩空转、上下文只涨不降。"""
+    s = Session()
+    s.add(ROLE_USER, "[系统说明] 更早步骤已折叠为摘要")
+    # 恢复段：21 条、自身约 2.1 万 token（预算 37500 内）
+    for i in range(1, 22):
+        s.add(ROLE_USER, "恢复" + "b" * 1000)
+        s.entities[-1].block_id = "BRESTC"
+        s.entities[-1].is_compacted = False
+    # 段后积累：远超预算的工具输出流
+    for i in range(1, 61):
+        tc = "c%d" % i
+        s.add(ROLE_ASSISTANT, "新" + "c" * 200, tool_calls=[(tc, "readFile")])
+        s.add(ROLE_TOOL, "出" + "d" * 3000, tool_call_id=tc)
+    return s
+
+
 # ══════════════════════════════════════════════════════════════════════
 # 五、正向场景
 # ══════════════════════════════════════════════════════════════════════
@@ -417,6 +435,27 @@ def suite_forward(rep):
     r5, d5 = s.auto_compact()
     rep.check("超预算恢复段不阻止压缩", r5, "OK")
     rep.check("tail 落在预算内", d5["kept_tok"] <= d5["budget"], True)
+
+    print("── 4b. 段后积累超预算（事故 C 形态：保护必须退位）──")
+    s = session_oversized_after_restored()
+    r5c, d5c = s.auto_compact()
+    rep.check("段后超预算时压缩不空转", r5c, "OK")
+    rep.check("tail 落在预算内（无免预算膨胀）", d5c["kept_tok"] <= d5c["budget"], True)
+    # 事故核心断言：修复前该形态下恢复段受保护 → 段后全部免预算进 tail → kept_tok 远超预算。
+    # 压缩前的全量（恢复段+段后积累，不含已被折入 head 的头部）必须远大于 tail 预算，
+    # 而 kept_tok 受预算约束——两者比值证明保护确实退位、恢复段被折回。
+    pre_total = 21 * 1000 + 60 * (300 + 3000)
+    rep.check("tail 仅占全量一小部分（保护确实退位）",
+              d5c["kept_tok"] < pre_total // 4, True)
+    # 连续收敛：追加足量新内容再压，仍不空转且 tail 有界（无限压缩 bug 的反向锁定）。
+    # 注：修复前的旧实现下二次压缩会返回 OVER_BUDGET/超预算 tail，被首检拗红。
+    for i in range(1, 31):
+        tc = "z%d" % i
+        s.add(ROLE_ASSISTANT, "再 " + "e" * 200, tool_calls=[(tc, "readFile")])
+        s.add(ROLE_TOOL, "果" + "f" * 3000, tool_call_id=tc)
+    r5c2, d5c2 = s.auto_compact()
+    rep.check("追加后再压缩仍不空转", r5c2, "OK")
+    rep.check("追加后 tail 仍有界", "kept_tok" in d5c2 and d5c2["kept_tok"] <= d5c2["budget"], True)
 
     print("── 5. 撤销恢复（retake）──")
     s = session_normal()
@@ -501,6 +540,35 @@ def suite_forward(rep):
 # ══════════════════════════════════════════════════════════════════════
 # 六、失败注入（变异测试）——验证正向场景真有判别力
 # ══════════════════════════════════════════════════════════════════════
+def mut_split_segment_only_cap(msgs, budget, restored_ids):
+    """事故 C：上界只验段自身（v1 修复的洞）——段后积累免预算膨胀。"""
+    total, split = 0, len(msgs)
+    anchor = None
+    for i in range(len(msgs)):
+        if i > 0 and is_restored(msgs[i], restored_ids) and not is_restored(msgs[i - 1], restored_ids):
+            anchor = i
+            break
+    protected = anchor
+    if anchor is not None:
+        seg_end = len(msgs)
+        for i in range(anchor, len(msgs)):
+            if not is_restored(msgs[i], restored_ids):
+                seg_end = i
+                break
+        if sum(m.tok() for m in msgs[anchor:seg_end]) > budget:
+            protected = None
+    for idx in range(len(msgs) - 1, -1, -1):
+        in_r = protected is not None and idx >= protected
+        nxt = msgs[idx].tok()
+        if (not in_r) and total + nxt > budget and split < len(msgs):
+            break
+        total += nxt
+        split = idx
+        if protected is not None and idx == protected:
+            break
+    return split
+
+
 def mut_split_no_index_guard(msgs, budget, restored_ids):
     """事故 A：恢复段无条件保护（不看段首是否 0）。"""
     total, split = 0, len(msgs)
@@ -594,6 +662,7 @@ def suite_mutation(rep):
     injections = [
         ("事故A（恢复段无条件保护）", {"compute_tail_split": mut_split_no_index_guard}),
         ("事故B（超预算仍保护）", {"compute_tail_split": mut_split_no_budget_cap}),
+        ("事故C（上界只验段自身）", {"compute_tail_split": mut_split_segment_only_cap}),
         ("阈值自适应方向写反", {"effective_percent": mut_threshold_up}),
         ("tail 预算写死", {"preserve_recent_tokens": mut_budget_fixed}),
         ("解压方向写反", {"Session.restore_block": mut_restore_reversed}),
@@ -625,7 +694,7 @@ def main():
             print("  - %s" % f)
         return 1
     print("[OK] 上下文压缩全流程回归通过")
-    print("  - 正向场景 8 组 + 失败注入 5 项均已核对")
+    print("  - 正向场景 8 组 + 失败注入 6 项均已核对")
     print("  - 建模对账：CompactionTailSelector / CompactionThreshold / ModelContextPolicy /")
     print("    AgentMessageDao 压缩块 SQL / buildHistory 筛选与配对 / SessionHistoryPager")
     return 0
