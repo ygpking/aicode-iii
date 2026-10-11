@@ -28,6 +28,9 @@ internal object ClaimClassifier {
         Regex("""(?i)\bbuilds?\s+success"""),
         Regex("""(?i)\btype-?check\b"""),
         Regex("""(?i)\blint(?:ing)?\s+(?:passes|clean)\b"""),
+        // 补「全绿」：真实收尾形态「全绿（含单测）」此前漏抓（2026-10-11 语料）
+        Regex("全绿"),
+        Regex("""(?i)\ball\s+green\b"""),
     )
 
     /**
@@ -161,6 +164,39 @@ internal object ClaimClassifier {
         val text = stripFencedBlocks(message)
         return !isSuppressed(text) && splitSentences(text)
             .any { s -> !isMemoryDomainSentence(s) && CHANGE_PATTERNS.any { it.containsMatchIn(s) } }
+    }
+
+    /**
+     * 「声称改动范围」的排他性表述（R6）。
+     *
+     * 词集按真实日志语料收敛（2026-10-11）：原型「只改了 Go，Rust 未动」「未动其它节」
+     * 「未改其它；未 push」全召回。完成态形态强制带「了/好/完」（「只改一下」是命令非声称）；
+     * 否定排他形态（「未改其它」）本身是正例——它限定了改动面，需要 git status/diff 对账。
+     * 「没改任何文件」（零改动声称）不进集：没有清单可对，且是分析类任务的正常收尾。
+     */
+    private val RANGE_PATTERNS = listOf(
+        Regex("(?:只|仅)(?:改|动|修改|新增|加|写)(?:了|好|完)(?!一下|下)"),
+        Regex("未改(?:其它|其他)|没改(?:其它|其他)"),
+        Regex("未动(?:其它|其他)|没动(?:其它|其他)"),
+        Regex("其余未动|其余没动"),
+        Regex("无其它?改动|没有其它?改动|无其他更改"),
+        Regex("""(?i)\bonly (?:changed|modified|edited|touched|updated|added)\b"""),
+        Regex("""(?i)\bno other (?:changes?|modifications?|files?|edits?)\b(?!\s+(?:needed|required))"""),
+    )
+
+    /**
+     * 是否声称「改动范围」（排他性表述，R6）。
+     *
+     * 与 [claimsChange]/[claimsRecall] 的关键差异：**不走 [isSuppressed]**——
+     * 排他否定的完成态（「未改其它」）本身是正例，而共享 NEGATORS 的「没有+改」
+     * 会把它整段压掉（「未改其它；未 push」直接漏报）。句级防护（疑问/条件/引文/
+     * 记忆域）仍齐全，由 [splitSentences] 与 [isMemoryDomainSentence] 提供。
+     */
+    fun claimsScope(message: String): Boolean {
+        val text = stripFencedBlocks(message)
+        return splitSentences(text)
+            .any { s -> !isMemoryDomainSentence(s) &&
+                RANGE_PATTERNS.any { it.containsMatchIn(s) } }
     }
 
     /**
