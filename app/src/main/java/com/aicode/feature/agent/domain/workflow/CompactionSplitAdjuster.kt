@@ -37,9 +37,9 @@ internal object CompactionSplitAdjuster {
         var splitIndex = initialSplitIndex.coerceIn(0, messages.size)
 
         // 约束 1：tail 不得以孤立 tool 结果开头，向前回溯到配对的 assistant。
-        while (splitIndex > 0 && messages[splitIndex] is AgentMessage.ToolResultMessage) {
-            splitIndex--
-        }
+        // 注意：约束 2 的前移会把 splitIndex 往后推，可能把一个新的 tool 结果暴露到 tail 开头；
+        // 因此回溯不是一次性的——约束 2 之后必须再跑一次（见下方结尾）。
+        splitIndex = walkBackPastToolResults(messages, splitIndex)
 
         // 约束 2：marker/summary 对不许劈开。split 落在二者之间时前移，把 summary 也纳入 head。
         // 上界用 `messages.size - 1`：前移后 splitIndex 至多到 size-1，tail 至少保留最后一条，
@@ -52,6 +52,20 @@ internal object CompactionSplitAdjuster {
             splitIndex++
         }
 
+        // 复查约束 1：前移可能让 tail 以 tool 结果开头（例如 marker 紧跟在「含 toolCalls 的
+        // assistant + tool 结果」之后被前移，把该 assistant 折进 head、tool 结果留在 tail 开头）。
+        // 若不复查，压缩后 OpenAI 会收到孤立的 role:"tool" → 400。
+        splitIndex = walkBackPastToolResults(messages, splitIndex)
+
+        return splitIndex
+    }
+
+    /** 约束 1 的实现：tail 以 tool 结果开头时向前回溯到配对的 assistant。前后各需调用一次。 */
+    private fun walkBackPastToolResults(messages: List<AgentMessage>, from: Int): Int {
+        var splitIndex = from
+        while (splitIndex > 0 && messages[splitIndex] is AgentMessage.ToolResultMessage) {
+            splitIndex--
+        }
         return splitIndex
     }
 
