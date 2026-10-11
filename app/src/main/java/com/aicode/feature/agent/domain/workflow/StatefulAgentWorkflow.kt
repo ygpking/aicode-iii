@@ -932,6 +932,8 @@ class StatefulAgentWorkflow @Inject constructor(
                             // 而落库的接力消息又没产生，表现为「思考显示后凭空消失且无报错」。
                             // 有正文或有思考其一即落库；两者皆空则不写空消息。
                             if (partial.isNotEmpty() || reasoning.isNotBlank()) {
+                                // 中断 partial 落库用自生成 id（不传 messageId）：此刻内存无对应
+                                // AssistantMessage（异常路径不经 reduce），该消息也永不参与后续压缩匹配。
                                 send(AgentEvent.AssistantText(partial, emptyList(), reasoning))
                             }
                             // 自愈闭环：上下文超限 → 强制机械压缩后重试一次（原错误不再上报）。
@@ -957,7 +959,12 @@ class StatefulAgentWorkflow @Inject constructor(
                                     // 与自动压缩同理：仅当压缩真的生效（返回了新列表）才补续跑提示；
                                     // 压缩未生效（如无可压缩内容）时原样重试，不添乱。
                                     val resend = if (compacted !== state.messages) {
-                                        compacted + AgentMessage.UserMessage(content = COMPACTION_CONTINUATION_NOTICE)
+                                        // 与自动压缩分支同款尾部去重：自愈压缩可能多次触发，
+                                        // 旧 notice 留在保留段时不再叠加。
+                                        val alreadyNoticed = compacted.asReversed().take(8)
+                                            .any { it is AgentMessage.UserMessage && it.content == COMPACTION_CONTINUATION_NOTICE }
+                                        if (alreadyNoticed) compacted
+                                        else compacted + AgentMessage.UserMessage(content = COMPACTION_CONTINUATION_NOTICE)
                                     } else compacted
                                     state = state.copy(messages = resend)
                                     // 重新走一次 InitRequest：以压缩后的消息重发，等效于「压缩后的新轮」。
