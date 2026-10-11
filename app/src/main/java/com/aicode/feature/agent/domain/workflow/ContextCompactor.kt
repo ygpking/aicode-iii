@@ -19,6 +19,7 @@ import com.aicode.feature.agent.domain.provider.AIProvider
 import com.aicode.feature.agent.domain.provider.AIResponse
 import com.aicode.feature.agent.domain.provider.ProviderFailureKind
 import com.aicode.feature.agent.domain.provider.ProviderFailureTaxonomy
+import com.aicode.feature.agent.domain.tool.ToolOutputScrubber
 import com.aicode.feature.agent.presentation.MessageRole
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.settings.data.repository.CompactionModelSettingsRepository
@@ -336,7 +337,19 @@ class ContextCompactor @Inject constructor(
         // editFile 的 path 参数，实测对本项目真实会话的路径覆盖率仅 0~17%（大量路径出现在
         // search/Bash 的输出里提取不到），而附加的清单块会常驻上下文。改由摘要提示词要求模型
         // 在「涉及的文件」小节自行逐条列出。
-        val summaryText = summaryTrimmed
+        // 凭据脱敏：摘要是唯一「模型生成 → 直接落库 → 每轮回放」的文本。
+        //
+        // 工具输出侧由 ToolOutputStore 前置 scrub（ToolOutputStore.kt），但本链路
+        // 完全独立于它——全仓检索确认 ContextCompactor 与压缩 DAO 路径上没有任何
+        // 脱敏调用点。未过 ToolOutputStore 的凭据（用户直接粘贴的 key、日志类工具
+        // 输出、脱敏正则未覆盖的自定义 token 格式）会经摘要誊抄后被永久持久化。
+        //
+        // 而 compact-summary.md 反而要求「标识符原文保留」，进一步把这些明文固化
+        // 进摘要。
+        //
+        // 在此统一收口：summaryText 的全部下游（落库、内存回放）均取自本变量，
+        // 一处过滤即全覆盖。
+        val summaryText = ToolOutputScrubber.scrub(summaryTrimmed)
         // 时点标注：摘要只总结折叠边界前的历史，与保留段（边界前最后几轮原文）拼接时状态可能矛盾，
         // 接手者需要知道哪个更新（实测 cd700c44 会话：轻量模型需专门取证才能分辨）。
         val stampedSummary = summaryTimestampNotice(
