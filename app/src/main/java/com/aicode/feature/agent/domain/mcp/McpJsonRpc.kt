@@ -61,7 +61,21 @@ data class McpToolDescriptor(
     // （`"inputSchema": true/false`，表示接受一切/拒绝一切）。若声明为 JsonObject?，
     // 实际收到布尔时整个 tools/list 解码失败 → fetchTools 抛「解析工具列表失败」→ 整条连接失败。
     // 故放宽为 JsonElement?，由下游判定是否为对象。
-    @SerialName("inputSchema") val inputSchema: JsonElement? = null
+    @SerialName("inputSchema") val inputSchema: JsonElement? = null,
+    // MCP 规范为工具定义的行为提示（2025-06 草案起）。当前只消费 readOnlyHint：
+    // 它是「该工具只读、无副作用」的唯一*协议级*信号，用于让只读 MCP 工具参与并行调度。
+    // 缺失/未声明时按最保守处理（可写），不影响任何现有行为。
+    val annotations: McpToolAnnotations? = null
+)
+
+/**
+ * 工具行为提示。MCP 规范明确这些是*hint*而非保证，服务端可省略；
+ * 因此只在**显式为 true**时采信为只读，其余一律按可写处理（fail-closed）。
+ */
+@Serializable
+data class McpToolAnnotations(
+    @SerialName("readOnlyHint") val readOnlyHint: Boolean? = null,
+    @SerialName("destructiveHint") val destructiveHint: Boolean? = null
 )
 
 @Serializable
