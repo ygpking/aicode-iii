@@ -176,6 +176,17 @@ class StatefulAgentWorkflow @Inject constructor(
         /** 召回索引块尾部提示：命中只给摘要，正文需按需 read。与 renderIndexBlock 配套。 */
         const val RECALL_READ_HINT =
             "\n需要其中某条的完整正文时，先用 memory(action=read, name=..., scope=...) 读取；不要凭摘要猜测细节。"
+
+        /**
+         * 系统注入文本的前缀（非用户输入）。用于 [isNonUserInput] 短路记忆召回。
+         * 与 `AgentUiModels.BACKGROUND_NOTIFICATION_PREFIX`、`EVIDENCE_GUARD_NOTICE_PREFIX`
+         * 及代理间消息模板保持一致；此处集中列出便于审计。
+         */
+        private val NON_USER_INPUT_PREFIXES = listOf(
+            "[系统通知 - 非用户输入]",
+            EVIDENCE_GUARD_NOTICE_PREFIX,
+        )
+
         /**
          * 由总轮次推导续跑段数：段数 = ceil(总轮次 / 每段轮数) - 1。
          * 保证总预算恰好不减（向上取整的那一段由 [TurnGovernor] 的剩余轮数保护自然浪费）。
@@ -1824,6 +1835,12 @@ class StatefulAgentWorkflow @Inject constructor(
      * 读盘/解析失败时不召回（不影响主流程）。
      */
     private fun buildMemoryRecallBlock(query: String, projectRoot: String?): String? {
+        // B7 修复：非用户来源的请求不做记忆召回。
+        // userRequest 在「后台任务完成 / 子代理结束 / 代理间消息 / 证据守卫」等场景下是系统注入文本
+        // （实测 2026-10-11：530 次召回中 379 次 query 是「[系统通知 - 非用户输入] …」），
+        // 用它做召回既无意义（通知不含用户主题），又会每轮注入召回块撑大上下文、并回写 recall_count。
+        // 这些文本均以固定系统前缀开头，据此短路；真实用户输入不含这些前缀，故不误杀。
+        if (isNonUserInput(query)) return null
         val memories = runCatching { memoryRepository.listMemories(projectRoot) }.getOrNull()
             ?: return null
         if (memories.isEmpty()) return null
@@ -1857,6 +1874,17 @@ class StatefulAgentWorkflow @Inject constructor(
         // 而多数命中只需知道「有这么一条」。需要细节时用 memory(action=read, ...) 按需拉取。
         // 有 ## 要点 段的记忆先注要点（L1 层），无则回退正文首段截断（renderIndexBlock 内部处理）。
         return MemoryRecall.renderIndexBlock(hits) + RECALL_READ_HINT
+    }
+
+    /**
+     * 判断本轮 [userRequest] 是否为**系统注入**（非用户输入）。
+     *
+     * 系统注入文本均以固定前缀开头（后台任务完成 / 子代理结束 / 代理间消息 / 证据守卫/系统提示）。
+     * 用前缀判定而非内容启发式：精确、零漏召（真实用户输入不含这些前缀）。
+     */
+    private fun isNonUserInput(request: String): Boolean {
+        val trimmed = request.trimStart()
+        return NON_USER_INPUT_PREFIXES.any { trimmed.startsWith(it) }
     }
 
     /** 从工具定义派生参数规格；工具不存在时返回 null。 */

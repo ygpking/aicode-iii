@@ -307,7 +307,7 @@ class ContextCompactor @Inject constructor(
         // 压缩请求：head 原始消息数组 + 末尾一条压缩指令（Codex 式），tools 不发送。
         // 消息数组保留真实角色结构（user/assistant/tool 配对），比文本化拼接更利于模型理解。
         val summaryRequestMessages = headMessages + listOf(
-            AgentMessage.UserMessage(content = buildSummaryInstruction(previousSummary))
+            AgentMessage.UserMessage(content = buildSummaryInstruction(previousSummary, summaryWindowTokens))
         )
 
         // 调用统计埋点：压缩也是一次真实 LLM 调用（独立于主循环，kind=compaction）。
@@ -487,14 +487,25 @@ class ContextCompactor @Inject constructor(
         //
         // 在此统一收口：summaryText 的全部下游（落库、内存回放）均取自本变量，
         // 一处过滤即全覆盖。
-        val summaryText = ToolOutputScrubber.scrub(summaryTextRaw)
+        val scrubbedSummary = ToolOutputScrubber.scrub(summaryTextRaw)
+        // B1 修复：摘要长度封顶。摘要是常驻回放文本，无上限会单调膨胀到 ≈ 触发阈值，
+        // 使压缩后立即再触发（实测 42 次/日、13k→105k 字符、r1=0.889 的反馈环）。
+        // 裁剪保头（任务状态）+ 保尾（下一步动作）、折叠中段，见 [SummaryTrimmer]。
+        val summaryTokenCap = ModelContextPolicy.maxSummaryTokens(summaryWindowTokens)
+        val summaryText = capSummaryLength(scrubbedSummary, summaryTokenCap)
         // 时点标注：摘要只总结折叠边界前的历史，与保留段（边界前最后几轮原文）拼接时状态可能矛盾，
         // 接手者需要知道哪个更新（实测 cd700c44 会话：轻量模型需专门取证才能分辨）。
         val stampedSummary = summaryTimestampNotice(
             java.time.LocalDateTime.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
         ) + summaryText
-        FileLogger.i(TAG, "上下文压缩完成，摘要长度：${stampedSummary.length}")
+        FileLogger.i(
+            TAG,
+            "上下文压缩完成，摘要长度：${stampedSummary.length}" +
+                if (summaryText.length < scrubbedSummary.length) {
+                    "（原始 ${scrubbedSummary.length}，已按上限 $summaryTokenCap token 裁剪）"
+                } else ""
+        )
 
         val markerId = UUID.randomUUID().toString()
         val compactedId = UUID.randomUUID().toString()
@@ -519,8 +530,12 @@ class ContextCompactor @Inject constructor(
         // 若本次因压缩模型窗口不足而丢了最旧的一段，同样写进产物：否则接手方
         // 会把「摘要里没有」当成「从未发生」，而实际是「发生但未纳入摘要」——两者后果完全不同。
         val droppedNotice = headForSummary.notice()
+        // B6 修复：提示文案**不内嵌随机 blockId**。原实现把块 id 的 8 位随机前缀写进文案，
+        // 该前缀每次压缩都随机 → 即使摘要正文一字不变，回放前缀也必变 → prompt cache 每次压缩
+        // 都要整段重建（实测 48 次/日、每次丢 ~79k token 全价重算）。模型并不需要字面 id：
+        // restoreCompactedRange 的 blocks 模式可列出块、preview 模式可按内容检索，均无需预知 id。
         val compactedMessageWithHint = compactedMessage.copy(
-            content = stampedSummary + droppedNotice + "\n\n---\n> 本压缩块（块 id 前缀 ${blockId.take(8)}）含被折叠的早期消息原文，" +
+            content = stampedSummary + droppedNotice + "\n\n---\n> 本压缩块含被折叠的早期消息原文，" +
                 "如摘要缺关键细节（报错原文、代码片段、精确数值）：先用 restoreCompactedRange 的 preview 模式" +
                 "检索定位（返回截断预览，省 token），确认需要完整原文再以 action=restore 恢复整块；" +
                 "不要为复核上下文而无谓恢复。"
@@ -731,16 +746,22 @@ class ContextCompactor @Inject constructor(
         else -> REASONING_EFFORT_LOWEST_OPENAI
     }
 
-    private fun buildSummaryInstruction(previousSummary: String?): String {
-        val instruction = if (previousSummary.isNullOrBlank()) {
+    private fun buildSummaryInstruction(previousSummary: String?, summaryWindowTokens: Int): String {
+        // B1 修复：旧摘要回炉时同样封顶。否则「更新已有摘要」会把膨胀的旧摘要整份带进输入，
+        // 模型在提示词要求下继续扩写，形成单调增长（实测 r1=0.889 的反馈环）。
+        val cappedPrev = previousSummary?.let {
+            capSummaryLength(it, ModelContextPolicy.maxSummaryTokens(summaryWindowTokens))
+        }
+        val instruction = if (cappedPrev.isNullOrBlank()) {
             "请根据下面的对话历史创建一个新的锚定摘要。"
         } else {
             """
                 请根据下面的新对话历史更新已有锚定摘要。
                 保留仍然正确的信息，移除过时信息，并合并新事实。
+                输出必须精炼：只保留接手者继续任务所必需的事实，**总长度不得超过 $summaryWindowTokens 窗口的 20%**。
 
                 <previous-summary>
-                $previousSummary
+                $cappedPrev
                 </previous-summary>
             """.trimIndent()
         }
@@ -822,7 +843,8 @@ class ContextCompactor @Inject constructor(
         // 尾部「本压缩块」提示是写给接手模型的操作指引（需要细节时调 restoreCompactedRange），
         // 不是摘要内容——滚动压缩时若原样进 previous-summary，摘要模型可能把它当旧内容复读。
         // 丢弃注记（droppedNotice）位于块提示之前、不在锚点内，保留（滚动更新需知道更早历史未进摘要）。
-        val blockHintAnchor = "\n\n---\n> 本压缩块（块 id 前缀 "
+        // B6 修复后块提示不再含随机 id，锚点随之简化为不含 id 的稳定前缀。
+        val blockHintAnchor = "\n\n---\n> 本压缩块"
         // 取最后一次出现：正文若逐字复读含锚点（模型复读旧尾注是真实行为），只剥真正的尾部提示；
         // previous-summary 里正文中残留的复读提示文本是有意保留（无法也不应区分，脚本侧已钉住）。
         val withoutHint = if (contains(blockHintAnchor)) {
@@ -837,6 +859,33 @@ class ContextCompactor @Inject constructor(
     private fun String.truncateForSummary(): String {
         if (length <= TOOL_OUTPUT_MAX_CHARS) return this
         return take(TOOL_OUTPUT_MAX_CHARS) + "\n[Tool output truncated for compaction]"
+    }
+
+    /**
+     * B1 修复：把摘要裁到不超过 [maxTokens]（按 CJK 感知的 [ModelContextPolicy.estimateTokens] 复核）。
+     *
+     * 先用「字符/token ≈ 1.8」给出保守字符预算（CJK 摘要最坏情形），再交给 [SummaryTrimmer]
+     * 做「保头保尾、折叠中段」裁剪，最后按真实估算复核——若仍超，用二分退到安全字符数。
+     * 纯逻辑在 [SummaryTrimmer]，此处只负责「token ↔ 字符」的口径换算。
+     */
+    private fun capSummaryLength(summary: String, maxTokens: Int): String {
+        if (maxTokens <= 0) return summary
+        if (ModelContextPolicy.estimateTokens(summary) <= maxTokens) return summary
+        // 保守起步：按 1.8 字符/token（CJK 最坏）折算字符预算；再二分收缩直到估算不超上限。
+        var lo = 1
+        var hi = minOf(summary.length, (maxTokens * 2).coerceAtLeast(1))
+        var best = SummaryTrimmer.trim(summary, hi)
+        while (lo <= hi) {
+            val mid = (lo + hi) / 2
+            val candidate = SummaryTrimmer.trim(summary, mid)
+            if (ModelContextPolicy.estimateTokens(candidate) <= maxTokens) {
+                best = candidate
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+        return best
     }
 
 }

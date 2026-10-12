@@ -70,8 +70,9 @@ TRUNCATE_SUFFIX = "…（本条已截断，全文更长）"   # SessionHistoryPa
 MARKER_TEXT = "What did we do so far?"
 SUMMARY_LEGACY_PREFIX = "【系统提示：早期的对话已被压缩，以下是之前的核心状态摘要】"
 SUMMARY_TIMESTAMP_PREFIX = "【摘要时点】"
-# ContextCompactor.kt:763 的 blockHintAnchor 字面量（剥尾注锚点，组 14 与源码对账）
-HINT_ANCHOR = "\n\n---\n> 本压缩块（块 id 前缀 "
+# ContextCompactor.kt 的 blockHintAnchor 字面量（剥尾注锚点，组 14 与源码对账）。
+# B6 修复后块提示不再内嵌随机 blockId，锚点随之简化为不含 id 的稳定前缀。
+HINT_ANCHOR = "\n\n---\n> 本压缩块"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -804,7 +805,7 @@ def suite_guard_consistency(rep):
              "其后压缩保留的最近消息可能有更新进展，与本摘要矛盾时以保留消息原文为准。\n\n")
     body = "正文：完成了 A 与 B。\n"
     dropped = "[更早历史部分超出摘要窗口未纳入：约 1234 token]\n"
-    hint = ("\n\n---\n> 本压缩块（块 id 前缀 abc12345）含被折叠的早期消息原文，"
+    hint = ("\n\n---\n> 本压缩块含被折叠的早期消息原文，"
             "如摘要缺关键细节：先用 restoreCompactedRange 的 preview 模式检索定位，"
             "确认需要完整原文再以 action=restore 恢复整块；不要为复核上下文而无谓恢复。")
     full = stamp + body + dropped + hint

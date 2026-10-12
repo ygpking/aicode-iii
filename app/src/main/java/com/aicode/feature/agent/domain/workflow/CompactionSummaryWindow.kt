@@ -49,13 +49,22 @@ internal object CompactionSummaryWindow {
     ) {
         val hasDrop: Boolean get() = droppedCount > 0
 
-        /** 追加到摘要产物的说明；无丢弃时为空串。 */
+        /**
+         * 追加到摘要产物的说明；无丢弃时为空串。
+         *
+         * B5 修复：被丢弃的最旧段**并未丢失**——它随 head 一起被标 `isCompacted` 且写入
+         * 同一 `compactionBlockId`（`ContextCompactor` 用**未裁剪的 head** 做标记，见其
+         * `CompactionMarkSelector.selectIdsToMark(head, …)`），仍在 DB 中，可经
+         * `restoreCompactedRange` 取回。故提示改为指向该工具，而不是含糊的「查原始会话记录」
+         * ——否则接手者会把「摘要里没有」当成「已丢失」，白白重做或臆测。
+         */
         fun notice(): String =
             if (!hasDrop) {
                 ""
             } else {
                 "\n> 注：更早的 $droppedCount 条消息（约 $droppedTokens token）超出压缩模型窗口，" +
-                    "未能纳入本摘要。如需该段内容，先查原始会话记录；不要臆测其内容。"
+                    "未逐条纳入本摘要**但并未丢失**：它们仍在本次压缩块内。如需该段内容，" +
+                    "用 restoreCompactedRange 的 preview 模式检索、action=restore 恢复原文；不要臆测其内容。"
             }
     }
 }
