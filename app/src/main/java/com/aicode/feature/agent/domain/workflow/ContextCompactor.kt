@@ -235,11 +235,20 @@ class ContextCompactor @Inject constructor(
             // ② 总量 > 预算却仍归零 → 划分逻辑有缺陷（如恢复段保护把回溯拉到 0）。
             // 判据与选择器同用 [tailBudget]：口径一致才能区分「全装得下」与「真异常」。
             // 降级（②）打 WARN 后按最小粒度强制拆一次，避免「划分 bug → 压缩彻底停摆」。
-            if (estimatedTokens > tailBudget && messages.size > 1) {
+            //
+            // **口径护栏（2026-10-12 死循环修复）**：触发认的是真实 usage（含 system+tools+
+            // 记忆+图片），守卫比的是 messages 本地估算。两者背离时（est=43K vs usage=241K，
+            // 差额主要是图片/固定开销），「est <= 预算」不再代表「真的没东西可折」——
+            // usage 已越过阈值本身就是要折的铁证。此时必须降级强折，绝不能跳过：
+            // 跳过 = usage 不降 = 下一轮再触发 = 每轮白烧一次摘要调用（实测 6 分钟 5 次）。
+            val usageSaysOverBudget = !force && currentTokens >= triggerThreshold
+            if ((estimatedTokens > tailBudget || usageSaysOverBudget) && messages.size > 1) {
                 FileLogger.w(
                     TAG,
-                    "压缩降级：拆分点落在最前端但消息估算 ${estimatedTokens} > tail 预算 ${tailBudget}（${messages.size} 条）——" +
-                        "划分逻辑未产出可压缩段，改用最小 tail 预算强制拆分"
+                    "压缩降级：拆分点落在最前端（消息估算 ${estimatedTokens} vs tail 预算 ${tailBudget}，" +
+                        "真实 usage ${currentTokens} vs 触发阈值 ${triggerThreshold}，${messages.size} 条）——" +
+                        "按最小 tail 预算强制拆分" +
+                        "${if (usageSaysOverBudget && estimatedTokens <= tailBudget) "（估算口径低于预算但真实 usage 越阈：差额多为图片/固定开销，不可跳过）" else ""}"
                 )
                 splitIndex = adjustSplitIndex(messages, messages.size - 1)
             } else {
@@ -668,8 +677,23 @@ class ContextCompactor @Inject constructor(
     private fun estimateTokens(messages: List<AgentMessage>): Int =
         messages.sumOf { estimateTokens(it) }
 
+    /**
+     * 单条消息的 token 估算：文本 + **图片**。
+     *
+     * 图片必须计入：视觉模型按瓦片计费，一张图几千 token，而文本口径下它是 0。
+     * 实测（2026-10-12 会话 f0947716）：一晚截几十张图后真实 usage=241K、
+     * 纯文本估算仅 43K，压缩器据此判「无可压缩内容」跳过 → 立即再触发 → 死循环。
+     */
     private fun estimateTokens(message: AgentMessage): Int =
-        ModelContextPolicy.estimateTokens(messageText(message))
+        ModelContextPolicy.estimateTokens(messageText(message)) +
+            ModelContextPolicy.estimateImageTokens(imageCountOf(message))
+
+    /** 消息携带的图片数（user 附件 + 工具结果图）。 */
+    private fun imageCountOf(message: AgentMessage): Int = when (message) {
+        is AgentMessage.UserMessage -> message.images.size
+        is AgentMessage.AssistantMessage -> message.images.size
+        is AgentMessage.ToolResultMessage -> message.images.size
+    }
 
     /**
      * 聚合一条消息的**文本**（供 CJK 感知的 token 估算与窗口/字符预算）。
