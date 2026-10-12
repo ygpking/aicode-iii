@@ -424,6 +424,13 @@ class ShellArgsTest {
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -m5 -efoo /etc/passwd")!!))
         // 反向确认：附着形态不带位置参数仍放行
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -efoo")!!))
+        // cluster 两种顺序语义不同（实测）：
+        //   `-ie PAT` = `-i -e PAT` → pattern 是 PAT，无文件名 → 放行
+        //   `-ei PAT` = `-e i PAT` → pattern 是 `i`，PAT 是**文件名** → 拒
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -ie PAT")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -ei PAT")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -ie PAT /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -ei PAT /etc/passwd")!!))
     }
 
     /**

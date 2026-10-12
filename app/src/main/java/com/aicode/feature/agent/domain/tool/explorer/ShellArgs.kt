@@ -327,18 +327,37 @@ internal fun optionNamesIn(command: String, token: String): List<String> {
 }
 
 /**
- * 单个 token 是否是「独立形态的取值选项」（形如 `-e` / `--regexp`，值在**下一个** token）。
+ * 单个 token 是否是「取值选项且值在**下一个** token」的形态。
  *
- * 只认「token 本身就是一个选项名」：短选项长度为 2（`-e`），长选项不含 `=`。
- * 附着（`-efoo`）、等号（`--regexp=foo`、`-e=foo`）、cluster（`-ie`）形态的值都在本 token 内，
- * 不算独立——**这里不能借用 [optionNamesIn]**：它对 `-efoo` 也会拆出 `-e`，
- * 若据此判独立，就会把下一个 token 误标成值而跳过位置参数计数（实测 `grep -efoo /etc/passwd` 因此读到了 passwd）。
+ * 判据（短选项逐字符扫到取值选项为止）：
+ *  - `-e`：`-e` 是取值选项且它就在 token 末尾 → 值在下一 token ✓
+ *  - `-m5`：`-m` 后还有 `5` → 值在本 token，不标下一个
+ *  - `-ie`：`-i` 不取值，继续扫到末尾的 `-e` → 值在下一 token ✓
+ *  - `-ei`：`-e` 后还有 `i`，即 `-e` 的值是 `i` → 不标下一个
+ *  - `--regexp`：无 `=` → 标下一个；`--regexp=x`：含 `=` → 不标
+ *  - `--`、纯位置参数、纯数字（`-30`）都不是
+ *
+ * **这里不能借用 [optionNamesIn]**：它对 `-efoo` 也会拆出 `-e`，据此判「独立形态」会
+ * 把下一个 token 误标成值而跳过位置参数计数（实测 `grep -efoo /etc/passwd` 因此读到了
+ * passwd）。反过来，cluster 结尾形式（`-ie`）的值确实在下一 token，不标则会把该 token
+ * 当位置参数——在 pattern 已由 `-e` 提供的场景下（上限归零）就变成误拒（实测
+ * `grep -ie PAT` 被拒）。两种错法的分界就在「取值选项后面还有没有字符」。
  */
 private fun isBareValueOption(command: String, token: String): Boolean {
     val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
+    if (token == "--" || !token.startsWith("-") || token == "-") return false
     if (token.startsWith("--")) return !token.contains('=') && token in valueOptions
-    if (token.length != 2 || !token.startsWith("-")) return false
-    return token in valueOptions
+    if (token.length > 1 && token[1].isDigit()) return false
+    var i = 1
+    while (i < token.length) {
+        val option = "-" + token[i]
+        if (option in valueOptions) {
+            // 取值选项：后面还有字符则值是本 token 剩余部分，否则值在下一个 token
+            return i == token.length - 1
+        }
+        i++
+    }
+    return false
 }
 
 internal fun pipeOptionAllowed(command: String, arg: String): Boolean {
