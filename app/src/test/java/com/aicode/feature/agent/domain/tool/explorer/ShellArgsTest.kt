@@ -505,6 +505,41 @@ class ShellArgsTest {
         assertTrue("取值表里这些选项不在允许集，会被误拒: $mismatches", mismatches.isEmpty())
     }
 
+    /**
+     * 取值表的另两条不变量（见 [PIPE_VALUE_OPTIONS] 的 KDoc）。
+     *
+     * 不变量二：不得收「可选值」选项——它不吞独立 argv，误收会让下一个 token 被标成
+     * 值而跳过位置参数计数，等于给命令的名称上限偷惄 +1（实测 `grep --color root
+     * /etc/passwd` 因此放行并读到 passwd）。
+     *
+     * 不变量三：不得收「值就是文件名」的选项——值位豁免白名单、只受字符集约束，
+     * 若其值会被命令当文件读，位置参数上限就拦不住。此类选项应不进允许集。
+     */
+    @Test
+    fun valueOptions_invariants() {
+        // 可选值选项（GNU 手册写作 `--opt[=VAL]`）：实测均不吞独立 argv
+        val optionalValueOptions = setOf("--color")
+        val optionalPresent = PIPE_VALUE_OPTIONS.flatMap { (cmd, opts) ->
+            opts.filter { it in optionalValueOptions }.map { "$cmd $it" }
+        }
+        assertTrue("取值表不得收可选值选项（它们不吞独立 argv，会造成槽位错位）: $optionalPresent",
+            optionalPresent.isEmpty())
+
+        // 「值即文件」选项名是**按命令**定的：`-f` 在 grep 里是 `--file`（从文件读 pattern），
+        // 而在 cut/uniq/nl 里是字段/编号，完全无害（实测 `cut -f2 -d:`、`uniq -f1`、`nl -f a`）。
+        // 故不能按全局名字禁，必须写明「哪个命令的哪个选项」。
+        val fileValuedByCommand = mapOf(
+            "grep" to setOf("--file", "-f"),
+            "rg" to setOf("--pre", "--ignore-file", "--pre-glob"),
+            "sort" to setOf("-o", "--output", "--compress-program", "-T", "--temporary-directory"),
+            "wc" to setOf("--files0-from"),
+        )
+        val fileValued = fileValuedByCommand.flatMap { (cmd, names) ->
+            names.filter { it in PIPE_VALUE_OPTIONS[cmd].orEmpty() }.map { "$cmd $it" }
+        }
+        assertTrue("取值表不得收「该命令的值即文件」选项: $fileValued", fileValued.isEmpty())
+    }
+
     /** 超范围行数不得抛异常（toIntOrNull），应走 INVALID_PIPE 而非兜底的 SEARCH_FAILED。 */    @Test
     fun headLinesOf_oversizedLineCount_returnsNullNotException() {
         assertNull(headLinesOf(listOf("head", "-n", "99999999999")))

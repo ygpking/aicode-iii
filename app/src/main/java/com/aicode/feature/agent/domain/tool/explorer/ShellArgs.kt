@@ -234,6 +234,19 @@ internal val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
  * **不变量：本表每一项必须同时出现在 [PIPE_OPTION_ALLOWLIST] 对应命令的允许集里。**
  * 否则该选项会被当成「不在白名单」而整段拒绝（实测 `grep -m 5 x` 就是这么被误拒的）。
  * 同一个选项的短长形式（`-m` 与 `--max-count`）要么都列、要么都不列，保持对称。
+ *
+ * **不变量二：本表只收「必值」选项，不收「可选值」选项。** GNU 手册里可选项写作
+ * `--color[=WHEN]`（方括号）——它**不吞独立 argv**，下一个 token 不会被它吃掉。
+ * 误收的后果是那个 token 被标成「值」而跳过位置参数计数，等于给命令的名称上限
+ * 偷偷 +1：实测 `grep --color root /etc/passwd` 因此放行并读到 passwd 内容。
+ * 已按此剔除 `--color`（保留 `--color=never` 等号形态，实测其不吞值）。
+ *
+ * **不变量三：本表不得包含「值就是文件名」的选项**（`-f`/`--file`/`--files0-from`/
+ * `--pre`/`-o`/`--output`/`--separator-file` 一类）。值位豁免选项白名单而只受字符集约束，
+ * 故若某个取值选项的值会被命令当文件读，位置参数上限就拦不住它。此类选项应**不进
+ * 允许集**（而非进表），拒绝即可。
+ *
+ * 不变量二、三由 `valueOptions_invariants` 断言守住。
  */
 internal val PIPE_VALUE_OPTIONS: Map<String, Set<String>> = mapOf(
     "head" to setOf("-n", "--lines"),
