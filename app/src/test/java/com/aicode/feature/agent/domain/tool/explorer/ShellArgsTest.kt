@@ -397,6 +397,55 @@ class ShellArgsTest {
     }
 
     /**
+     * 检索式由选项（`-e`/`--regexp`）提供时，位置参数上限归零。
+     *
+     * 这是个**实测可达的绕过**：`grep`/`rg` 的上限是 1，含意是「一个位置参数是 pattern」。
+     * 而 `-e PAT` 占掉 pattern 名额后，剩下的位置参数被 grep 当作**文件名**——
+     * 实测 `| grep -e foo /etc/passwd` 读到了 passwd 内容，与 READ_WORKSPACE 声明相违。
+     * 同理 `| grep --regexp a /etc/hostname` 读到 /etc/hostname。
+     */
+    @Test
+    fun buildSearchCommand_patternFromOption_leavesNoPositionalSlot() {
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -e foo /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -e foo secret.txt")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --regexp foo /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg -e foo /etc/passwd")!!))
+        // 反向确认：只给检索式、不带位置参数，仍放行
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -e foo")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | rg -e 'a|b'")!!))
+    }
+
+    /**
+     * 长选项的**空格分隔值**不得被当成位置参数计数（会误拒合法用法）。
+     *
+     * 值标记循环早先 `continue` 掉了全部 `--` 开头的 token，于是 `--max-count 5` 的
+     * `5` 被算作位置参数、`--regexp foo` 的 `foo` 被当成唯一 pattern 名额。
+     * 等号形式（`--max-count=5`）一直在取值表里，两种形式行为不一致。
+     */
+    @Test
+    fun buildSearchCommand_acceptsSpaceSeparatedLongOptionValues() {
+        for (seg in listOf(
+            "rg --max-count 5 pat", "sort --key 2", "cut --delimiter : --fields 1",
+            "uniq --skip-fields 2", "nl --body-numbering a", "tac --separator X",
+            "rg --encoding utf-8 pat", "head --lines 5", "sort --buffer-size 1M",
+        )) {
+            assertNotNull(
+                "带值长选项（空格形式）应放行: $seg",
+                buildSearchCommand(parseShellWords("-n foo src/ | $seg")!!)
+            )
+        }
+        // 空格形式与等号形式行为必须一致
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --key=2")!!))
+    }
+
+    /** `--` 是选项结束符，不取值也不读文件，放行（工具文案正推荐它）。 */
+    @Test
+    fun buildSearchCommand_acceptsEndOfOptionsMarker() {
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -- foo")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | rg -- pat")!!))
+    }
+
+    /**
      * 选项的**值位**也要过字符集：它是选项的值、不是位置参数，但仍受字符约束。
      *
      * 曾经把字符集检查写在值位 `continue` 之后，于是 `grep -m 'a;touch x'` 这类

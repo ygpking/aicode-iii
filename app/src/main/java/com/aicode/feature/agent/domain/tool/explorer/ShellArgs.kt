@@ -107,11 +107,16 @@ fun headLinesOf(seg: List<String>): Int? = when {
     seg.isEmpty() -> null
     seg[0] != "head" -> null
     seg.size == 1 -> 10
+    // `--lines=5`：必须在下面通用 size==2 分支之前判定，否则被它拦下返回 null
+    seg.size == 2 && seg[1].startsWith("--lines=") -> {
+        val n = seg[1].removePrefix("--lines=")
+        if (n.isNotEmpty() && n.all(Char::isDigit)) n.toIntOrNull() else null
+    }
     seg.size == 2 -> {
         val n = seg[1]
         if (n.length > 1 && n[0] == '-' && n.drop(1).all(Char::isDigit)) n.drop(1).toIntOrNull() else null
     }
-    seg.size == 3 && seg[1] == "-n" -> {
+    seg.size == 3 && (seg[1] == "-n" || seg[1] == "--lines") -> {
         val n = seg[2]
         if (n.isNotEmpty() && n.all(Char::isDigit)) n.toIntOrNull() else null
     }
@@ -159,8 +164,14 @@ private val READ_ONLY_PIPE_COMMANDS: Set<String> =
  * 归一化后判定，不在这里展开。
  */
 internal val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
-    "head" to setOf("-n", "-q", "-v", "-z"),
-    "tail" to setOf("-n", "-q", "-v", "-z"),
+    "head" to setOf(
+        "-n", "--lines", "-q", "--quiet", "--silent", "-v", "--verbose",
+        "-z", "--zero-terminated",
+    ),
+    "tail" to setOf(
+        "-n", "--lines", "-q", "--quiet", "--silent", "-v", "--verbose",
+        "-z", "--zero-terminated",
+    ),
     "grep" to setOf(
         "-i", "-v", "-c", "-l", "-L", "-n", "-o", "-h", "-H", "-w", "-x",
         "-e", "--regexp", "-E", "-F", "-G", "-P", "-a", "-I", "-U", "-b",
@@ -225,15 +236,33 @@ internal val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
  * 同一个选项的短长形式（`-m` 与 `--max-count`）要么都列、要么都不列，保持对称。
  */
 internal val PIPE_VALUE_OPTIONS: Map<String, Set<String>> = mapOf(
-    "head" to setOf("-n"),
-    "tail" to setOf("-n"),
-    "grep" to setOf("-e", "-m", "-A", "-B", "-C"),
-    "rg" to setOf("-e", "-g", "-t", "-A", "-B", "-C", "-M", "-m", "-j", "-E"),
-    "sort" to setOf("-k", "-t", "-S"),
-    "uniq" to setOf("-f", "-s", "-w"),
-    "cut" to setOf("-b", "-c", "-d", "-f"),
-    "nl" to setOf("-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w"),
-    "tac" to setOf("-s"),
+    "head" to setOf("-n", "--lines"),
+    "tail" to setOf("-n", "--lines"),
+    "grep" to setOf(
+        "-e", "--regexp", "-m", "--max-count", "-A", "--after-context",
+        "-B", "--before-context", "-C", "--context",
+        "--color", "--include", "--exclude", "--include-dir", "--exclude-dir",
+    ),
+    "rg" to setOf(
+        "-e", "--regexp", "-g", "--glob", "--iglob", "-t", "--type",
+        "-A", "--after-context", "-B", "--before-context", "-C", "--context",
+        "-M", "--max-columns", "-m", "--max-count", "-j", "--threads",
+        "-E", "--encoding", "--sort", "--sortr",
+        "--field-match-separator", "--path-separator", "--type-add", "--type-not",
+    ),
+    "sort" to setOf("-k", "--key", "-t", "--field-separator", "-S", "--buffer-size", "--parallel"),
+    "uniq" to setOf("-f", "--skip-fields", "-s", "--skip-chars", "-w", "--check-chars"),
+    "cut" to setOf(
+        "-b", "--bytes", "-c", "--characters", "-d", "--delimiter",
+        "-f", "--fields", "--output-delimiter",
+    ),
+    "nl" to setOf(
+        "-b", "--body-numbering", "-d", "--section-delimiter", "-f", "--footer-numbering",
+        "-h", "--header-numbering", "-i", "--line-increment", "-l", "--join-blank-lines",
+        "-n", "--number-format", "-s", "--number-separator", "-v", "--starting-line-number",
+        "-w", "--number-width",
+    ),
+    "tac" to setOf("-s", "--separator"),
 )
 
 /**
@@ -248,6 +277,9 @@ internal val PIPE_VALUE_OPTIONS: Map<String, Set<String>> = mapOf(
 internal fun pipeOptionAllowed(command: String, arg: String): Boolean {
     val allowed = PIPE_OPTION_ALLOWLIST[command] ?: return false
     if (!arg.startsWith("-") || arg == "-") return true
+    // `--` 是选项结束符（后面的 token 强制当位置参数），它既不取值也不读文件，
+    // 且工具 args 描述里正推荐用 `--`（如 `-- -leading-dash`），不接会与文案打脸。
+    if (arg == "--") return true
     if (arg.startsWith("--")) return arg.substringBefore('=') in allowed
     // 整串都是数字：head/tail 的 -N，行数合法性由 headLinesOf 单独校验。
     // 故意不用「首字符是数字就早退」——那会让 `sort -9o/tmp/x` 整串免检。
@@ -295,6 +327,16 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
 }
 
 /**
+ * 能用选项直接提供检索式的命令。对这些命令，`-e PAT` 之后的位置参数只能是**文件名**
+ * （`grep -e foo /etc/passwd` 实测读到了 `/etc/passwd`），故此时位置参数上限归零。
+ * 这是个**实测可达的绕过**：`-e` 占掉 pattern 名额后，剩下的位置参数便不再被当作 pattern。
+ */
+private val PATTERN_FROM_OPTION_COMMANDS: Set<String> = setOf("grep", "rg")
+
+/** 上述命令中「提供检索式」的选项名。 */
+private val PATTERN_OPTION_NAMES: Set<String> = setOf("-e", "--regexp")
+
+/**
  * 各命令允许的**位置参数个数上限**。超过即拒。
  *
  * 比「按路径形态猜」可靠：形态法只能枚举已知写法（绝对路径/`~/`/`..`），漏一种就破。
@@ -339,16 +381,29 @@ private val PIPE_MAX_POSITIONAL: Map<String, Int> = mapOf(
 private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
     val command = seg[0]
     val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
-    // 先标出「哪些 token 是前一个取值选项的值」，避开 `grep -m 5 x` 里把 5 当成位置参数
+    // 先标出「哪些 token 是前一个取值选项的值」，避开 `grep -m 5 x` 里把 5 当成位置参数。
+    // 长选项（`--max-count 5`）与短选项（`-m 5`）两种形态都要标——早先只处理短选项（`continue`
+    // 里把 `--` 开头全跳过），导致带值长选项的值被当位置参数计数，合法用法被误拒。
     val args = seg.drop(1)
     val isOptionValue = BooleanArray(args.size)
+    var patternFromOption = false
     for (i in args.indices) {
         val a = args[i]
-        if (!a.startsWith("-") || a.startsWith("--")) continue
-        // 附着形式（-m5）：值在同一 token 内，不需标下一个 token
-        if (a.length > 2 && ("-" + a[1]) in valueOptions) continue
-        if (a in valueOptions && i + 1 < args.size) isOptionValue[i + 1] = true
+        if (!a.startsWith("-")) continue
+        // 附着（value）或等号（=value）形式：值在同一 token 内，不需标下一个 token
+        if (a.contains('=')) continue
+        if (a.length > 2 && !a.startsWith("--") && ("-" + a[1]) in valueOptions) continue
+        if (a in valueOptions) {
+            if (i + 1 < args.size) isOptionValue[i + 1] = true
+            // `grep -e PAT` / `rg -e PAT`：pattern 已由选项提供，此后的位置参数只能是**文件名**
+            if (command in PATTERN_FROM_OPTION_COMMANDS && a in PATTERN_OPTION_NAMES) {
+                patternFromOption = true
+            }
+        }
     }
+    // pattern 已由 `-e` 给出时，位置参数不再保留 pattern 名额（避免 `grep -e foo /etc/passwd` 读文件）
+    val maxPositional =
+        if (patternFromOption) 0 else (PIPE_MAX_POSITIONAL[command] ?: 0)
     var positionalCount = 0
     for ((index, arg) in args.withIndex()) {
         if (arg.isEmpty()) return false
@@ -363,25 +418,13 @@ private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
             if (!pipeOptionAllowed(command, arg)) return false
         } else {
             positionalCount++
-            if (positionalCount > (PIPE_MAX_POSITIONAL[command] ?: 0)) return false
+            if (positionalCount > maxPositional) return false
         }
         if (arg.any { it !in SAFE_ARG_CHARS }) return false
     }
     return true
 }
 
-/**
- * 位置参数是否会读取 workspace 之外的文件。
- *
- * 三条判定，缺一不可（实测）：
- *  - 绝对路径 `/etc/passwd`
- *  - home 路径 `~/.ssh/id_rsa`
- *  - 含 `..` 段的相对路径 `../../etc/passwd`——proot 以 `/root/workspace` 为 cwd，
- *    上跳两次同样能读到 workspace 之外，只挡绝对路径会被它绕过
- *
- * 不含 `/` 的短词（`a.b`、`secret`）不拦：它们是 pattern 不是路径，且无法上跳。
- * 这是「按能力判」而非「按形状判」的最小形式：只要这个参数能让命令去读别的文件，就拦。
- */
 /**
  * 管道段是否可放行：命令在只读白名单内，参数字符合法、选项在该命令白名单内。
  *
