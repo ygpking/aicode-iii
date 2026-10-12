@@ -159,6 +159,23 @@ object ModelContextPolicy {
         (chars + CHARS_PER_TOKEN - 1) / CHARS_PER_TOKEN
 
     /**
+     * 单张图片的 token 折算（保守下限）。
+     *
+     * 视觉模型按「瓦片」计费：OpenAI 系一张中低分辨率图约 765~1105 token，高分辨率可达
+     * 数千；Anthropic 约 (宽×高)/750。实测（2026-10-12 会话 f0947716）一晚虚拟屏截图后
+     * 真实 usage=241K、文本估算仅 43K，差额 ≈197K 主要是图片——即单图真实成本在数千级。
+     * 这里取 **2048/张**：低取真实下限之半与千位对齐，保证「几十张图」必然超过 tail
+     * 预算而被折叠；同时不至于把少量图片的普通会话误判成超限。
+     * 不计入的话，图片消息在压缩器的估算里是 **0**，压缩器判「无可压缩内容」跳过 →
+     * 立即再触发 → 每轮白烧一次摘要调用。
+     */
+    const val IMAGE_TOKENS = 2_048
+
+    /** N 张图片的 token 折算。独立命名（不用 `estimateTokens(Int)` 重载）——
+     *  与 [estimateTokens]`(chars: Int)` 同为 `(Int)->Int`，重载会冲突。 */
+    fun estimateImageTokens(images: Int): Int = images * IMAGE_TOKENS
+
+    /**
      * 按**文本内容**估算 token：CJK/全角标点分桶，修正 `chars/4` 对中文的约 2 倍低估。
      *
      * 口径（字符数 / 每 token 字符数）：CJK 汉字·假名·谚文约 1.8、全角标点约 2.8、
