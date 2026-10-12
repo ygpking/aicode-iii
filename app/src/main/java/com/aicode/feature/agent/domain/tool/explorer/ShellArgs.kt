@@ -140,19 +140,20 @@ private val READ_ONLY_PIPE_COMMANDS: Set<String> =
  * 才允许出现，其余一律拒。
  *
  * 为什么不能只靠字符集：字符集只能挡住 shell 元字符，挡不住命令**自身**的内建能力。
- * 逐项均在本容器（GNU coreutils 9.x / grep 3.11 / ripgrep）实跑验证，看 marker 是否落盘：
+ * 逐项均在本容器实跑验证，看 marker 是否落盘（命令都已贴出，可自行复现）：
  *  - `awk 'BEGIN{system("touch x")}'` → 落盘（任意命令执行）
  *  - `sed 'e touch x'` / `sed 's/a/b/w x'` → 落盘（执行 / 写文件）
  *  - `sort -o FILE` / `sort --output=FILE` → 落盘（写文件）
  *  - `sort --compress-program=PROG` → 把参数当程序执行
- *  - `tail -f FILE` → 不退出（`echo x | tail -f FILE` 实测 exit=124 挂满超时）
+ *  - `tail -f FILE` → 不退出（`echo x | tail -f FILE` 实测 exit=124 挂满超时；
+ *    不带文件参数时 `echo x | tail -f` 实测 exit=0，管道 stdin 读完即退）
  *  - `grep -f FILE` / `rg --pre PROG` → 从文件读 pattern（绕过字符集）/ 执行预处理器
  *  - `sort -T DIR` / `--temporary-directory=DIR` → 往指定目录写临时文件
- * 注：`echo x | tail -f`（无文件参数）实测 exit=0——管道 stdin 读完即退；要带文件参数才挂。
  * 单引号包裹对上述**全部无效**：引号只保护 shell 元字符，不改变命令自己的语言语义。
  *
  * 因此 awk/sed 根本不在 [READ_ONLY_PIPE_COMMANDS] 里——它们唯一有价值的用法就是
  * 携带程序体，而程序体一旦被允许就必然带上执行能力，与只读约束不可兼得。
+ * 上面两条 awk/sed 列在这里是为了给「为什么排除它们」留证据，不是它们在白名单内。
  *
  * 长选项的等号形式（`--output=FILE`）与短选项的合并形式（`-rn`）由 [pipeOptionAllowed]
  * 归一化后判定，不在这里展开。
@@ -430,6 +431,12 @@ fun rgPatternParenMismatch(tokens: List<String>): String? {
  * `|` 会重新变成管道符——实测 `grep "x|touch /tmp/pwned"` 经 parseShellWords 合成一个
  * token，裸拼后真的在容器 shell 里执行了 touch（marker 落盘）。rg/ls 参数与管道段
  * 必须同口径，否则前一道引号等于白加。
+ *
+ * **已知既有面（非本函数引入，此处仅记录以免被当成新洞）**：rg 段自身的参数不限制路径，
+ * `search(args="-n x /etc/passwd")` 同样能读到 workspace 之外。rg 是主命令，限制它等于
+ * 限制 search 的基本能力，与「管道段只能加工上游输出」不同，不属本 PR 的修复范围。
+ * 同理，管道段的位置参数只拦绝对路径/home/`..` 上跳（见 [isOutsideWorkspacePath]），
+ * workspace 内的相对路径（如 `| grep x ./secret.txt`）仍可读同目录其它文件。
  *
  * [home] 为命令执行环境的 home（本地 PRoot 容器为 /root，远程 SSH 为远程用户 home），
  * 用于展开 `~/` 参数——quote 后 shell 不会自动展开 `~`，故在构造命令时显式展开。
