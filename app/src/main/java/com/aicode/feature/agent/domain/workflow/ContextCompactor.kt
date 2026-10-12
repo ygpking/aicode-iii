@@ -215,12 +215,20 @@ class ContextCompactor @Inject constructor(
         // 预算只算一次，供选择器与下方守卫**共用同一数**：两处若各算各的（历史上一次
         // 选择器用 tailBudget、守卫用更小的 preserveRecentTokens），会把「全装得下＝无需压缩」
         // 误判成「划分失败」并强制折叠全部历史。
-        val budgetPlan = ModelContextPolicy.tailBudgetPlan(triggerThreshold, contextLimit, summaryWindowTokensForSplit)
+        //
+        // 固定开销 Δ：真实 usage 含 system prompt + tools + 记忆召回块等，而本地估算只含消息文本。
+        // 触发判断用真实 usage（含 Δ），故 tail 预算的 C1 上界必须同口径扣 Δ，否则压缩后
+        // = tail + 摘要 + Δ 会 ≥ 阈值 → 压完立即再触发（摘要窗口 < 主窗口时必现）。
+        // 取不到真实 usage 时 Δ=0，退化为旧行为（与本文件写回账本处的 usageOverhead 同一口径）。
+        val usageOverhead = if (lastInputTokens > 0) (lastInputTokens - estimatedTokens).coerceAtLeast(0) else 0
+        val budgetPlan = ModelContextPolicy.tailBudgetPlan(
+            triggerThreshold, contextLimit, summaryWindowTokensForSplit, usageOverhead
+        )
         if (!budgetPlan.feasible) {
             FileLogger.w(
                 TAG,
-                "压缩预算不可行：${budgetPlan.reason}（触发阈值 $triggerThreshold，摘要模型窗口 $summaryWindowTokensForSplit）。" +
-                    "本次压缩仍执行，但被折叠的 head 可能超出摘要窗口而被丢弃——" +
+                "压缩预算不可行：${budgetPlan.reason}（触发阈值 $triggerThreshold，摘要模型窗口 $summaryWindowTokensForSplit，" +
+                    "固定开销 Δ=$usageOverhead）。本次压缩仍执行，但可能仍超阈值或被丢弃最旧段——" +
                     "建议把「压缩专用模型」换为窗口 ≥ ${ModelContextPolicy.minSummaryWindowForFeasibility()} 的模型。"
             )
         }

@@ -229,6 +229,66 @@ class ModelContextPolicyTest {
         assertTrue("tail + 摘要应 < 阈值（C1 优先，不制造死循环）", plan.tail + 10_000 < 115_200)
     }
 
+    // ---------- 固定开销 Δ 计入 C1（B-fix：摘要窗口 < 主窗口时压完立即再触发）----------
+
+    /**
+     * 真实不变量：`tail + 摘要 + Δ < 阈值`。
+     *
+     * 旧实现的 C1 只扣「摘要估算」，未扣固定开销 Δ；而触发判断用真实 usage（含 Δ），
+     * 于是「摘要窗口 < 主窗口」时 tail 被 C2 下界抬高，压缩后 = tail + 摘要 + Δ ≥ 阈值 → 立即再触发。
+     * 用例锁死修后行为：凡 C1 未被 Δ 挤到 MIN 下限（即真正可满足）时，不变量必须成立。
+     */
+    @Test
+    fun tailBudget_overheadIncludedInTriggerInvariant() {
+        val ctx = 128_000
+        for (pct in listOf(60, 75, 80, 90, 95)) {
+            val trigger = (ctx * pct / 100.0).toInt()
+            for (sw in listOf(32_000, 48_000, 64_000, 96_000, 128_000)) {
+                for (delta in listOf(10_000, 20_000, 40_000)) {
+                    val plan = ModelContextPolicy.tailBudgetPlan(trigger, ctx, sw, delta)
+                    // 只有「Δ + 摘要估算 ≥ 阈值」时才允许不变量不成立（数学无解，feasible=false 已标注）。
+                    if (delta + 10_000 >= trigger) {
+                        assertFalse("Δ=$delta sw=$sw 数学无解应判不可行", plan.feasible)
+                        continue
+                    }
+                    if (plan.tail > ModelContextPolicy.MIN_PRESERVE_RECENT_TOKENS) {
+                        assertTrue(
+                            "ctx=$ctx pct=$pct% sw=$sw Δ=$delta: tail+摘要+Δ=${plan.tail + 10_000 + delta} 应 < 阈值 $trigger",
+                            plan.tail + 10_000 + delta < trigger,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /** Δ 提高 C1 上界压力：Δ 越大 tail 越小（在 C2 未主导时）。 */
+    @Test
+    fun tailBudget_largerOverhead_shrinksTail() {
+        val base = ModelContextPolicy.tailBudget(1_000_000 * 60 / 100, 1_000_000, 1_000_000, 0)
+        val withOverhead = ModelContextPolicy.tailBudget(1_000_000 * 60 / 100, 1_000_000, 1_000_000, 50_000)
+        assertTrue("Δ 应压低 tail: $withOverhead ≤ $base", withOverhead <= base)
+    }
+
+    /** Δ=0 与旧行为逐位一致（向后兼容，未传 Δ 的调用方不受影响）。 */
+    @Test
+    fun tailBudget_zeroOverhead_matchesLegacy() {
+        for (sw in listOf(32_000, 128_000, 1_000_000)) {
+            assertEquals(
+                ModelContextPolicy.tailBudget(115_200, 128_000, sw),
+                ModelContextPolicy.tailBudget(115_200, 128_000, sw, 0),
+            )
+        }
+    }
+
+    /** Δ 大到「Δ + 摘要 ≥ 阈值」时不可行，且原因指向固定开销（非摘要窗口）。 */
+    @Test
+    fun tailBudgetPlan_hugeOverhead_reportsOverheadReason() {
+        val plan = ModelContextPolicy.tailBudgetPlan(115_200, 128_000, 128_000, 200_000)
+        assertFalse(plan.feasible)
+        assertTrue("原因应指向固定开销: ${plan.reason}", plan.reason.contains("固定开销"))
+    }
+
     /** 可行性阈值自洽：恰好 min 可行、min-1 不可行。 */
     @Test
     fun minSummaryWindowForFeasibility_isExactBoundary() {

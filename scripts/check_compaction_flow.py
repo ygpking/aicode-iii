@@ -120,28 +120,38 @@ def min_summary_window_for_feasibility():
 
 
 def tail_budget_plan(trigger, context_limit=DEFAULT_CONTEXT_TOKENS,
-                     summary_window_tokens=DEFAULT_CONTEXT_TOKENS):
+                     summary_window_tokens=DEFAULT_CONTEXT_TOKENS, overhead_tokens=0):
     """对账 ModelContextPolicy.tailBudgetPlan：返回 (tail, feasible, reason)。
 
     修复点（128k 静默丢历史）：旧实现 tail 被 max(20000, 窗口*10%) 封顶，
     128k 主 + 128k 摘要 + 90% 阈值下 head=95200 > 摘要预算 89600，每轮丢最旧 5600 token。
     新实现用 C2 下界抬高 tail 把 head 压回摘要窗口内；C1/C2 无交集（摘要窗口 ≲28.6k）时
     置 feasible=False，由调用方告警而非静默丢历史。
+
+    修复点二（C1 未计固定开销 Δ）：C1 上界须扣 Δ（system prompt + tools + 记忆块），
+    与触发判断（真实 usage 含 Δ）同口径；否则「摘要窗口 < 主窗口」压缩后 = tail+摘要+Δ ≥ 阈值
+    → 压完立即再触发。见 ModelContextPolicy.tailBudgetPlan(overheadTokens)。
     """
     proportional = preserve_recent_tokens(trigger, context_limit)
     lower = min_tail_for_summary_window(trigger, summary_window_tokens)
-    upper = max(MIN_PRESERVE_RECENT_TOKENS, trigger - SUMMARY_TOKENS_ESTIMATE - 1)
+    overhead = max(0, overhead_tokens)
+    upper = max(MIN_PRESERVE_RECENT_TOKENS, trigger - SUMMARY_TOKENS_ESTIMATE - overhead - 1)
     lo = max(MIN_PRESERVE_RECENT_TOKENS, lower)
     feasible = lo <= upper
     tail = min(max(proportional, lo), upper) if feasible else upper
-    reason = "C1 与 C2 同时满足" if feasible else "C1/C2 无交集"
+    if feasible:
+        reason = "C1 与 C2 同时满足"
+    elif overhead + SUMMARY_TOKENS_ESTIMATE >= trigger:
+        reason = "固定开销过大"
+    else:
+        reason = "C1/C2 无交集"
     return tail, feasible, reason
 
 
 def tail_budget(trigger, context_limit=DEFAULT_CONTEXT_TOKENS,
-                summary_window_tokens=DEFAULT_CONTEXT_TOKENS):
+                summary_window_tokens=DEFAULT_CONTEXT_TOKENS, overhead_tokens=0):
     """对账 ModelContextPolicy.tailBudget（= tailBudgetPlan().tail）。"""
-    return tail_budget_plan(trigger, context_limit, summary_window_tokens)[0]
+    return tail_budget_plan(trigger, context_limit, summary_window_tokens, overhead_tokens)[0]
 
 
 def effective_percent(base_percent, fast_growth):
@@ -878,6 +888,53 @@ def suite_guard_consistency(rep):
 
 
 # ══════════════════════════════════════════════════════════════════════
+# 十五、C1 固定开销 Δ 源级对账（防「预算不扣 Δ、触发用真实 usage」口径再次分裂）
+# ══════════════════════════════════════════════════════════════════════
+def check_overhead_in_c1(rep):
+    print("── 15. C1 固定开销 Δ 对账 ──")
+    pol_path = os.path.join(ROOT, "app", "src", "main", "java", "com", "aicode",
+                            "feature", "settings", "domain", "model", "ModelContextPolicy.kt")
+    comp_path = os.path.join(ROOT, "app", "src", "main", "java", "com", "aicode",
+                             "feature", "agent", "domain", "workflow", "ContextCompactor.kt")
+    try:
+        with open(pol_path, encoding="utf-8") as f:
+            pol = f.read()
+        with open(comp_path, encoding="utf-8") as f:
+            comp = f.read()
+    except OSError:
+        rep.check("源文件可读（Δ 对账前置）", False, True)
+        return
+
+    # 源码 C1 上界必须含 overhead 项
+    m_upper = re.search(r"val upper = \(triggerThreshold - SUMMARY_TOKENS_ESTIMATE - overhead - 1\)", pol)
+    rep.check("源码 C1 上界扣除 overhead", bool(m_upper), True)
+    rep.check("tailBudgetPlan 暴露 overheadTokens 参数", "overheadTokens: Int = 0" in pol, True)
+    # 调用点必须把真实 usage 与本地估算之差作为 Δ 传入
+    rep.check("调用点计算 Δ（真实 usage − 本地估算）",
+              "lastInputTokens - estimatedTokens" in comp and "usageOverhead" in comp, True)
+    rep.check("调用点把 Δ 传入 tailBudgetPlan",
+              re.search(r"tailBudgetPlan\(\s*triggerThreshold,\s*contextLimit,\s*summaryWindowTokensForSplit,\s*usageOverhead\s*\)", comp) is not None,
+              True)
+
+    # 行为对账：源码公式（镜像）在 Δ>0 时必须压低 tail，且真实不变量成立
+    trigger = 115_200
+    base = tail_budget(trigger, 128_000, 128_000, 0)
+    with_overhead = tail_budget(trigger, 128_000, 128_000, 40_000)
+    rep.check("Δ=40k 压低 tail（C1 收紧）", with_overhead <= base, True)
+    # 关键：C2 主导 tail 的配置下，不扣 Δ 会「压完立即再触发」
+    sw_small = 64_000
+    tail_no = tail_budget(trigger, 128_000, sw_small, 0)
+    tail_yes = tail_budget(trigger, 128_000, sw_small, 40_000)
+    rep.check("摘要窗口偏小时：不扣 Δ → 压缩后 ≥ 阈值（复现缺陷）",
+              tail_no + SUMMARY_TOKENS_ESTIMATE + 40_000 >= trigger, True)
+    rep.check("摘要窗口偏小时：扣 Δ → 压缩后 < 阈值（修复生效）",
+              tail_yes + SUMMARY_TOKENS_ESTIMATE + 40_000 < trigger, True)
+    # 向后兼容：Δ=0 与旧公式（不扣 Δ）一致
+    rep.check("Δ=0 时退化为旧行为（向后兼容）",
+              tail_budget(trigger, 128_000, 128_000, 0) == tail_budget_plan(trigger, 128_000, 128_000, 0)[0], True)
+
+
+# ══════════════════════════════════════════════════════════════════════
 # 六、失败注入（变异测试）——验证正向场景真有判别力
 # ══════════════════════════════════════════════════════════════════════
 def mut_split_segment_only_cap(msgs, budget, restored_ids):
@@ -1068,6 +1125,8 @@ def main():
     print("=" * 74)
     rep = Report()
     suite_forward(rep)
+    # C1 固定开销 Δ 的源级对账只在基线跑（变异运行会把 tail_budget 换成 3 参突变体，签名不符）。
+    check_overhead_in_c1(rep)
     print()
     suite_mutation(rep)
     print()
@@ -1078,7 +1137,7 @@ def main():
             print("  - %s" % f)
         return 1
     print("[OK] 上下文压缩全流程回归通过")
-    print("  - 正向场景 14 组 + 失败注入 10 项均已核对")
+    print("  - 正向场景 15 组 + 失败注入 10 项均已核对")
     print("  - 建模对账：CompactionTailSelector / CompactionThreshold / ModelContextPolicy /")
     print("    AgentMessageDao 压缩块 SQL / buildHistory 筛选与配对 / SessionHistoryPager /")
     print("    CompactionSplitAdjuster / cleanSummary")
