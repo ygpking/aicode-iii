@@ -205,9 +205,13 @@ internal fun ThinkingBubble(label: String) {
 
 /** 上下文压缩期间的临时状态行，不落库。 */
 @Composable
-internal fun CompactionProgressBubble() {
+internal fun CompactionProgressBubble(lastDurationMs: Long? = null) {
     AgentBusyIndicator(
-        label = stringResource(R.string.chat_compressing_context),
+        label = if (lastDurationMs != null) {
+            stringResource(R.string.chat_compressing_context_with_last, maxOf(1, lastDurationMs / 1000))
+        } else {
+            stringResource(R.string.chat_compressing_context)
+        },
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = ChatStyle.toolRowMinHeight),

@@ -183,4 +183,21 @@ class SubAgentEventBusTest {
         assertFalse("后到者应被拒", bWon)
         assertTrue("后到者视角：流在别处", bus.isFlowOwnedElsewhere("sub-1", vmB))
     }
+
+    /** 多会话、多 owner 场景：releaseAllFlows 只释放目标 owner 的归属，不影响他人。 */
+    @Test
+    fun releaseAllFlows_onlyFreesOwnerOwnership() {
+        val bus = SubAgentEventBus()
+        val (vmA, vmB) = flowOwnerPair()
+        bus.tryAcquireFlow("sub-1", vmA)
+        bus.tryAcquireFlow("sub-2", vmA)
+        bus.tryAcquireFlow("sub-3", vmB)
+
+        bus.releaseAllFlows(vmA)
+
+        assertFalse("vmA 的归属应全部释放", bus.isFlowOwnedBy("sub-1", vmA))
+        assertFalse("vmA 的第二个归属也应释放", bus.isFlowOwnedBy("sub-2", vmA))
+        assertTrue("vmB 的归属不受影响", bus.isFlowOwnedBy("sub-3", vmB))
+        assertTrue("释放后他人可抢占", bus.tryAcquireFlow("sub-1", vmB))
+    }
 }

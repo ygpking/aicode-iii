@@ -496,6 +496,8 @@ fun AIChatPanel(
     val pendingQuestion by viewModel.pendingUserQuestion.collectAsStateWithLifecycle()
     val currentTodoItems by viewModel.currentSessionTodoItems.collectAsStateWithLifecycle()
     val queuedRequests by viewModel.queuedRequests.collectAsStateWithLifecycle()
+    val rejectNotice by viewModel.rejectNotice.collectAsStateWithLifecycle()
+    val compactionLastDurationMs by viewModel.compactionLastDurationMs.collectAsStateWithLifecycle()
     val targetRewindMessageId by viewModel.targetRewindMessageId.collectAsStateWithLifecycle()
     val providers = (settingsViewModel?.providers?.collectAsStateWithLifecycle()?.value ?: emptyList()).filter { it.isEnabled }
     val modelMetadata = settingsViewModel?.modelMetadata?.collectAsStateWithLifecycle()?.value.orEmpty()
@@ -860,6 +862,15 @@ fun AIChatPanel(
         if (retryState != null || keySwitchState != null || isCompacting) {
             retainedStreamingText = null
             retainedStreamingReasoning = null
+        }
+    }
+
+    // 流被其他实例持有导致消息排队：给用户可见的一次性提示（队列面板之外的原因说明）。
+    val rejectNoticeText = stringResource(R.string.chat_stream_reject_notice)
+    LaunchedEffect(rejectNotice) {
+        if (rejectNotice) {
+            Toast.makeText(context, rejectNoticeText, Toast.LENGTH_SHORT).show()
+            viewModel.consumeRejectNotice()
         }
     }
 
@@ -1338,7 +1349,7 @@ fun AIChatPanel(
                                 when (tailKind) {
                                     TailKind.THINKING -> ThinkingBubble(label = thinkingLabel)
                                     TailKind.STREAMING -> StreamingBubble(text = typewriterRenderText, cache = markdownCache)
-                                    TailKind.COMPACTING -> CompactionProgressBubble()
+                                    TailKind.COMPACTING -> CompactionProgressBubble(lastDurationMs = compactionLastDurationMs)
                                     TailKind.RETRYING -> {
                                         val rs = retryState
                                         if (rs != null) RetryingBubble(rs.attempt, rs.maxRetries, rs.error) else Box(Modifier)

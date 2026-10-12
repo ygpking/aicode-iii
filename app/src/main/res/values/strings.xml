@@ -36,7 +36,7 @@
     <string name="settings_enter_to_send">回车键发送消息</string>
     <string name="settings_enter_to_send_desc">关闭后回车换行，需点发送按钮发送</string>
     <string name="settings_compaction_threshold">自动压缩阈值</string>
-    <string name="settings_compaction_threshold_desc">上下文占用达到窗口的该比例时自动压缩</string>
+    <string name="settings_compaction_threshold_desc">上下文占用达到窗口的该比例时自动压缩。阈值越低，触发越频繁、占用压缩的时间越多；阈值越高，单次摘要量越大、耗时越长。建议避免过低阈值导致的高频压缩</string>
     <string name="settings_percent_value">%1$d%%</string>
     <string name="settings_compaction_threshold_input_hint">填 1-100 的整数百分比</string>
     <string name="settings_general_tools">工具</string>
@@ -625,7 +625,9 @@
     <string name="chat_compaction_failed">上下文压缩失败</string>
     <string name="chat_compaction_failed_empty_summary">摘要正文为空或输出被截断，已保留原对话</string>
     <string name="chat_compaction_failed_head_not_persisted">部分历史尚未落库，本次压缩未生效，已保留原对话</string>
-    <string name="chat_compressing_context">正在压缩上下文</string>
+    <string name="chat_compressing_context">正在压缩上下文（可能需要几分钟）</string>
+    <string name="chat_compressing_context_with_last">正在压缩上下文（上次约 %1$d 秒）</string>
+    <string name="chat_stream_reject_notice">该会话正在其他窗口处理，消息已排队</string>
     <string name="chat_retrying">正在重试 %1$s/%2$s</string>
     <string name="chat_key_switched">已切换到第 %1$d/%2$d 个 Key</string>
     <string name="chat_error_title">请求失败</string>

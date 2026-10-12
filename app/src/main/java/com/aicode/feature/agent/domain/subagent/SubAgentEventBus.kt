@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.subagent
 
 import com.aicode.core.util.FileLogger
+import java.lang.ref.WeakReference
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -70,30 +71,56 @@ class SubAgentEventBus @Inject constructor() {
     // 通知重复触发），这里维护「会话 → 持有其活跃流的 VM 实例」映射：处理事件前先看归属，
     // 持有者搭车入队、别处持有则跳过、无主时抢占成功者才触发新流。
     // owner 用 VM 实例引用（引用相等判定），release 只释放自己持有的归属。
-    private val flowOwners = ConcurrentHashMap<String, Any>()
+    // 存弱引用：VM 整体不可达（含其协程链一起被回收）时，即使 releaseFlow 未走到，
+    // 归属也随 GC 失效、新实例可抢占；若存强引用则已销毁 VM 永不被回收，归属永久残留
+    // （实测 2026-10-12 07:28 stream reject 卡死、用户重启才恢复）。
+    // 注意：仍有活跃协程的 VM 不会被 GC，那类僵尸归属由 ViewModel.onCleared 的
+    // releaseAllFlows 兜底——弱引用与生命周期释放互补，不能只留一个。
+    private val flowOwners = ConcurrentHashMap<String, WeakReference<Any>>()
 
     /**
-     * 认领会话流归属；此前无主则成功并返回 true，已被（本实例或其他实例）持有则返回 false。
-     * 并发安全：putIfAbsent 原子，多个实例同时抢同一会话时只有一个成功。
+     * 认领会话流归属；此前无主（或持有者已被 GC）则成功并返回 true，
+     * 已被（本实例或其他实例）持有则返回 false。
+     * 并发安全：无主时用 putIfAbsent/replace 原子竞争，多个实例同时抢同一会话时只有一个成功。
      */
-    fun tryAcquireFlow(sessionId: String, owner: Any): Boolean =
-        flowOwners.putIfAbsent(sessionId, owner) == null
+    fun tryAcquireFlow(sessionId: String, owner: Any): Boolean {
+        while (true) {
+            val current = flowOwners[sessionId]
+            val live = current?.get()
+            if (live != null && live !== owner) return false // 别处持有，让位
+            if (live === owner) return false // 本人已持有，与现语义一致：不重复 acquire
+            // 无主或持有者已 GC：尝试原子放入/替换，失败（被并发抢先）则重试
+            if (current == null) {
+                if (flowOwners.putIfAbsent(sessionId, WeakReference(owner)) == null) return true
+            } else if (flowOwners.replace(sessionId, current, WeakReference(owner))) {
+                return true
+            }
+        }
+    }
 
     /** 释放本实例持有的会话流归属（幂等：非本人持有则不动，不影响他人持有的归属）。 */
     fun releaseFlow(sessionId: String, owner: Any) {
-        flowOwners.remove(sessionId, owner)
+        flowOwners.computeIfPresent(sessionId) { _, current ->
+            if (current.get() === owner) null else current
+        }
+    }
+
+    /** 释放 [owner] 持有的全部会话流归属（幂等；供 ViewModel.onCleared 兜底调用）。 */
+    fun releaseAllFlows(owner: Any) {
+        flowOwners.entries.removeIf { it.value.get() === owner }
     }
 
     /** 该会话流是否由 [owner] 本人持有。 */
     fun isFlowOwnedBy(sessionId: String, owner: Any): Boolean {
         val current = flowOwners[sessionId] ?: return false
-        return current === owner
+        return current.get() === owner
     }
 
     /** 该会话流是否已被其他实例持有（本实例不持有但别处在跑）。 */
     fun isFlowOwnedElsewhere(sessionId: String, owner: Any): Boolean {
         val current = flowOwners[sessionId] ?: return false
-        return current !== owner
+        val live = current.get() ?: return false // 持有者已 GC = 无主
+        return live !== owner
     }
 
     /**

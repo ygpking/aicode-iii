@@ -16,6 +16,7 @@ import com.aicode.feature.virtualscreen.domain.a11y.VirtualScreenA11yService
 import com.aicode.feature.workspace.domain.WorkspacePathMapper
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -169,6 +170,8 @@ class VirtualScreenTool @Inject constructor(
             throw e
         } catch (e: Exception) {
             FileLogger.e(TAG, "virtualScreen $action 失败", e)
+            // 异常路径（非返回 false）同样留轨迹，否则重试统计漏此类失败。
+            EventTrace.recordFor(context.sessionId, "VD", "action=$action 异常: ${e.message?.take(120)}")
             ToolResult.Error("虚拟屏操作失败: ${e.message}", "VSCREEN_FAILED")
         }
     }
@@ -274,26 +277,45 @@ class VirtualScreenTool @Inject constructor(
         val exact = args["exact"]?.jsonPrimitive?.booleanOrNull ?: false
         val index = args["index"]?.jsonPrimitive?.intOrNull ?: 0
 
-        val ok = withContext(Dispatchers.IO) {
-            when {
-                !text.isNullOrBlank() ->
-                    service.clickByText(session.displayId, text, exact, index)
-                !id.isNullOrBlank() ->
-                    service.clickById(session.displayId, id)
-                !bounds.isNullOrBlank() -> {
-                    val p = bounds.split(',').mapNotNull { it.trim().toIntOrNull() }
-                    if (p.size == 4) {
-                        service.clickByBounds(session.displayId, p[0], p[1], p[2], p[3])
-                    } else {
-                        false
+        val target = text ?: id ?: bounds ?: ""
+        val parsedBounds = bounds?.split(',')?.mapNotNull { it.trim().toIntOrNull() }.orEmpty()
+        // 确定性参数错误不进重试循环：三次白等只会重复同样错误，直接判定。
+        // bounds 是最后兜底（text > id > bounds）：只有 text/id 都不可用且 bounds 格式错才判错，
+        // 不得在 text/id 可用的调用里因 bounds 空串/残串误伤（agent 实际常带空的可选参数）。
+        if (text.isNullOrBlank() && id.isNullOrBlank() && bounds.isNullOrBlank()) {
+            EventTrace.recordFor(context.sessionId, "VD", "click 缺目标参数 -> MISSING_ARGS")
+            return ToolResult.Error("click 需要提供 text / id / bounds 三者之一", "MISSING_ARGS")
+        }
+        if (text.isNullOrBlank() && id.isNullOrBlank() && parsedBounds.size != 4) {
+            EventTrace.recordFor(context.sessionId, "VD", "click bounds 非四整数 -> INVALID_ARGS")
+            return ToolResult.Error("bounds 需为 left,top,right,bottom 四个整数", "INVALID_ARGS")
+        }
+        // 界面异步加载时目标节点可能尚未渲染（open 后立即点击实测即失败）：
+        // 失败后短等重试 2 次再判定。取舍：重试仅针对「目标未就绪」；若点击已派发但框架
+        // 上报 false（少见），重试可能对同一控件产生二次点击——为避免跨层状态查询，接受此取舍。
+        var ok = false
+        var attempts = 0
+        for (attempt in 0 until 3) {
+            if (attempt > 0) delay(400)
+            attempts = attempt + 1
+            ok = withContext(Dispatchers.IO) {
+                when {
+                    !text.isNullOrBlank() ->
+                        service.clickByText(session.displayId, text, exact, index)
+                    !id.isNullOrBlank() ->
+                        service.clickById(session.displayId, id)
+                    else -> {
+                        // 不变量：走到这里 bounds 必为有效兜底——上方两条早退保证
+                        // text/id 均空时 bounds 非空且 parsedBounds.size==4，[0..3] 索引安全。
+                        service.clickByBounds(
+                            session.displayId, parsedBounds[0], parsedBounds[1], parsedBounds[2], parsedBounds[3]
+                        )
                     }
                 }
-                else -> false
             }
+            if (ok) break
         }
-
-        val target = text ?: id ?: bounds ?: ""
-        EventTrace.recordFor(context.sessionId, "VD", "click [$target] -> $ok")
+        EventTrace.recordFor(context.sessionId, "VD", "click [$target] -> $ok (attempts=$attempts)")
         return if (ok) {
             ToolResult.Success(JsonObject(mapOf(
                 "clicked" to JsonPrimitive(true),
