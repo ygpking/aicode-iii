@@ -183,15 +183,28 @@ class ShellArgsTest {
         assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | grep bar")!!)!!.endsWith(" | grep bar"))
         assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | sort | uniq")!!)!!.endsWith(" | sort | uniq"))
         assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | wc -l")!!)!!.endsWith(" | wc -l"))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | awk '{print \$1}'")!!)!!.contains("awk"))
+        // awk/sed 需要程序体（含 `{}`/`$`），与管道参数禁令不可兼得 → 不在白名单内
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | awk '{print \\$1}'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sed 's/a/b/'")!!))
         assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -30 | wc -l")!!)!!.endsWith(" | wc -l"))
     }
 
     /** 管道段参数里的 shell 元字符一律拒绝（防借白名单命令逃逸）。 */
     @Test
     fun pipeSegmentAllowed_rejectsMetacharactersInArgs() {
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep \`id\`")!!))
+        // 反引号是命令替换符，出现在管道参数里一律拒（单引号包裹，Kotlin 字符串内无需转义）
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep '`id`'")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort &")!!))
+        // 白名单命令 + 合法选项之外，head 的行数参数仍须纯数字（headLinesOf 的原有严格校验）
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -n abc")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -n -5")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -30 extra")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -c 100")!!))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -n 30")!!)!!.endsWith(" | head -n 30"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | tail -5")!!)!!.endsWith(" | tail -5"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | cut -f1")!!)!!.endsWith(" | cut -f1"))
+        // rg 在白名单内：容器必有（search 自身依赖它），与 grep 同族
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | rg -v bar")!!)!!.endsWith(" | rg -v bar"))
     }
 
     /** T1-A：正则括号不配对在调用前被挡下，不必等 rg 报错。 */

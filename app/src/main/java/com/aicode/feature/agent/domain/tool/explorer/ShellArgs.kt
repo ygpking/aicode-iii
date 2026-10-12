@@ -115,11 +115,18 @@ fun headLinesOf(seg: List<String>): Int? = when {
  * 故允许接在 rg/ls 之后。写操作管道（`>`、`tee`、`install`、`cp`、`mv` 等）一律拒绝。
  *
  * 放行依据：8 天日志里模型在 Bash 中自发使用 `| grep` 3,399 次、`| sort` 419 次、
- * `| wc` 432 次、`| awk` 198 次——习惯已成定局，而 search/list 只允许 `| head`，
- * 导致 59 次 INVALID_PIPE 白失败。这些是纯只读后处理，没有借管道逃逸执行的风险。
+ * `| wc` 432 次——习惯已成定局，而 search/list 只允许 `| head`，导致 59 次 INVALID_PIPE
+ * 白失败。这些是纯只读后处理，没有借管道逃逸执行的风险。
+ *
+ * awk/sed 的合法用法必须携带程序体（`awk '{print $1}'`、`sed 's/a/b/'`），而程序体含
+ * `{}`/`$`，与 [pipeSegmentArgsSafe] 的字符禁令不可兼得。二者取安全：把需要程序体的
+ * 命令排除在白名单外，让它们照旧走 INVALID_PIPE（明确失败），而不是放进白名单后
+ * 为它们单独放宽禁令——放宽任何一项都等于在管道段打开执行面。
+ *
+ * `rg` 在内：search 自身就依赖 rg，容器里必然存在，与 grep 同族（`rg -v` = `grep -v`）。
  */
 private val READ_ONLY_PIPE_COMMANDS: Set<String> =
-    setOf("head", "tail", "grep", "sort", "uniq", "wc", "cut", "tr", "awk", "sed", "nl", "rev", "tac")
+    setOf("head", "tail", "grep", "rg", "sort", "uniq", "wc", "cut", "tr", "nl", "rev", "tac")
 
 /**
  * 管道段参数是否安全：拒绝重定向、命令分隔、以及任何「会写文件」的符号。
@@ -137,11 +144,15 @@ private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
 }
 
 /**
- * 管道段是否可放行：命令在只读白名单内，且参数不含重定向/分隔符。
- * 返回该段是否需要特殊处理（当前统一返回 true/false，预留行数能力）。
+ * 管道段是否可放行：命令在只读白名单内，参数不含重定向/分隔符。
+ *
+ * `head` 额外要求 [headLinesOf] 通过（行数参数必须纯数字）：换用通用参数校验后
+ * `head -n abc` 这类脏参数会漏进容器命令，而 head 恰是历史上唯一被放行的管道命令，
+ * 它的严格校验是原有安全属性，不能随白名单扩大一起丢掉。
  */
 fun pipeSegmentAllowed(seg: List<String>): Boolean =
-    seg.isNotEmpty() && seg[0] in READ_ONLY_PIPE_COMMANDS && pipeSegmentArgsSafe(seg)
+    seg.isNotEmpty() && seg[0] in READ_ONLY_PIPE_COMMANDS && pipeSegmentArgsSafe(seg) &&
+        (seg[0] != "head" || headLinesOf(seg) != null)
 
 /**
  * 正则括号配对预检（T1-A）。

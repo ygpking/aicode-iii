@@ -40,7 +40,7 @@ class SearchCodeTool @Inject constructor(
     override val description =
         "按 rg 风格搜索文本（rg 默认递归、默认带文件名，勿加 -r——那是替换标志）。" +
             "例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。" +
-            "支持末尾接只读管道（head/tail/grep/sort/uniq/wc/cut/tr/awk/sed/nl/rev/tac）加工输出；" +
+            "支持末尾接只读管道（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac）加工输出；" +
             "正则括号需成对（不配对会直接被挡下，不必等 rg 报错）；纯文本搜索加 -F 关闭正则最省心。" +
             "路径不存在会直接报错，不确定时先 list 确认。"
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
@@ -51,7 +51,7 @@ class SearchCodeTool @Inject constructor(
             name = "args",
             type = ParameterType.STRING,
             description = "rg 风格参数。不填无效。常用：-i -F -e -g --hidden --。" +
-                "支持末尾接只读管道（head/tail/grep/sort/uniq/wc/cut/tr/awk/sed/nl/rev/tac）；" +
+                "支持末尾接只读管道（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac）；" +
                 "重定向（> >> <）与写文件类命令（cp/mv/tee/install 等）不支持。",
             required = true
         )
@@ -80,7 +80,7 @@ class SearchCodeTool @Inject constructor(
 
             val command = buildSearchCommand(tokens, pathHomeResolver.home())
                 ?: return ToolResult.Error(
-                    "管道段不被支持：只允许只读加工命令（head/tail/grep/sort/uniq/wc/cut/tr/awk/sed/nl/rev/tac），" +
+                    "管道段不被支持：只允许只读加工命令（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac），" +
                         "且参数不得含重定向（> >> <）或命令分隔符",
                     "INVALID_PIPE"
                 )
