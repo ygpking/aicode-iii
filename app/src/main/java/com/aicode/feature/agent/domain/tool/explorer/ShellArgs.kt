@@ -285,27 +285,46 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
 }
 
 /**
+ * 各命令允许的**位置参数个数上限**。超过即拒。
+ *
+ * 比「按路径形态猜」可靠：形态法只能枚举已知写法（绝对路径/`~/`/`..`），漏一种就破。
+ * 位置参数上限是一次性的、可计算的不变量，不靠穷举——只要该命令不接受文件参数，
+ * 任何形态的路径都进不来。
+ *
+ * 数字依据：
+ *  - 0 个：这些命令全部以 stdin 为唯一输入源，位置参数就是文件名
+ *    （`sort secret.txt`、`nl /etc/passwd`、`wc -l /etc/passwd`、`cut -d: -f1 /etc/passwd`）
+ *  - `grep`/`rg` = 1：唯一位置参数是 pattern（`rg -n foo src/` 的 `foo`）
+ *  - `tr` = 2：SET1/SET2（`tr a b`），两个都不是文件名
+ *
+ * 语料核对：848 个通过段里，位置参数非零的只有 `grep` 的 2 例合法 pattern，
+ * 其余 846 段位置参数均为 0 → 本规则在真实用法上零损失。
+ *
+ * 取代了早先的「按路径形态猜」（拦 `/`、`~`、`..` 开头）。形态法有两个漏：
+ *  - 漏判：`| grep x secret.txt` 这类同目录相对路径本就在 READ_WORKSPACE 授权内
+ *  - 真漏洞：远程模式下 `RemoteSshEngine.buildCdCommand` 在 `projectPath == null`
+ *    时根本不 cd（两个 cd 都失败也照执行命令），此时 `| grep root .ssh/id_rsa`
+ *    读的是远端家目录，「cwd 恒等于 workspace」这个前提不成立
+ * 个数上限一次关掉绝对路径、`..` 上跳、当前目录相对路径、软链、远程 cwd 五种形态。
+ */
+private val PIPE_MAX_POSITIONAL: Map<String, Int> = mapOf(
+    "head" to 0, "tail" to 0, "sort" to 0, "uniq" to 0, "wc" to 0,
+    "cut" to 0, "nl" to 0, "rev" to 0, "tac" to 0,
+    "grep" to 1, "rg" to 1,
+    "tr" to 2,
+)
+
+/**
  * 管道段参数是否安全：字符全在 [SAFE_ARG_CHARS] 内，选项在该命令白名单内，
  * 且**不含读文件的位置参数**。
  *
- * 空参数一律拒（`grep ''` 在 shell 里是空 pattern，语义不明）。
- * 只含空白的参数（`" "`）同样拒：它经 shellQuote 后是 `' '`，是个合法但几乎必然非本意的
- * pattern，且真实语料里从未出现。
+ * 三道判定依次为：选项白名单 → 字符集 → 位置参数上限。
+ * **字符集检查必须在「选项值位」之前做**：值位只跳过「选项白名单」与「位置参数上限」
+ * （因为它是选项的值、不是位置参数），但仍受字符集约束——否则 `grep -m 'a;touch x'`
+ * 这类把危险字符藏在选项值里的写法就只剩 shellQuote 一道了（实测引号能兜住，
+ * 但「双重约束」的声明就不成立，且少一道就少一分探错空间）。
  *
- * **取值选项的独立形式**：`grep -m 5 x` 的 `5` 是 `-m` 的值而不是位置参数，需先标出
- * 哪些 token 是前一个选项的值，再对剩下的位置参数做路径限制。
- *
- * **位置参数上限**：`sort secret.txt`、`nl /root/.ssh/id_rsa`、`cut -d: -f1 /etc/passwd`
- * 这类不带 `-` 的参数会被命令当作**待读取的文件名**——实测 `| grep root /etc/passwd`
- * 在容器里真的返回了 `/etc/passwd` 内容，而本工具的权限声明是 [ToolCapability.READ_WORKSPACE]
- * （`permissions` 里是 AUTO_APPROVE），读 workspace 之外的文件与此声明相违。
- * 靠选项黑名单管不住它们（位置参数根本没有选项形状），因此单独按形态限制：
- *  - 以 `/` 开头的绝对路径拒
- *  - 以 `~` 开头的 home 路径拒
- *  - 含 `..` 路径段（`../../etc/passwd`）拒：**仅挡绝对路径不够**——proot 的
- *    cwd 是 `/root/workspace`（`-w /root/workspace`），相对路径上跳同样能读到
- *    workspace 之外，实测 `grep root ../../etc/passwd` 返回了 passwd 内容
- *  - 不含路径分隔符的普通短词仍放行（`grep a.b` 的 pattern 合法）
+ * 空参数与纯空白参数一律拒（`grep ''` 语义不明，`" "` 几乎必然非本意）。
  */
 private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
     val command = seg[0]
@@ -320,14 +339,23 @@ private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
         if (a.length > 2 && ("-" + a[1]) in valueOptions) continue
         if (a in valueOptions && i + 1 < args.size) isOptionValue[i + 1] = true
     }
+    var positionalCount = 0
     for ((index, arg) in args.withIndex()) {
         if (arg.isEmpty()) return false
         if (arg.isBlank()) return false
-        if (isOptionValue[index]) continue
-        if (arg.startsWith("-") && !pipeOptionAllowed(command, arg)) return false
+        // 值位：豁免选项白名单与位置参数计数（它是选项的值，不是位置参数），
+        // 但**仍受字符集约束**——否则危险字符藏进选项值就只剩 shellQuote 一道。
+        if (isOptionValue[index]) {
+            if (arg.any { it !in SAFE_ARG_CHARS }) return false
+            continue
+        }
+        if (arg.startsWith("-")) {
+            if (!pipeOptionAllowed(command, arg)) return false
+        } else {
+            positionalCount++
+            if (positionalCount > (PIPE_MAX_POSITIONAL[command] ?: 0)) return false
+        }
         if (arg.any { it !in SAFE_ARG_CHARS }) return false
-        // 位置参数不得是路径：挡住读 workspace 之外的文件
-        if (!arg.startsWith("-") && isOutsideWorkspacePath(arg)) return false
     }
     return true
 }
@@ -344,9 +372,6 @@ private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
  * 不含 `/` 的短词（`a.b`、`secret`）不拦：它们是 pattern 不是路径，且无法上跳。
  * 这是「按能力判」而非「按形状判」的最小形式：只要这个参数能让命令去读别的文件，就拦。
  */
-private fun isOutsideWorkspacePath(arg: String): Boolean =
-    arg.startsWith("/") || arg.startsWith("~") || arg.split('/').any { it == ".." }
-
 /**
  * 管道段是否可放行：命令在只读白名单内，参数字符合法、选项在该命令白名单内。
  *
@@ -435,8 +460,8 @@ fun rgPatternParenMismatch(tokens: List<String>): String? {
  * **已知既有面（非本函数引入，此处仅记录以免被当成新洞）**：rg 段自身的参数不限制路径，
  * `search(args="-n x /etc/passwd")` 同样能读到 workspace 之外。rg 是主命令，限制它等于
  * 限制 search 的基本能力，与「管道段只能加工上游输出」不同，不属本 PR 的修复范围。
- * 同理，管道段的位置参数只拦绝对路径/home/`..` 上跳（见 [isOutsideWorkspacePath]），
- * workspace 内的相对路径（如 `| grep x ./secret.txt`）仍可读同目录其它文件。
+ * 同理，管道段的位置参数按每命令上限约束（见 [PIPE_MAX_POSITIONAL]），
+ * 而**主命令段（rg 段）不受任何路径限制**。
  *
  * [home] 为命令执行环境的 home（本地 PRoot 容器为 /root，远程 SSH 为远程用户 home），
  * 用于展开 `~/` 参数——quote 后 shell 不会自动展开 `~`，故在构造命令时显式展开。

@@ -349,18 +349,45 @@ class ShellArgsTest {
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -Ff/etc/passwd")!!))
         // digit 早退不得让整串免检
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -9o/tmp/x")!!))
-        // 位置参数不得读 workspace 之外
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root /etc/shadow")!!))
+        // 位置参数：绝对路径 / home / `..` 上跳（这些命令位置参数上限为 0）
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | nl /root/.ssh/id_rsa")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort ~/.aicode/config")!!))
-        // 相对路径上跳同样越界：proot 以 /root/workspace 为 cwd，只挡绝对路径会被绕过
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root ../../etc/passwd")!!))
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root ./../../etc/passwd")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | nl ../../../../etc/shadow")!!))
-        // 反向确认：不含路径的普通 pattern 仍放行
-        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root foo")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort secret.txt")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | wc -l /etc/passwd")!!))
+        // grep/rg 的位置参数上限是 1（pattern）：第二个位置参数就是文件名，需拒
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root /etc/shadow")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root ../../etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root secret.txt")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -m a.txt b.txt")!!))
+        // 相对路径不是问题根源：上限为 0 的命令连单文件名也不接受
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rev README.md")!!))
+        // tr 上限是 2（SET1/SET2）：第三个位置参数不是合法 tr 用法
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tr a b c")!!))
+        // 反向确认：≤ 上限的普通 pattern 仍放行
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep a.b")!!))
-        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep x secret")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -v test")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | tr a b")!!))
+    }
+
+    /**
+     * 选项的**值位**也要过字符集：它是选项的值、不是位置参数，但仍受字符约束。
+     *
+     * 曾经把字符集检查写在值位 `continue` 之后，于是 `grep -m 'a;touch x'`、
+     * `cut -d '$(id)' -f1` 这类把危险字符藏进选项值的写法只剩 shellQuote 一道。
+     * 实测引号能兜住（marker 未落盘），但少一道就少一分探错空间，且文件头声称的
+     * 「双重约束」不成立。
+     */
+    @Test
+    fun buildSearchCommand_rejectsDangerousCharsInOptionValues() {
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -m 'a;touch /tmp/x'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | cut -d '\$(id)' -f1")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -t ' ' -k1")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -e 'x`id`'")!!))
+        // 反向确认：合法的值位仍放行
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -m 5 x")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -t: -k2")!!))
     }
 
     /**
