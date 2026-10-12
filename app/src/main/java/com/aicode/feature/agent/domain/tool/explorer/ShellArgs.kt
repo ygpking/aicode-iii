@@ -284,15 +284,6 @@ internal val PIPE_VALUE_OPTIONS: Map<String, Set<String>> = mapOf(
 )
 
 /**
- * 单个选项是否在该命令的白名单内。归一化三种写法：
- *  - 长选项等号形式 `--output=FILE` → 取 `=` 前的 `--output` 判定
- *  - 合并短选项 `-rn` → 逐字符拆；遇到 [PIPE_VALUE_OPTIONS] 里的选项则其后全是它的值
- *  - 纯数字 `-30` / `-12` → 放行（head/tail 的行数形式，语义由 [headLinesOf] 复核）
- *
- * 白名单外的选项一律拒，不做「看起来无害」的推断——黑名单逐个枚举必然漏变体
- * （实测漏掉 `--output=`、`--compress-program=`、`sort -T`、`tail --retry` 四种）。
- */
-/**
  * 一个 token 里**实际生效的选项名**列表（纯位置参数返回空）。形态解析的唯一出口。
  *
  * 早先这个解析散在三处（选项白名单、值位标记、`-e` 归零判定），每处只看一种写法，
@@ -360,6 +351,16 @@ private fun isBareValueOption(command: String, token: String): Boolean {
     return false
 }
 
+/**
+ * 单个选项是否在该命令的白名单内。
+ *
+ * 形态归一化全交给 [optionNamesIn]（长选项取 `=` 前、合并短选项逐字符拆且遇取值选项停），
+ * 本函数只回答「这名字在不在白名单」；`--` 与纯数字单独处理（前者是选项结束符，
+ * 后者是 head/tail 的行数形式）。
+ *
+ * 白名单外的选项一律拒，不做「看起来无害」的推断——黑名单逐个枚举必然漏变体
+ * （实测漏掉 `--output=`、`--compress-program=`、`sort -T`、`tail --retry` 四种）。
+ */
 internal fun pipeOptionAllowed(command: String, arg: String): Boolean {
     val allowed = PIPE_OPTION_ALLOWLIST[command] ?: return false
     if (!arg.startsWith("-") || arg == "-") return true

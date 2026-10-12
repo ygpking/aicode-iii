@@ -524,8 +524,15 @@ class ShellArgsTest {
      */
     @Test
     fun valueOptions_invariants() {
-        // 可选值选项（GNU 手册写作 `--opt[=VAL]`）：实测均不吞独立 argv
-        val optionalValueOptions = setOf("--color")
+        // 可选值选项（GNU 手册写作 `--opt[=VAL]`）：实测均不吞独立 argv。
+        // 必须把**已知的全部同族项**列进来，不能只钉已发现的那一个实例——
+        // 否则将来谁把 `--colour`/`--group` 之类放进取值表，断言不会转红，
+        // 而后果是「槽位 +1」重现（实测 `grep --color root /etc/passwd` 读到过文件）。
+        val optionalValueOptions = setOf(
+            "--color", "--colour",           // grep：--color[=WHEN]
+            "--group", "--all-repeated",     // uniq：--group[=METHOD]、--all-repeated[=METHOD]
+            "--check", "--check-read",       // sort：--check[=quiet]、--check-read[?]
+        )
         val optionalPresent = PIPE_VALUE_OPTIONS.flatMap { (cmd, opts) ->
             opts.filter { it in optionalValueOptions }.map { "$cmd $it" }
         }

@@ -56,7 +56,8 @@ class SearchCodeTool @Inject constructor(
                 "支持末尾接只读管道（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac），" +
                 "管道段只能用这些命令的常用只读选项（写文件/执行外部程序的选项一律拒），" +
                 "并且只能加工上游输出、不能另读文件（各命令允许的位置参数个数固定：" +
-                "head/tail/sort/uniq/wc/cut/nl/rev/tac 不允许带参数，grep/rg 只接一个检索词）；" +
+                "head/tail/sort/uniq/wc/cut/nl/rev/tac 不允许带参数，grep/rg 只接一个检索词" +
+                "（用 -e/--regexp 提供检索式后不再接任何位置参数））；" +
                 "重定向（> >> <）与写文件类命令（cp/mv/tee/install 等）不支持。",
             required = true
         )
