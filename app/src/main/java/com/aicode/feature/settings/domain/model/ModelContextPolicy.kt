@@ -107,8 +107,9 @@ object ModelContextPolicy {
     fun tailBudget(
         triggerThreshold: Int,
         contextLimit: Int = DEFAULT_CONTEXT_TOKENS,
-        summaryWindowTokens: Int = DEFAULT_CONTEXT_TOKENS
-    ): Int = tailBudgetPlan(triggerThreshold, contextLimit, summaryWindowTokens).tail
+        summaryWindowTokens: Int = DEFAULT_CONTEXT_TOKENS,
+        overheadTokens: Int = 0
+    ): Int = tailBudgetPlan(triggerThreshold, contextLimit, summaryWindowTokens, overheadTokens).tail
 
     /**
      * [tailBudget] 的完整结果：tail 值 + 两条约束是否同时可满足。
@@ -127,17 +128,26 @@ object ModelContextPolicy {
      * 1. 两者可行 → 比例预算夹进 `[C2 下界, C1 上界]`；
      * 2. C2 无解 → 取 C1 上界（尽量不丢历史是不可能的，退化为「压缩成功但有丢弃」，并置 feasible=false）；
      * 3. C1 无解（阈值小到装不下摘要，压缩本身无意义）→ 同样取上界并置 feasible=false。
+     *
+     * @param overheadTokens **固定开销 Δ**（system prompt + tools + memory blocks 等每轮恒定注入，
+     *   不含在 [composeMessages]/messages 文本里的部分）。触发判断用的是**真实 usage（含 Δ）**，
+     *   而压缩后大小 = tail + 摘要 + Δ。C1 上界若不扣 Δ，就会系统性乐观：当 C2 下界主导 tail 时
+     *   `tail ≈ 阈值 − 摘要估算`，压缩后 ≈ `阈值 − 摘要估算 + 摘要 + Δ`，只要 `摘要 + Δ > 摘要估算`
+     *   就 ≥ 阈值 → 压完立即再触发（实测「128k 主 + 64k 摘要」配置下 Δ 取 20~40k 时必现）。
+     *   调用方应传 `max(0, lastInputTokens − 本地估算)`；无真实 usage 时传 0（退化为旧行为）。
      */
     fun tailBudgetPlan(
         triggerThreshold: Int,
         contextLimit: Int = DEFAULT_CONTEXT_TOKENS,
-        summaryWindowTokens: Int = DEFAULT_CONTEXT_TOKENS
+        summaryWindowTokens: Int = DEFAULT_CONTEXT_TOKENS,
+        overheadTokens: Int = 0
     ): TailBudgetPlan {
         val proportional = preserveRecentTokens(triggerThreshold, contextLimit)
         // C2 下界：head 必须装进摘要输入预算。
         val lower = minTailForSummaryWindow(triggerThreshold, summaryWindowTokens)
-        // C1 上界：压缩后（tail + 摘要）必须低于触发阈值；留 1 token 保证严格小于。
-        val upper = (triggerThreshold - SUMMARY_TOKENS_ESTIMATE - 1)
+        // C1 上界：压缩后（tail + 摘要 + 固定开销 Δ）必须低于触发阈值；留 1 token 保证严格小于。
+        val overhead = overheadTokens.coerceAtLeast(0)
+        val upper = (triggerThreshold - SUMMARY_TOKENS_ESTIMATE - overhead - 1)
             .coerceAtLeast(MIN_PRESERVE_RECENT_TOKENS)
         val lo = lower.coerceAtLeast(MIN_PRESERVE_RECENT_TOKENS)
         // 可行 ⟺ C2 下界不高于 C1 上界。
@@ -145,6 +155,11 @@ object ModelContextPolicy {
         val tail = if (feasible) proportional.coerceIn(lo, upper) else upper
         val reason = when {
             feasible -> "C1 与 C2 同时满足"
+            // 固定开销分支优先于「摘要窗口过小」：Δ + 摘要 ≥ 阈值时，即便摘要窗口无限大也无解
+            // （head 可全塞进摘要窗口，但压缩后仍 = tail + 摘要 + Δ ≥ 阈值）。故这是更根本的原因。
+            overhead + SUMMARY_TOKENS_ESTIMATE >= triggerThreshold ->
+                "固定开销过大：Δ($overhead) + 摘要估算($SUMMARY_TOKENS_ESTIMATE) ≥ 触发阈值($triggerThreshold)，" +
+                    "压缩后必然仍超阈值——需增大窗口/降低每轮固定注入（如收敛记忆召回）"
             lower > upper -> "摘要窗口过小：C2 下界($lower) 高于 C1 上界($upper)，无法既装进摘要窗口又不立即再触发"
             else -> "触发阈值过小：容不下摘要估算($SUMMARY_TOKENS_ESTIMATE)"
         }
