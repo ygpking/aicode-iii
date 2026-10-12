@@ -167,6 +167,8 @@ internal val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
         "-m", "--max-count", "-A", "-B", "-C",
         "--after-context", "--before-context", "--context",
         "--color", "--include", "--exclude", "--include-dir", "--exclude-dir",
+        // 输出抑制 / 错误抑制 / 分隔符：实测均无「读文件 / 写文件 / 执行 / 挂起」能力
+        "-q", "--quiet", "--silent", "-s", "--no-messages", "-z", "--null-data", "-Z", "--null",
     ),
     "rg" to setOf(
         "-i", "-v", "-c", "-l", "-n", "-o", "-w", "-x", "-e", "--regexp",

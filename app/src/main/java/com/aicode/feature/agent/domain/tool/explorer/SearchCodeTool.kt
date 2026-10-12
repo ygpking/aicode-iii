@@ -41,7 +41,8 @@ class SearchCodeTool @Inject constructor(
         "按 rg 风格搜索文本（rg 默认递归、默认带文件名，勿加 -r——那是替换标志）。" +
             "例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。" +
             "支持末尾接只读管道（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac）加工输出；" +
-            "管道段只能带该命令的常用只读选项，且参数不能是文件路径（如 `| grep x /etc/passwd` 会被拒）；" +
+            "管道段只能带该命令的常用只读选项，也不要给它文件名——管道段只能加工上游输出、不能另读文件" +
+            "（`| grep x /etc/passwd` 会被拒；`| head -30`、`| grep -i foo` 正常）；" +
             "正则括号需成对（不配对会直接被挡下，不必等 rg 报错）；纯文本搜索加 -F 关闭正则最省心。" +
             "路径不存在会直接报错，不确定时先 list 确认。"
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
@@ -54,7 +55,8 @@ class SearchCodeTool @Inject constructor(
             description = "rg 风格参数。不填无效。常用：-i -F -e -g --hidden --。" +
                 "支持末尾接只读管道（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac），" +
                 "管道段只能用这些命令的常用只读选项（写文件/执行外部程序的选项一律拒），" +
-                "且不得带文件路径参数（管道段只能加工上游输出，不能另读文件）；" +
+                "并且只能加工上游输出、不能另读文件（各命令允许的位置参数个数固定：" +
+                "head/tail/sort/uniq/wc/cut/nl/rev/tac 不允许带参数，grep/rg 只接一个检索词）；" +
                 "重定向（> >> <）与写文件类命令（cp/mv/tee/install 等）不支持。",
             required = true
         )
@@ -90,8 +92,8 @@ class SearchCodeTool @Inject constructor(
             val command = buildSearchCommand(tokens, pathHomeResolver.home())
                 ?: return ToolResult.Error(
                     "管道段不被支持。只允许只读加工命令（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac），" +
-                        "且它们只能带常用只读选项、不得带文件路径参数（管道段只能加工上游输出），" +
-                        "参数中也不得含重定向（> >> <）或命令分隔符。" +
+                        "且它们只能带常用只读选项、只能加工上游输出（不能另接文件名或路径），" +
+                        "参数中也不得含重定向（> >> <）、反引号或命令分隔符。" +
                         "如果管道只是为了截断行数，可直接用 `| head -N`。",
                     "INVALID_PIPE"
                 )

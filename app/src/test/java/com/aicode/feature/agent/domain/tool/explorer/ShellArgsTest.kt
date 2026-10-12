@@ -389,6 +389,11 @@ class ShellArgsTest {
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep a.b")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -v test")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | tr a b")!!))
+        // 纯输出/错误抑制类标志（实测无读/写/执行能力）：曾因允许集不全被误拒
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -q x")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -s x")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --quiet x")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -z x")!!))
     }
 
     /**
