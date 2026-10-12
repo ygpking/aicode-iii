@@ -128,37 +128,107 @@ fun headLinesOf(seg: List<String>): Int? = when {
  *
  * `rg` 在内：search 自身就依赖 rg，容器里必然存在，与 grep 同族（`rg -v` = `grep -v`）。
  *
- * **白名单只是第一道**，单靠命令名不够：`sort -o FILE` 会写文件、`tail -f` 会挂住、
- * `grep -f FILE` 会把别的文件读进来。这些见 [PIPE_OPTION_BLACKLIST]。
+ * **命令名白名单只是第一道**。单靠它不够：`sort -o FILE` 会写文件、`tail -f` 会挂住、
+ * `grep -f FILE` 会把别的文件读进来，而引号包裹对这些命令自身的能力一律无效。
+ * 逐命令的选项约束见 [PIPE_OPTION_ALLOWLIST]。
  */
 private val READ_ONLY_PIPE_COMMANDS: Set<String> =
     setOf("head", "tail", "grep", "rg", "sort", "uniq", "wc", "cut", "tr", "nl", "rev", "tac")
 
 /**
- * 命令级选项黑名单：命令名在只读白名单内，但这些选项会让它**不**只读。
+ * 逐命令**正向**选项白名单：命令名在 [READ_ONLY_PIPE_COMMANDS] 内，但只有这些选项
+ * 才允许出现，其余一律拒。
  *
- * 逐个选项都实测过（不是理论风险）：
- *  - `sort -o/--output`：把排序结果写进指定文件（实测 `printf 'b\na\n' | sort -o FILE` 落盘）
- *  - `sort --compress-program`：把参数当程序执行
- *  - `tail -f/--follow/-F`：不退出，每次调用挂满 SEARCH_TIMEOUT_MS
- *  - `grep -f/--file`、`rg -f/--files`、`--files0-from`：从文件读 pattern，绕过本文件的字符校验
- *  - `rg --pre`：把参数当预处理器执行
- *  - `tr/cut/nl -o/--output`：写文件
+ * 为什么不能只靠字符集：字符集只能挡住 shell 元字符，挡不住命令**自身**的内建能力。
+ * 逐个实测过（真跑、看 marker 是否落盘）：
+ *  - `awk 'BEGIN{system("touch x")}'` → 落盘（任意命令执行）
+ *  - `sed 'e touch x'` / `sed 's/a/b/w x'` → 落盘（执行 / 写文件）
+ *  - `sort -o FILE` / `sort --output=FILE` → 落盘（写文件）
+ *  - `sort --compress-program=PROG` → 把参数当程序执行
+ *  - `tail -f FILE` → 不退出，每次调用挂满 SEARCH_TIMEOUT_MS
+ *  - `grep -f FILE` / `rg --pre PROG` → 从文件读 pattern（绕过字符集）/ 执行预处理器
+ *  - `tr/cut/nl/rev/tac -o FILE` → 写文件
+ *  - `sort -T DIR` / `--temporary-directory=DIR` → 往指定目录写临时文件
+ * 单引号包裹对这些**全部无效**：引号只保护 shell 元字符，不改变命令自己的语义。
  *
- * 未列入的选项按「只影响 stdout 形态」处理；新增命令时同步核对它有没有这类选项。
+ * 因此 awk/sed 根本不在 [READ_ONLY_PIPE_COMMANDS] 里——它们唯一有价值的用法就是
+ * 携带程序体，而程序体一旦被允许就必然带上执行能力，与只读约束不可兼得。
+ *
+ * 长选项的等号形式（`--output=FILE`）与短选项的合并形式（`-rn`）由 [pipeOptionAllowed]
+ * 归一化后判定，不在这里展开。
  */
-private val PIPE_OPTION_BLACKLIST: Map<String, Set<String>> = mapOf(
-    "sort" to setOf("-o", "--output", "--compress-program", "--files0-from"),
-    "tail" to setOf("-f", "--follow", "-F"),
-    "grep" to setOf("-f", "--file"),
-    "rg" to setOf("-f", "--files", "--files0-from", "--pre", "--hostname"),
-    "tr" to setOf("-o", "--output"),
-    "cut" to setOf("-o", "--output", "--only-delimited"),
-    "nl" to setOf("-o", "--output"),
-    "wc" to setOf("--files0-from"),
-    "rev" to setOf("-o", "--output"),
-    "tac" to setOf("-o", "--output"),
+private val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
+    "head" to setOf("-n", "-q", "-v", "-z"),
+    "tail" to setOf("-n", "-q", "-v", "-z"),
+    "grep" to setOf(
+        "-i", "-v", "-c", "-l", "-L", "-n", "-o", "-h", "-H", "-w", "-x",
+        "-e", "--regexp", "-E", "-F", "-G", "-P", "-a", "-I", "-U", "-b",
+        "--color", "--include", "--exclude", "--include-dir", "--exclude-dir",
+    ),
+    "rg" to setOf(
+        "-i", "-v", "-c", "-l", "-n", "-o", "-w", "-x", "-e", "--regexp",
+        "-F", "--fixed-strings", "-E", "--encoding", "-g", "--glob", "--iglob",
+        "-t", "--type", "-A", "-B", "-C", "--after-context", "--before-context",
+        "--context", "-M", "--max-columns", "--max-columns-preview", "-m",
+        "--max-count", "--no-filename", "-N", "--no-line-number", "--heading",
+        "-S", "--smart-case", "--sort", "--sortr", "-j", "--threads", "-a",
+        "--text", "--binary", "-u", "--unrestricted", "--stats", "--count-matches",
+        "--only-matching", "--byte-offset", "--field-match-separator", "--path-separator",
+        "--type-add", "--type-not", "-p", "--pretty", "--no-messages",
+    ),
+    "sort" to setOf(
+        "-b", "-d", "-f", "-g", "-h", "-i", "-M", "-n", "-R", "-r", "-V",
+        "-k", "--key", "-t", "--field-separator", "-u", "--unique", "-c",
+        "--check", "-C", "-m", "--merge", "-s", "--stable", "-z",
+        "--zero-terminated", "--parallel", "-S", "--buffer-size",
+    ),
+    "uniq" to setOf(
+        "-c", "--count", "-d", "--repeated", "-D", "--all-repeated", "-f",
+        "--skip-fields", "-i", "--ignore-case", "-s", "--skip-chars", "-u",
+        "--unique", "-w", "--check-chars", "-z", "--zero-terminated", "--group",
+    ),
+    "wc" to setOf(
+        "-c", "--bytes", "-m", "--chars", "-l", "--lines", "-L",
+        "--max-line-length", "-w", "--words",
+    ),
+    "cut" to setOf(
+        "-b", "--bytes", "-c", "--characters", "-d", "--delimiter", "-f",
+        "--fields", "-n", "-s", "--complement", "-z", "--zero-terminated",
+        "--output-delimiter",
+    ),
+    "tr" to setOf("-c", "-C", "--complement", "-d", "--delete", "-s", "--squeeze-repeats", "-t", "--truncate-set1"),
+    "nl" to setOf(
+        "-b", "--body-numbering", "-d", "--section-delimiter", "-f",
+        "--footer-numbering", "-h", "--header-numbering", "-i", "--line-increment",
+        "-l", "--join-blank-lines", "-n", "--number-format", "-p", "--no-renumber",
+        "-s", "--number-separator", "-v", "--starting-line-number", "-w", "--number-width",
+    ),
+    "rev" to emptySet(),
+    "tac" to setOf("-b", "--before", "-r", "--regex", "-s", "--separator"),
 )
+
+/**
+ * 单个选项是否在该命令的白名单内。归一化三种写法：
+ *  - 长选项等号形式 `--output=FILE` → 取 `=` 前的 `--output` 判定
+ *  - 合并短选项 `-rn` → 逐个拆成 `-r`/`-n` 分别判定（**这是等号形式之外第二个必漏点**：
+ *    `-of` 拆开后含 `-f`，而 grep 的 `-f` 是「从文件读 pattern」，必须拒）
+ *  - 纯数字 `-30` / `-12` → 放行（head/tail 的行数形式，语义由 [headLinesOf] 复核）
+ *
+ * 白名单外的选项一律拒，不做「看起来无害」的推断——黑名单逐个枚举必然漏变体
+ * （实测漏掉 `--output=`、`--compress-program=`、`sort -T`、`tail --retry` 四种）。
+ */
+private fun pipeOptionAllowed(command: String, arg: String): Boolean {
+    val allowed = PIPE_OPTION_ALLOWLIST[command] ?: return false
+    if (!arg.startsWith("-") || arg == "-") return true
+    // 纯数字形式：head/tail 的 -N，行数合法性由 headLinesOf 单独校验
+    if (arg.length > 1 && arg[1].isDigit()) return true
+    if (arg.startsWith("--")) return arg.substringBefore('=') in allowed
+    // 合并短选项：`-rn` = `-r -n`、`-f1,3` = `-f 1,3`、`-t:` = `-t :`。
+    // 判定规则：其中每个**字母**都须在白名单内（字母才是选项名）；非字母部分是上一个
+    // 选项的值（数字/逗号/冒号等），不参与判定。这样 `-of` 仍被拒（grep 的 -f 是
+    // 「从文件读 pattern」），`-f1,3` 放行。值本身已受过 [SAFE_ARG_CHARS] 与 shellQuote 双重约束。
+    return arg.drop(1).filter { it.isLetter() }.all { "-$it" in allowed }
+}
 
 /**
  * 管道段参数的合法字符集（**正向**白名单，不是黑名单）。
@@ -172,6 +242,8 @@ private val PIPE_OPTION_BLACKLIST: Map<String, Set<String>> = mapOf(
  * `._/:=+-,`、`#%`、`~`、空格，外加 `|`。空格与 `|` 之所以安全，是因为
  * [buildSearchCommand] 对管道段逐 token 走 [shellQuote]——引号内的空格不会把参数拆成
  * 两个词，`|` 也不再构成管道，两者都只是字面量。
+ *
+ * 注意字符集只管「不借 shell 语法逃逸」，命令自身的内建能力由 [PIPE_OPTION_ALLOWLIST] 管。
  */
 private val SAFE_ARG_CHARS: Set<Char> = buildSet {
     addAll('a'..'z')
@@ -181,7 +253,7 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
 }
 
 /**
- * 管道段参数是否安全：字符全在 [SAFE_ARG_CHARS] 内，且不触碰该命令的选项黑名单。
+ * 管道段参数是否安全：字符全在 [SAFE_ARG_CHARS] 内，且每个选项都在该命令的白名单内。
  *
  * 空参数一律拒（`grep ''` 在 shell 里是空 pattern，语义不明）。
  * 只含空白的参数（`" "`）同样拒：它经 shellQuote 后是 `' '`，是个合法但几乎必然非本意的
@@ -189,18 +261,17 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
  */
 private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
     // seg[0] 是命令名，其余是参数
-    val blacklist = PIPE_OPTION_BLACKLIST[seg[0]].orEmpty()
     for (arg in seg.drop(1)) {
         if (arg.isEmpty()) return false
         if (arg.isBlank()) return false
-        if (arg in blacklist) return false
+        if (arg.startsWith("-") && !pipeOptionAllowed(seg[0], arg)) return false
         if (arg.any { it !in SAFE_ARG_CHARS }) return false
     }
     return true
 }
 
 /**
- * 管道段是否可放行：命令在只读白名单内，参数字符合法且不触碰选项黑名单。
+ * 管道段是否可放行：命令在只读白名单内，参数字符合法、选项在该命令白名单内。
  *
  * `head` 额外要求 [headLinesOf] 通过（行数参数必须纯数字）：head 是历史上唯一被放行的
  * 管道命令，它的严格校验是原有安全属性，不能随白名单扩大一起丢掉。

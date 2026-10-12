@@ -253,6 +253,64 @@ class ShellArgsTest {
         assertTrue("含空格的 pattern 须整体引号包裹: $spaced", spaced.endsWith("grep '-v' 'LinuxContainerEngine|rg --line-number'"))
     }
 
+    /**
+     * 命令自身的内建能力必须被选项白名单挡住——引号包裹对这些**无效**。
+     *
+     * 每条都实测过（真跑 + 看 marker 是否落盘）：awk `system()` 与 sed `e` 能执行任意命令，
+     * sed `w` 与 `sort -o` 能写文件，`tail -f` 会挂住，`grep -f` 会从文件读 pattern。
+     * 覆盖长选项等号形式与合并短选项两种易漏写法。
+     */
+    @Test
+    fun buildSearchCommand_rejectsCommandBuiltinCapabilities() {
+        // 需要程序体的命令：唯一有价值的用法就携带执行能力，与只读约束不可兼得
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | awk 'BEGIN{system(\"id\")}'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sed 'e id'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sed 's/a/b/w /tmp/x'")!!))
+        // 写文件：短选项、长选项、长选项等号形式三种写法都要挡
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -o /tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --output /tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --output=/tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -T /tmp")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tr -o /tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | cut -o /tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | nl -o /tmp/x")!!))
+        // 执行外部程序
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --compress-program='id'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --compress-program id")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --pre 'id'")!!))
+        // 挂起 / 等进程
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail -f")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail --follow")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail --retry")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail --pid=1")!!))
+        // 从文件读 pattern / 文件名清单（绕过字符集）
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -f /etc/hostname")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --file=/etc/hostname")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg -f /etc/hostname")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | wc --files0-from=/etc/hostname")!!))
+        // 合并短选项拆开后含危险项：grep 的 -f 是「从文件读 pattern」
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -of /etc/hostname")!!))
+        // 命令名不在只读白名单内
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | xargs rm")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | bash -c 'id'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | perl -e 'system(\"id\")'")!!))
+        // 反向确认：只读语义的同名短选项仍放行（-o 是 only-matching，-F 是 fixed-strings）
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -o bar")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -F 'a.b'")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -f")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -rn")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | uniq -cd")!!))
+        // 合并短选项 + 数字值：`-f1` = `-f 1`，数字是选项值不是选项
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | cut -f1")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | cut -d: -f1,3")!!))
+        // 反例：合并短选项里混入危险项仍须拒
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -of /etc/hostname")!!))
+        // 长选项等号形式：合法选项须放行（判据取 `=` 前的选项名，不是整个 `--opt=val`）
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --field-separator=: -k2")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --color=never bar")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --max-count=5 bar")!!))
+    }
+
     /** 超范围行数不得抛异常（toIntOrNull），应走 INVALID_PIPE 而非兜底的 SEARCH_FAILED。 */
     @Test
     fun headLinesOf_oversizedLineCount_returnsNullNotException() {
