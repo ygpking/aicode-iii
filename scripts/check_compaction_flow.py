@@ -137,7 +137,8 @@ def tail_budget_plan(trigger, context_limit=DEFAULT_CONTEXT_TOKENS,
     overhead = max(0, overhead_tokens)
     upper = max(MIN_PRESERVE_RECENT_TOKENS, trigger - SUMMARY_TOKENS_ESTIMATE - overhead - 1)
     lo = max(MIN_PRESERVE_RECENT_TOKENS, lower)
-    feasible = lo <= upper
+    # 可行 ⟺ C2 下界不高于 C1 上界 且 固定开销+摘要 < 阈值（后者防 upper 被 MINP 兜底抬高的假可行）。
+    feasible = lo <= upper and overhead + SUMMARY_TOKENS_ESTIMATE < trigger
     tail = min(max(proportional, lo), upper) if feasible else upper
     if feasible:
         reason = "C1 与 C2 同时满足"
