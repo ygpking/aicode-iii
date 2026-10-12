@@ -806,7 +806,12 @@ class OpenAIAdapter @Inject constructor(
                         "input_image" -> {
                             text.append("\n[图片已省略：内嵌图片数据过大]")
                         }
-                        else -> {}
+                        else -> {
+                            // 兜底：未知/缺失 type 的 part 若带 text 也取出，不再静默丢弃。
+                            // 否则正文落在非白名单 type（网关改型如 "text_delta"，或省略 type）时，
+                            // 整段正文被无声吞掉 → 上层判「摘要为空」→ 压缩失败。
+                            (part["text"] as? String)?.let { text.append(it) }
+                        }
                     }
                 }
                 is String -> text.append(part)

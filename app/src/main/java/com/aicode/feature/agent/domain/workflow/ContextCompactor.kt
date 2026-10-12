@@ -85,10 +85,18 @@ class ContextCompactor @Inject constructor(
                 "（不要 reasoning_content），直接从摘要正文开始。"
 
         /**
-         * 摘要为空/截断时的一次性补救档位：最低推理档，把输出预算尽量留给正文。
-         * 适配器会把不支持的档位归一到各 provider 的最低合法档（如 none→low）。
+         * 摘要为空/截断时的一次性补救档位。
+         *
+         * **必须传各 provider 真正的最低合法档**，不能统一传 "minimal"：
+         * `OpenAIAdapter.normalizeReasoningEffort` 把 "minimal"/"none" 归一为 null = **不发该字段**，
+         * 于是「最小档重试」与首次请求**完全相同**，对强制思考模型是空操作
+         * （实测 2026-10-12：4 次失败各 attempted minimal 重试，无一次成功——因为重试请求与首次逐字节相同）。
+         * 故按 provider 取真值：OpenAI 官方最低为 "low"（"minimal" 会被丢弃）；Anthropic 无 minimal，归一到 "low"；
+         * Gemini 支持 "minimal" 原样透传。见 [minimalEffortFor]。
          */
-        const val REASONING_EFFORT_MINIMAL = "minimal"
+        const val REASONING_EFFORT_LOWEST_OPENAI = "low"
+        const val REASONING_EFFORT_LOWEST_ANTHROPIC = "low"
+        const val REASONING_EFFORT_LOWEST_GEMINI = "minimal"
 
         /** 摘要窗口预留比例：30% 留给摘要提示词与旧摘要，故可用 70%。 */
         const val SUMMARY_WINDOW_RESERVE_RATIO = 0.7f
@@ -352,10 +360,20 @@ class ContextCompactor @Inject constructor(
         var summaryTextRaw = summaryResponse.trim()
         var summaryTruncated = callUsage?.isTruncated == true
         if (summaryTextRaw.isEmpty() || summaryTruncated) {
+            // 诊断：记录首次失败形态。若 output 有量但正文空、且 reasoning 非空，
+            // 即「预算全耗在推理」——这是强制思考模型空摘要的判别特征（供未来日志直接定位）。
+            FileLogger.w(
+                TAG,
+                "摘要首次不可用：正文长 ${summaryTextRaw.length}、stopReason=${callUsage?.stopReason}、" +
+                    "output ${callUsage?.outputTokens ?: 0} tokens、reasoning 长 ${callUsage?.reasoning?.length ?: 0}——" +
+                    "${if (!callUsage?.reasoning.isNullOrEmpty()) "疑为推理占满输出预算（强制思考模型）" else "未产出正文"}，尝试最低档补救"
+            )
             // 一次性补救：思考型压缩模型把输出预算耗在推理上是**用户可见「压缩失败」的主因**
             // （128k 阈值高、head 大、摘要请求更长，思考模型更易打满）。
-            // 用最低推理档重试**一次**（不循环）：思考开销最小化，正文更可能产出；
-            // 仍失败即真失败，交 failCompaction 走冷却/熔断，不把确定性失败拖成每轮重试。
+            // 关键：必须传**该 provider 真正的最低合法档**（见 [minimalEffortFor]）——
+            // 统一传 "minimal" 在 OpenAI 路径会被归一为「不发字段」，重试请求与首次逐字节相同=空操作
+            // （实测 2026-10-12：4 次失败的重试无一成功，即此故）。
+            val retryEffort = minimalEffortFor(aiProvider)
             val retryStartElapsed = SystemClock.elapsedRealtime()
             val retryStartWall = System.currentTimeMillis()
             var retryError: String? = null
@@ -364,7 +382,7 @@ class ContextCompactor @Inject constructor(
                     systemPrompt = COMPACTION_SYSTEM_PROMPT,
                     messages = summaryRequestMessages,
                     tools = emptyList(),
-                    reasoningEffort = REASONING_EFFORT_MINIMAL,
+                    reasoningEffort = retryEffort,
                     disablePromptCaching = true
                 )
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -396,10 +414,16 @@ class ContextCompactor @Inject constructor(
             }
             val retryText = retry?.content?.trim().orEmpty()
             if (retry != null && retryText.isNotEmpty() && retry.isTruncated != true) {
-                FileLogger.i(TAG, "摘要首次为空/截断，最低推理档重试成功（output ${retry.outputTokens} tokens）")
+                FileLogger.i(TAG, "摘要首次为空/截断，以最低推理档「$retryEffort」重试成功（output ${retry.outputTokens} tokens）")
                 summaryTextRaw = retryText
                 summaryTruncated = false
                 callUsage = retry
+            } else {
+                FileLogger.w(
+                    TAG,
+                    "摘要最低档「$retryEffort」补救仍为空/截断（output ${retry?.outputTokens ?: 0} tokens，" +
+                        "reasoning 长 ${retry?.reasoning?.length ?: 0}）——该压缩模型疑为强制思考且关不掉，建议更换"
+                )
             }
         }
         // 调用统计埋点移到补救之后：记录**最终生效**的调用（重试成功记重试那次，
@@ -667,6 +691,20 @@ class ContextCompactor @Inject constructor(
             "Gemini" in className -> ProviderType.GEMINI
             else -> ProviderType.OPENAI
         }
+    }
+
+    /**
+     * 该 provider 的**真正最低推理档**（供空摘要补救用）。
+     *
+     * 不能统一传 "minimal"：`OpenAIAdapter.normalizeReasoningEffort` 把 "minimal"/"none" 归一为 null
+     * = 不发该字段，于是「最小档重试」与首次请求完全相同，对强制思考模型是空操作。
+     * 各 provider 的真值：OpenAI 官方最低 "low"；Anthropic 无 minimal 档、归一到 "low"；
+     * Gemini 支持 "minimal" 原样透传。
+     */
+    private fun minimalEffortFor(aiProvider: AIProvider): String = when (inferProviderType(aiProvider)) {
+        ProviderType.ANTHROPIC -> REASONING_EFFORT_LOWEST_ANTHROPIC
+        ProviderType.GEMINI -> REASONING_EFFORT_LOWEST_GEMINI
+        else -> REASONING_EFFORT_LOWEST_OPENAI
     }
 
     private fun buildSummaryInstruction(previousSummary: String?): String {
