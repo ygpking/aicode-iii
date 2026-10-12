@@ -150,8 +150,11 @@ object ModelContextPolicy {
         val upper = (triggerThreshold - SUMMARY_TOKENS_ESTIMATE - overhead - 1)
             .coerceAtLeast(MIN_PRESERVE_RECENT_TOKENS)
         val lo = lower.coerceAtLeast(MIN_PRESERVE_RECENT_TOKENS)
-        // 可行 ⟺ C2 下界不高于 C1 上界。
-        val feasible = lo <= upper
+        // 可行 ⟺ C2 下界不高于 C1 上界 **且** 固定开销本身容得下摘要。
+        // 后半条不可省：C1 上界被 MIN_PRESERVE_RECENT_TOKENS 兜底（`upper.coerceAtLeast(MINP)`），
+        // 当 Δ 极大（如 20 万，实测含图片会话）而摘要窗口又很大（C2 下界为负）时，
+        // `upper` 被抬到 MINP 使 `lo <= upper` 假成立 → 误报可行。故显式加判「Δ + 摘要 < 阈值」。
+        val feasible = lo <= upper && overhead + SUMMARY_TOKENS_ESTIMATE < triggerThreshold
         val tail = if (feasible) proportional.coerceIn(lo, upper) else upper
         val reason = when {
             feasible -> "C1 与 C2 同时满足"

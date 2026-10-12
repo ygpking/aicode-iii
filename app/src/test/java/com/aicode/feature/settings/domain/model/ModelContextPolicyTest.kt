@@ -289,6 +289,20 @@ class ModelContextPolicyTest {
         assertTrue("原因应指向固定开销: ${plan.reason}", plan.reason.contains("固定开销"))
     }
 
+    /**
+     * 边界回归：Δ 极大（含图片会话实测可达 20 万）且摘要窗口很大时，
+     * C1 上界 `upper` 会被 MIN_PRESERVE_RECENT_TOKENS 兜底抬升，
+     * 使 `lo <= upper` 假成立 → 曾误报 feasible=true。
+     * 必须显式加判「Δ + 摘要 < 阈值」，否则调用方误以为压缩后不会立即再触发。
+     */
+    @Test
+    fun tailBudgetPlan_hugeOverhead_largeSummaryWindow_notFalselyFeasible() {
+        // 1M 摘要窗口：C2 下界为负 → lo 与 upper 均被抬到 MINP → lo <= upper 成立。
+        val plan = ModelContextPolicy.tailBudgetPlan(115_200, 128_000, 1_000_000, 200_000)
+        assertFalse("Δ+摘要 ≥ 阈值时不得报可行: ${plan.reason}", plan.feasible)
+        assertTrue("原因应指向固定开销: ${plan.reason}", plan.reason.contains("固定开销"))
+    }
+
     /** 可行性阈值自洽：恰好 min 可行、min-1 不可行。 */
     @Test
     fun minSummaryWindowForFeasibility_isExactBoundary() {
