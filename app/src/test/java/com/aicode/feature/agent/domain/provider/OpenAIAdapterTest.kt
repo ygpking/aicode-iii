@@ -550,4 +550,68 @@ class OpenAIAdapterTest {
             assertTrue(chunks.none { it is AIStreamChunk.Final })
         }
     }
+
+    // ── 空摘要根因回归：非白名单 type 的正文 part 不得被静默丢弃 ──────────────
+
+    /**
+     * 回归：正文落在 `type` 不在白名单（如网关改型 "text_delta"）的 part 里时，
+     * 旧实现 `else -> {}` 静默丢弃 → content="" → 上层判「摘要为空」→ 压缩失败。
+     */
+    @Test
+    fun complete_textPartWithUnknownType_isNotSilentlyDropped() = runTest {
+        val api = api()
+        coEvery { api.createChatCompletion(any(), any(), any(), any()) } returns response(
+            content = listOf(mapOf("type" to "text_delta", "text" to "摘要正文"))
+        )
+
+        val result = adapter(api).complete("", emptyList())
+
+        assertEquals("未知 type 的正文 part 必须取出，不能被吞", "摘要正文", result.content)
+    }
+
+    /** 缺 type 字段的 part 同样要取出正文。 */
+    @Test
+    fun complete_textPartMissingType_isNotSilentlyDropped() = runTest {
+        val api = api()
+        coEvery { api.createChatCompletion(any(), any(), any(), any()) } returns response(
+            content = listOf(mapOf("text" to "正文"))
+        )
+
+        assertEquals("缺 type 的正文 part 必须取出", "正文", adapter(api).complete("", emptyList()).content)
+    }
+
+    /** 白名单 type 仍照常工作（不回归）。 */
+    @Test
+    fun complete_textPartWhitelisted_stillWorks() = runTest {
+        val api = api()
+        coEvery { api.createChatCompletion(any(), any(), any(), any()) } returns response(
+            content = listOf(mapOf("type" to "output_text", "text" to "A"), mapOf("text" to "B"))
+        )
+
+        assertEquals("AB", adapter(api).complete("", emptyList()).content)
+    }
+
+    // ── 空摘要根因回归：推理档位字段映射（"minimal" 曾是空操作） ──────────────
+
+    /**
+     * 核心回归：`minimal`/`none` 被归一为 null（不发字段）——
+     * 这正是「最小档重试」在 OpenAI 路径上等于**重发首次请求**、对强制思考模型无效的原因。
+     * 同时压实用例确保新增的补救档位 "low" 是真正会被发出的值。
+     */
+    @Test
+    fun complete_reasoningEffort_mapsRequestFieldCorrectly() = runTest {
+        val api = api()
+        val reqSlot = slot<ChatCompletionRequest>()
+        coEvery { api.createChatCompletion(any(), any(), any(), capture(reqSlot)) } returns response()
+
+        adapter(api).complete("", emptyList(), reasoningEffort = "minimal")
+        assertNull("minimal 必须被归一为不发字段（旧补救失效的根因）", reqSlot.captured.reasoning_effort)
+
+        adapter(api).complete("", emptyList(), reasoningEffort = "none")
+        assertNull("none 同样不发字段", reqSlot.captured.reasoning_effort)
+
+        // low 必须原样发出——新的补救档位靠它真正生效
+        adapter(api).complete("", emptyList(), reasoningEffort = "low")
+        assertEquals("low 必须原样透传", "low", reqSlot.captured.reasoning_effort)
+    }
 }
