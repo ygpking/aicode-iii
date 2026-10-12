@@ -21,7 +21,7 @@ import javax.inject.Inject
 
 /**
  * rg 风格的项目搜索工具。参数原样传给容器内的 ripgrep；支持末尾接只读管道加工输出
- * （命令名白名单 + 选项黑名单 + 参数字符集三道约束，见 [pipeSegmentAllowed]），容器未就绪则报错。
+ * （命令名白名单 + 逐命令选项白名单 + 参数字符集三道约束，见 [pipeSegmentAllowed]），容器未就绪则报错。
  */
 class SearchCodeTool @Inject constructor(
     private val commandEngine: CommandEngine,
