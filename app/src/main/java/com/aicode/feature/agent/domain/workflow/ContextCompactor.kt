@@ -794,10 +794,21 @@ class ContextCompactor @Inject constructor(
         return result
     }
 
-    private fun String.cleanSummary(): String =
-        removePrefix(CONTEXT_SUMMARY_LEGACY_PREFIX)
+    private fun String.cleanSummary(): String {
+        // 尾部「本压缩块」提示是写给接手模型的操作指引（需要细节时调 restoreCompactedRange），
+        // 不是摘要内容——滚动压缩时若原样进 previous-summary，摘要模型可能把它当旧内容复读。
+        // 丢弃注记（droppedNotice）位于块提示之前、不在锚点内，保留（滚动更新需知道更早历史未进摘要）。
+        val blockHintAnchor = "\n\n---\n> 本压缩块（块 id 前缀 "
+        // 取最后一次出现：正文若逐字复读含锚点（模型复读旧尾注是真实行为），只剥真正的尾部提示；
+        // previous-summary 里正文中残留的复读提示文本是有意保留（无法也不应区分，脚本侧已钉住）。
+        val withoutHint = if (contains(blockHintAnchor)) {
+            substringBeforeLast(blockHintAnchor).trimEnd()
+        } else this
+        return withoutHint
+            .removePrefix(CONTEXT_SUMMARY_LEGACY_PREFIX)
             .let(::stripSummaryTimestampNotice)
             .trimStart()
+    }
 
     private fun String.truncateForSummary(): String {
         if (length <= TOOL_OUTPUT_MAX_CHARS) return this

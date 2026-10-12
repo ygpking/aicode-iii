@@ -4,6 +4,7 @@ import com.aicode.core.util.runCatchingCancellable
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.SystemClock
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -105,6 +106,7 @@ import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -807,6 +809,32 @@ class AIAgentViewModel @Inject constructor(
         }
     }
 
+    /** 最近一次压缩耗时（毫秒），供 UI 提示真实等待时长；null = 本会话尚未压缩完成过。 */
+    private val _compactionLastDurationMs = MutableStateFlow<Long?>(null)
+    val compactionLastDurationMs: StateFlow<Long?> = _compactionLastDurationMs
+
+    /** 一次性「流被其他实例持有、消息已排队」提示，UI 消费后清空。 */
+    private val _rejectNotice = MutableStateFlow(false)
+    val rejectNotice: StateFlow<Boolean> = _rejectNotice
+
+    fun consumeRejectNotice() {
+        _rejectNotice.value = false
+    }
+
+    /**
+     * reject 兜底轮询协程：**每会话至多一条**（去重）。
+     *
+     * 为什么必须去重：同会话被拒 N 次会走 N 次 reject 分支，若各起一条 `while(isActive)`
+     * 轮询，就是 N 条长命协程各自以 30s 间隔空转抢归属（只在 VM 销毁才收）——慢性累积。
+     * 用 map 覆盖式登记：已有在跑则本次不再起（沿用那条即可，它照样能消费本会话队列）。
+     * 消费成功 / 队列清空 / 会话删除时经 [cancelRejectPoller] 主动取消并从 map 移除。
+     */
+    private val rejectPollers = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    private fun cancelRejectPoller(sessionId: String) {
+        rejectPollers.remove(sessionId)?.cancel()
+    }
+
     private val _streamingTexts = MutableStateFlow<Map<String, String?>>(emptyMap())
     val streamingText: StateFlow<String?> = _currentSessionId
         .flatMapLatest { id ->
@@ -1324,12 +1352,20 @@ class AIAgentViewModel @Inject constructor(
         _queuedRequests.value = _queuedRequests.value + (sid to queue.filterNot { it.id == id })
     }
 
-    private fun processNextInQueue(sessionId: String) {
+    /**
+     * 消费该会话队列的下一条请求并启动流。
+     *
+     * @return true = 确实取出了请求并启动了流（归属已交由该流负责，调用方不得再释放）；
+     *         false = 走了早退（已有活跃 job / 无队列 / 队列空），**未消费任何东西**，
+     *                 调用方若刚抢占过归属，必须自行释放（否则归属被白占、该会话此后恒
+     *                 显示「正在其他窗口处理」）。
+     */
+    private fun processNextInQueue(sessionId: String): Boolean {
         // 已有活跃 job（可能是本次收尾前由通知合并/flush 等入口启动的）时不消费，
         // 避免队列被多个收尾入口重复消费、同一会话并发跑两个 job。
-        if (sessionJobs[sessionId]?.isActive == true) return
-        val queue = _queuedRequests.value[sessionId] ?: return
-        val next = queue.firstOrNull() ?: return
+        if (sessionJobs[sessionId]?.isActive == true) return false
+        val queue = _queuedRequests.value[sessionId] ?: return false
+        val next = queue.firstOrNull() ?: return false
         _queuedRequests.value = _queuedRequests.value + (sessionId to queue.drop(1))
         executeAgentRequestStream(
             request = next.request,
@@ -1342,6 +1378,7 @@ class AIAgentViewModel @Inject constructor(
             targetSessionId = sessionId,
             isAutoTrigger = next.isAutoTrigger
         )
+        return true
     }
 
     /**
@@ -1433,24 +1470,49 @@ class AIAgentViewModel @Inject constructor(
             val currentList = _queuedRequests.value[sessionId] ?: emptyList()
             _queuedRequests.value = _queuedRequests.value + (sessionId to (currentList + req))
             FileLogger.w(TAG, "stream reject: sid=$sessionId 流已在其他实例运行，请求已排队等待")
+            // 自动触发的请求被拒时用户可能不在聊天页，不弹 Toast 免误导。
+            // 注意：仅 initProject / runSkill 传了 isAutoTrigger=true；子代理 SPAWNED 与
+            // 后台通知路径默认 false，被拒时仍会提示（用户不在聊天页时表现为回页后弹一次）。
+            if (!isAutoTrigger) _rejectNotice.value = true
             // 被拒入队后若没有正常回合来消费，该会话的队列会永久滞留（实测：子代理 SPAWNED
             // 被 reject 后 updatedAt 恒等于 createdAt，UI 待发送队列永不消费）。
-            // 兜底：延迟轮询流归属，持有者释放/进程消亡后抢占成功即消费队列；上限 20 次 × 3s。
-            viewModelScope.launch {
-                repeat(20) {
-                    delay(3_000)
-                    if (sessionJobs[sessionId]?.isActive == true) return@launch
-                    if (subAgentEventBus.tryAcquireFlow(sessionId, this@AIAgentViewModel)) {
-                        if (_queuedRequests.value[sessionId].isNullOrEmpty()) {
-                            subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
+            // 兜底：延迟轮询流归属，持有者释放/进程消亡/已销毁 VM 被 GC 后抢占成功即消费队列。
+            // 不设次数上限：持有者若是僵尸（VM 活着但流卡死），60s 后放弃只会让队列永久滞留；
+            // 但**每会话只保留一条**轮询（去重）——否则同会话被拒 N 次即 N 条长命协程空转。
+            // 取消时机：消费成功、队列已空、或 VM 销毁（onCleared 取消 viewModelScope）。
+            if (rejectPollers.containsKey(sessionId)) return@launch
+            val poller = viewModelScope.launch {
+                FileLogger.d(TAG, "stream reject 兜底轮询启动：sid=$sessionId 等待流归属释放（退避重试，最多 30s 间隔）")
+                var waitMs = 3_000L
+                try {
+                    while (isActive) {
+                        delay(waitMs)
+                        if (sessionJobs[sessionId]?.isActive == true) return@launch
+                        if (subAgentEventBus.tryAcquireFlow(sessionId, this@AIAgentViewModel)) {
+                            // 抢占成功后的**单一释放点**：无论下面走哪条路（队列空早退、
+                            // 或 processNextInQueue 内部因 job 活跃/队列空早退而未真正消费），
+                            // 只要最终没有把归属交给一个新启动的流，就必须在此释放。
+                            // 否则归属被本 VM 白占 → 该会话此后恒显示「正在其他窗口处理」。
+                            var consumed = false
+                            try {
+                                if (!_queuedRequests.value[sessionId].isNullOrEmpty()) {
+                                    FileLogger.i(TAG, "stream reject 兜底抢占成功：sid=$sessionId 消费待发送队列")
+                                    consumed = processNextInQueue(sessionId)
+                                }
+                            } finally {
+                                if (!consumed) {
+                                    subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
+                                }
+                            }
                             return@launch
                         }
-                        processNextInQueue(sessionId)
-                        return@launch
+                        waitMs = minOf(waitMs * 2, 30_000L)
                     }
+                } finally {
+                    rejectPollers.remove(sessionId, coroutineContext[Job])
                 }
-                FileLogger.w(TAG, "stream reject 兜底重试放弃：sid=$sessionId 流归属 60s 内未释放，队列保留待用户处理")
             }
+            rejectPollers[sessionId] = poller
             return@launch
         }
 
@@ -1492,6 +1554,7 @@ class AIAgentViewModel @Inject constructor(
         // 压缩状态：ContextCompactor 在协程被取消时补发不了 CompactionFinished
         // （那一刻 channelFlow 的 send 已不可用），故此处留痕，由 finally 补齐因果链。
         var compactionInFlight = false
+        var compactionStartElapsed: Long? = null
         // 同一回合内压缩反复失败只落一张卡片：外层每轮 LLM 调用前都会重试压缩，
         // 卡住的会话会连发十几次，逐次落卡会让对话流被同一张失败卡片刷屏。
         var compactionFailureCardPersisted = false
@@ -1603,14 +1666,17 @@ class AIAgentViewModel @Inject constructor(
                         setStreamingReasoning(sessionId, null)
                         setCompacting(sessionId, true)
                         compactionInFlight = true
+                        compactionStartElapsed = SystemClock.elapsedRealtime()
                     }
                     AgentEvent.CompactionFinished -> {
                         setCompacting(sessionId, false)
                         compactionInFlight = false
+                        compactionStartElapsed?.let { _compactionLastDurationMs.value = SystemClock.elapsedRealtime() - it }
                     }
                     is AgentEvent.CompactionFailed -> {
                         setCompacting(sessionId, false)
                         compactionInFlight = false
+                        compactionStartElapsed?.let { _compactionLastDurationMs.value = SystemClock.elapsedRealtime() - it }
                         // 落库为无配对的 TOOL 消息：UI 渲染失败卡片，buildHistory 回放自动丢弃，不进模型上下文。
                         // 同一回合只落首张：外层已会反复重试压缩，重因相同的卡片重复落地没有任何新信息。
                         if (!compactionFailureCardPersisted) {
@@ -2191,14 +2257,22 @@ class AIAgentViewModel @Inject constructor(
         val job = viewModelScope.launch {
             setCompacting(sid, true)
             var failed = false
+            var compactionStartElapsed: Long? = null
             try {
                 val changed = agentWorkflow.compactSession(sid) { event ->
                     when (event) {
-                        is AgentEvent.CompactionStarted -> setCompacting(sid, true)
-                        AgentEvent.CompactionFinished -> setCompacting(sid, false)
+                        is AgentEvent.CompactionStarted -> {
+                            setCompacting(sid, true)
+                            compactionStartElapsed = SystemClock.elapsedRealtime()
+                        }
+                        AgentEvent.CompactionFinished -> {
+                            setCompacting(sid, false)
+                            compactionStartElapsed?.let { _compactionLastDurationMs.value = SystemClock.elapsedRealtime() - it }
+                        }
                         is AgentEvent.CompactionFailed -> {
                             failed = true
                             setCompacting(sid, false)
+                            compactionStartElapsed?.let { _compactionLastDurationMs.value = SystemClock.elapsedRealtime() - it }
                             // 与自动压缩一致：落库无配对的 TOOL 消息渲染失败卡片，buildHistory 回放丢弃。
                             messagePersistenceUseCase.persist(
                                 sessionId = sid,
@@ -2677,5 +2751,17 @@ class AIAgentViewModel @Inject constructor(
             "rs" -> "rust"
             else -> "text"
         }
+    }
+
+    /**
+     * 多实例归属兜底：流协程若卡在不可取消点（viewModelScope 取消走不到 finally 的
+     * releaseFlow），VM 销毁后归属会永久残留，其它实例将一直 reject 入队。这里统一释放
+     * 本实例持有的全部会话流归属（幂等）。与归属弱引用形成双保险。
+     */
+    override fun onCleared() {
+        subAgentEventBus.releaseAllFlows(this@AIAgentViewModel)
+        rejectPollers.values.forEach { it.cancel() }
+        rejectPollers.clear()
+        super.onCleared()
     }
 }

@@ -29,8 +29,10 @@
   - **摘要窗口**：已建模 head 超出「摘要模型窗口 × 70%」时的丢弃量化
     （CompactionSummaryWindow），但**未建模** trimLeadingForCompaction 对超长工具输出的
     前置截断（该截断会把 head 拉回预算内、减少丢弃量，故本模型偏保守）。
-  - **adjustSplitIndex**（ContextCompactor.kt:213,507）未建模：它在 splitIndex<=0 早退之后才调用，
-    不影响压缩能否发生。
+  - **adjustSplitIndex**（CompactionSplitAdjuster）与 **cleanSummary**（滚动摘要清理）已建模
+    （正向组 12/13 + 失败注入各 1 项）：覆盖「marker/summary 对不劈开、末尾对不清空 tail」与
+    「previous-summary 剥尾部块提示、保留丢弃注记」两条约束；其余细节由
+    CompactionSplitAdjusterTest.kt 单测覆盖。
   - **SessionHistoryPager.pack 的「首条无条件放入」**未建模；在 MAX_CHARS_PER_MESSAGE(1200)
     < MAX_TOTAL_CHARS(24000) 的现常量下两者等价，两常量关系若反转则模型会偏离。
 """
@@ -38,6 +40,7 @@
 import copy
 import io
 import os
+import re
 import sys
 import contextlib
 
@@ -63,6 +66,12 @@ DEFAULT_LIMIT = 20                    # SessionHistoryPager.DEFAULT_LIMIT
 
 ROLE_USER, ROLE_ASSISTANT, ROLE_TOOL = "user", "assistant", "tool"
 TRUNCATE_SUFFIX = "…（本条已截断，全文更长）"   # SessionHistoryPager.truncate
+# AgentMessage.kt 的压缩锚点/摘要前缀（对账 ContextCompactor.cleanSummary 与 CompactionSplitAdjuster）
+MARKER_TEXT = "What did we do so far?"
+SUMMARY_LEGACY_PREFIX = "【系统提示：早期的对话已被压缩，以下是之前的核心状态摘要】"
+SUMMARY_TIMESTAMP_PREFIX = "【摘要时点】"
+# ContextCompactor.kt:763 的 blockHintAnchor 字面量（剥尾注锚点，组 14 与源码对账）
+HINT_ANCHOR = "\n\n---\n> 本压缩块（块 id 前缀 "
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -208,6 +217,38 @@ def compute_tail_split(msgs, budget, restored_ids):
     return split
 
 
+def adjust_split_index(msgs, initial_split):
+    """对账 CompactionSplitAdjuster.adjust（两条约束：tail 不以孤立 tool 结果开头；marker/summary 对不劈开）。"""
+    split = max(0, min(initial_split, len(msgs)))
+
+    def walk_back(ix):
+        while ix > 0 and msgs[ix].role == ROLE_TOOL:
+            ix -= 1
+        return ix
+
+    split = walk_back(split)
+    if (1 <= split < len(msgs) - 1 and
+            msgs[split - 1].role == ROLE_USER and msgs[split - 1].content == MARKER_TEXT and
+            msgs[split].role == ROLE_ASSISTANT):
+        split += 1
+    split = walk_back(split)
+    return split
+
+
+def clean_summary(text):
+    """对账 ContextCompactor.cleanSummary：剥尾部块提示 + legacy 前缀 + 时点标注，丢弃注记保留。"""
+    if HINT_ANCHOR in text:
+        # rindex：正文若复读含锚点，取最后一次出现（真正的尾部提示）。
+        text = text[:text.rindex(HINT_ANCHOR)].rstrip()
+    if text.startswith(SUMMARY_LEGACY_PREFIX):
+        text = text[len(SUMMARY_LEGACY_PREFIX):]
+    if text.startswith(SUMMARY_TIMESTAMP_PREFIX):
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl >= 0 else ""
+        text = text.lstrip()
+    return text
+
+
 class Session:
     """对账 AgentMessageDao 的压缩块 SQL 语义 + 压缩流程。"""
 
@@ -291,6 +332,13 @@ class Session:
             split = forced_split
         else:
             degraded = False
+        # 对账 ContextCompactor 拆分前的 adjustSplitIndex（正常与降级分支统一走一遍）。
+        # 接线钩子：记录调用痕迹供集成层断言核「接线存在」。注意：现有正向场景中
+        # adjust 从不改变拆分点（无边界落在 marker/summary 之间的样本），故此处只守
+        # 「整段删除」；「丢弃赋值结果」由组 13 直接断言与注入项守住。
+        split = adjust_split_index(msgs, split)
+        getattr(self, "adjust_wiring", None) or setattr(self, "adjust_wiring", [])
+        self.adjust_wiring.append(split)
 
         head, tail = msgs[:split], msgs[split:]
         kept_tok = sum(m.tok() for m in tail)
@@ -580,6 +628,11 @@ def suite_forward(rep):
     for bid in list(blocks.keys())[:2]:
         s.restore_block(bid)
     rep.check("多块解压后恢复段累积", s.stats()["restored_count"] > 0, True)
+    wiring = getattr(s, "adjust_wiring", [])
+    # 接线钩子的能力边界：现有正向场景里 tail 预算边界从未落在历史 marker/summary 之间，
+    # 故 adjust 在该层从不改变拆分点——此断言只能抓住「整段删除」（wiring 空），
+    # 抓不住「留钩子但丢弃赋值结果」；后者由组 13 直接断言与注入项守住。
+    rep.check("集成层 adjust 接线被调用（wiring 非空）", bool(wiring), True)
 
     print("── 7. 阈值与预算 ──")
     rep.check("低阈值不被抬高（fast）", effective_percent(15, True), 15)
@@ -746,6 +799,82 @@ def suite_guard_consistency(rep):
         rep.check("est 在危险区间时判「无内容可压」而非折叠", v, "SKIP_NO_CONTENT")
         rep.check("未发生降级折叠", d.get("degraded", True), False)
 
+    print("── 12. 滚动摘要清理（previous-summary 不进块提示）──")
+    stamp = (SUMMARY_TIMESTAMP_PREFIX + " 本摘要生成于 2026-10-12 00:00:00，仅总结此前被折叠的对话历史；"
+             "其后压缩保留的最近消息可能有更新进展，与本摘要矛盾时以保留消息原文为准。\n\n")
+    body = "正文：完成了 A 与 B。\n"
+    dropped = "[更早历史部分超出摘要窗口未纳入：约 1234 token]\n"
+    hint = ("\n\n---\n> 本压缩块（块 id 前缀 abc12345）含被折叠的早期消息原文，"
+            "如摘要缺关键细节：先用 restoreCompactedRange 的 preview 模式检索定位，"
+            "确认需要完整原文再以 action=restore 恢复整块；不要为复核上下文而无谓恢复。")
+    full = stamp + body + dropped + hint
+    cleaned = clean_summary(full)
+    rep.check("previous-summary 不含块提示", "本压缩块" not in cleaned, True)
+    rep.check("previous-summary 保留丢弃注记", "1234 token" in cleaned, True)
+    rep.check("previous-summary 保留正文", "完成了 A 与 B" in cleaned, True)
+    rep.check("头部时点标注已剥", cleaned.startswith(SUMMARY_TIMESTAMP_PREFIX), False)
+    # 正文若逐字复读含锚点（模型复读旧尾注是真实行为）：substringBeforeLast 取最后一次出现，
+    # 只剥真正的尾部提示，正文里的复读文本保留（无法也不应区分）。
+    full2 = stamp + body + hint + dropped + hint
+    cleaned2 = clean_summary(full2)
+    rep.check("复读场景真正文保留", "完成了 A 与 B" in cleaned2, True)
+    rep.check("复读场景丢弃注记保留", "1234 token" in cleaned2, True)
+
+    print("── 13. 拆分不劈开 marker/summary 对 ──")
+    msgs = [
+        Entity("m1", ROLE_USER, "早期消息", 1000),
+        Entity("m2", ROLE_ASSISTANT, "带工具调用", 2000, tool_calls=[("tc0", "readFile")]),
+        Entity("m3", ROLE_TOOL, "工具结果", 3000, tool_call_id="tc0"),
+        Entity("m4", ROLE_USER, MARKER_TEXT, 4000),
+        Entity("m5", ROLE_ASSISTANT, "摘要内容", 5000),
+        Entity("m6", ROLE_ASSISTANT, "最近消息", 6000, tool_calls=[("tc1", "bash")]),
+        Entity("m7", ROLE_TOOL, "最近工具结果", 7000, tool_call_id="tc1"),
+    ]
+    # 原始拆分落在 marker(m4) 与 summary(m5) 之间 → 调整后 summary 也进 head（split 前移一位）。
+    rep.check("劈开位被修正为不劈开", adjust_split_index(msgs, 4), 5)
+    # 边界：pair 落在可见流最末尾 (size-2, size-1)、split 指向 size-1 时，前移会清空 tail
+    # （代价更大），宁留劈开也不折走最近消息。
+    msgs_edge = msgs + [
+        Entity("m8", ROLE_USER, MARKER_TEXT, 8000),
+        Entity("m9", ROLE_ASSISTANT, "末尾摘要", 9000),
+    ]
+    rep.check("末尾对不强行前移（宁留劈开不清空）", adjust_split_index(msgs_edge, 8), 8)
+
+    print("── 14. 锚点源级对账（防落库文案与剥除锚点漂移）──")
+    # 注意：本组正则锚在局部 val blockHintAnchor 形态上；若源码改为 const val 提常量，
+    # 正则将不再匹配 → 本组必红（方向安全），届时同步改正则，勿误读为「对账发现漂移」。
+    kt_path = os.path.join(ROOT, "app", "src", "main", "java", "com", "aicode",
+                           "feature", "agent", "domain", "workflow", "ContextCompactor.kt")
+    am_path = os.path.join(ROOT, "app", "src", "main", "java", "com", "aicode",
+                           "feature", "agent", "domain", "model", "AgentMessage.kt")
+    try:
+        with open(kt_path, encoding="utf-8") as f:
+            kt = f.read()
+        with open(am_path, encoding="utf-8") as f:
+            am = f.read()
+        m_anchor = re.search(r'blockHintAnchor = "([^"]*)"', kt)
+        m_store = re.search(r'content = stampedSummary \+ droppedNotice \+ "([^"]*)"', kt)
+        rep.check("锚点与落库文案同源（锚点是落库字面量前缀）",
+                  bool(m_anchor) and bool(m_store) and m_store.group(1).startswith(m_anchor.group(1)),
+                  True)
+        # 脚本建模常量与源码锚点必须一致：源码 raw 字面量需经转义还原（\n 两字符 → 换行）。
+        rep.check("脚本建模锚点与源码一致",
+                  bool(m_anchor) and m_anchor.group(1).replace('\\n', "\n") == HINT_ANCHOR,
+                  True)
+        # 其余三个手抄常量（AgentMessage.kt:61/62/65）同样纳入源级对账，防漂移不红。
+        m_marker = re.search(r'const val CONTEXT_COMPACTION_MARKER = "([^"]*)"', am)
+        m_legacy = re.search(r'const val CONTEXT_SUMMARY_LEGACY_PREFIX = "([^"]*)"', am)
+        m_ts = re.search(r'const val CONTEXT_SUMMARY_TIMESTAMP_PREFIX = "([^"]*)"', am)
+        rep.check("MARKER_TEXT 与源码一致",
+                  bool(m_marker) and m_marker.group(1) == MARKER_TEXT, True)
+        rep.check("SUMMARY_LEGACY_PREFIX 与源码一致",
+                  bool(m_legacy) and m_legacy.group(1) == SUMMARY_LEGACY_PREFIX, True)
+        rep.check("SUMMARY_TIMESTAMP_PREFIX 与源码一致",
+                  bool(m_ts) and m_ts.group(1) == SUMMARY_TIMESTAMP_PREFIX, True)
+        rep.check("cleanSummary 使用取末次剥除", "substringBeforeLast(blockHintAnchor)" in kt, True)
+    except OSError:
+        rep.check("源码可读（锚点对账前置）", False, True)
+
 
 # ══════════════════════════════════════════════════════════════════════
 # 六、失败注入（变异测试）——验证正向场景真有判别力
@@ -856,6 +985,24 @@ def mut_restore_reversed(self, block_id):
         e.is_compacted = not (e.is_context_summary or e.is_compaction_marker)
 
 
+def mut_split_adjust_breaks_pair(msgs, initial_split):
+    """旧实现：marker/summary 对可被劈开（只有 tool 回溯，无前移约束）。"""
+    split = max(0, min(initial_split, len(msgs)))
+    while split > 0 and msgs[split].role == ROLE_TOOL:
+        split -= 1
+    return split
+
+
+def mut_clean_summary_keep_hint(text):
+    """旧实现：只剥头部标注，尾部块提示原样进 previous-summary。"""
+    if text.startswith(SUMMARY_LEGACY_PREFIX):
+        text = text[len(SUMMARY_LEGACY_PREFIX):]
+    if text.startswith(SUMMARY_TIMESTAMP_PREFIX):
+        nl = text.find("\n")
+        text = text[nl + 1:] if nl >= 0 else ""
+    return text.lstrip()
+
+
 def run_with_patch(patch):
     """在 monkeypatch 下跑全部正向场景，返回失败条数（静默）。
     patch 的键可以是模块级函数名，也可以是 "Session.restore_block" 这样的方法名。"""
@@ -898,6 +1045,10 @@ def suite_mutation(rep):
         ("拆分守卫口径分裂（把『无需压缩』误判成『折叠全部』）",
          {"Session._guard_budget": mut_guard_old_budget}),
         ("解压方向写反", {"Session.restore_block": mut_restore_reversed}),
+        ("marker/summary 对可被劈开（缺前移约束）",
+         {"adjust_split_index": mut_split_adjust_breaks_pair}),
+        ("摘要清理未剥尾部块提示",
+         {"clean_summary": mut_clean_summary_keep_hint}),
     ]
     for name, patch in injections:
         caught = run_with_patch(dict(patch))
@@ -926,9 +1077,10 @@ def main():
             print("  - %s" % f)
         return 1
     print("[OK] 上下文压缩全流程回归通过")
-    print("  - 正向场景 11 组 + 失败注入 8 项均已核对")
+    print("  - 正向场景 14 组 + 失败注入 10 项均已核对")
     print("  - 建模对账：CompactionTailSelector / CompactionThreshold / ModelContextPolicy /")
-    print("    AgentMessageDao 压缩块 SQL / buildHistory 筛选与配对 / SessionHistoryPager")
+    print("    AgentMessageDao 压缩块 SQL / buildHistory 筛选与配对 / SessionHistoryPager /")
+    print("    CompactionSplitAdjuster / cleanSummary")
     return 0
 
 

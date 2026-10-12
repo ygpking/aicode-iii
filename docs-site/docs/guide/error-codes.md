@@ -124,7 +124,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `MISSING_REASON` / `NOT_IN_PLAN` | 模式切换 | 缺少切换理由，或当前不在计划模式 |
 | `NO_PARENT` | 子代理消息 | 找不到父会话 |
 | `SPILL_NOT_FOUND` | 回取工具结果 | 之前落盘的大结果已不存在（可能已被清理） |
-| `A11Y_NOT_ENABLED` / `OPEN_FAILED` / `CLICK_FAILED` / `SWIPE_FAILED` / `INPUT_FAILED` / `SCREENSHOT_FAILED` / `VSCREEN_FAILED` / `CLOSE_FAILED` / `MISSING_ARG` | 虚拟屏 | 无障碍未开启（见[软件权限](/guide/app-permissions)），或参数缺失、打开 / 点击 / 滑动 / 输入 / 截图 / 关闭失败 |
+| `A11Y_NOT_ENABLED` / `OPEN_FAILED` / `CLICK_FAILED` / `SWIPE_FAILED` / `INPUT_FAILED` / `SCREENSHOT_FAILED` / `VSCREEN_FAILED` / `CLOSE_FAILED` / `MISSING_ARGS` / `INVALID_ARGS` | 虚拟屏 | 无障碍未开启（见[软件权限](/guide/app-permissions)），或参数缺失（click 缺 text/id/bounds）、bounds 非四整数、打开 / 点击 / 滑动 / 输入 / 截图 / 关闭失败 |
 | `SESSION_NOT_FOUND` / `NO_SESSION` | 多工具通用 | 会话不存在或未绑定会话 |
 | `NO_WORKSPACE` | 多工具通用 | 尚未打开工作区 |
 | `ROUND_TOOL_LIMIT` | 框架层 | 单回合工具调用数已达上限 |

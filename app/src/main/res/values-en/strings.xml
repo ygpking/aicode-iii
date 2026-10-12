@@ -36,7 +36,7 @@
     <string name="settings_enter_to_send">Enter key sends message</string>
     <string name="settings_enter_to_send_desc">When off, Enter inserts a newline and you send with the button</string>
     <string name="settings_compaction_threshold">Auto-compaction threshold</string>
-    <string name="settings_compaction_threshold_desc">Compact context once it reaches this share of the window</string>
+    <string name="settings_compaction_threshold_desc">Compact context once it reaches this share of the window. Lower values trigger compaction more often and spend more time on it; higher values produce larger summaries per run and take longer each time. Avoid very low values that cause frequent compactions</string>
     <string name="settings_percent_value">%1$d%%</string>
     <string name="settings_compaction_threshold_input_hint">Integer percentage between 1 and 100</string>
     <string name="settings_general_tools">Tools</string>
@@ -625,7 +625,9 @@
     <string name="chat_compaction_failed">Context compaction failed</string>
     <string name="chat_compaction_failed_empty_summary">The summary was empty or truncated; the original conversation was kept</string>
     <string name="chat_compaction_failed_head_not_persisted">Some history was not persisted yet, so compaction did not take effect; the original conversation was kept</string>
-    <string name="chat_compressing_context">Compressing context</string>
+    <string name="chat_compressing_context">Compressing context (may take a few minutes)</string>
+    <string name="chat_compressing_context_with_last">Compressing context (last took about %1$d s)</string>
+    <string name="chat_stream_reject_notice">This conversation is being processed in another window; your message is queued</string>
     <string name="chat_retrying">Retrying %1$s/%2$s</string>
     <string name="chat_key_switched">Switched to key %1$d of %2$d</string>
     <string name="chat_error_title">Request failed</string>
@@ -1037,6 +1039,7 @@
     <string name="subagents_empty_hint">Tap + in the top bar to create one, or drop an agent\'s .md definition into ~/.aicode/agents/</string>
     <string name="subagents_no_project">No subagents in this project</string>
     <string name="subagents_no_global">No global subagents</string>
+    <string name="subagent_shadowed_by_project">Shadowed by project-level</string>
     <string name="subagents_delete_confirm_title">Delete subagent</string>
     <string name="subagents_delete_confirm_message">This deletes the definition file of \"%1$s\" and cannot be undone. Delete it?</string>
     <string name="subagent_model">Model</string>
