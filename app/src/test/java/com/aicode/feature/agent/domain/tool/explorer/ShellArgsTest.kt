@@ -199,8 +199,10 @@ class ShellArgsTest {
      * bash -c 真的执行了 touch（marker 落盘）。修法是管道段也逐 token shellQuote，
      * 使引号内的 `|` 与换行退化成字面量。
      *
-     * 断言口径：能安全放行的（字符全合法）必须**被引号包住**，让 `|` 与换行失去语义；
-     * 字符本身非法的（重定向、命令替换、`$()`）仍走 assertNull。
+     * 断言口径：字符本身非法的（重定向 `>`、后台 `&`、换行、反引号）走 assertNull；
+     * 字符合法但有 shell 语义的（`|`、`$`）必须**被单引号包住**，让语义退化成字面量。
+     * `$` 已在字符集内（`grep 'x$'` 行尾锚点、`$()` 命令替换都是常见写法），
+     * 实测其在单引号内不展开（含 `it's$(touch F)` 这类与引号组合的极端用例，marker 零落盘）。
      */
     @Test
     fun buildSearchCommand_rejectsPipeInjectionPayloads() {
@@ -208,11 +210,14 @@ class ShellArgsTest {
         val pipe = buildSearchCommand(parseShellWords("-n foo src/ | grep \"x|touch /tmp/pwned\"")!!)!!
         assertTrue("payload 须被引号包裹: $pipe", pipe.endsWith("grep 'x|touch /tmp/pwned'"))
         assertEquals("整条命令只应有一个裸管道符", 2, pipe.split(" | ").size)
+        // `$`：放行，但同样必须被引号包住（单引号内 $() 不展开）
+        val subst = buildSearchCommand(parseShellWords("-n foo src/ | grep 'x\$(id)'")!!)!!
+        assertTrue("命令替换须被引号包裹: $subst", subst.endsWith("grep 'x\$(id)'"))
         // 换行：一律拒。它是 shell 的命令分隔符，且作为 pattern 毫无意义
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep \"x\ntouch /tmp/pwned\"")!!))
-        // 字符非法的（命令替换 / 变量展开 / 重定向 / 后台）一律拒
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep 'x\$(id)'")!!))
+        // 反引号是另一种命令替换符，且在 pattern 里几乎不用：不入字符集，拒
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep 'x`id`'")!!))
+        // 重定向 / 后台：不入字符集，拒
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep bar > out.txt")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort &")!!))
         // 命令自己的写文件 / 执行 / 挂起能力
@@ -220,6 +225,21 @@ class ShellArgsTest {
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail -f")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -f /etc/passwd")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --pre 'id'")!!))
+    }
+
+    /**
+     * 正则元字符必须被放行且被引号包裹。
+     *
+     * 这几个字符在 shell 单引号内**没有特殊含义**（既不是扩展点也不是替换点），
+     * 而它们正是 grep/rg 最常用的语法——原实现把它们全拒了，属真误拒。
+     * 实测依据：逐个字符交 bash -c 真跑，看 marker 是否落盘，全部零落盘。
+     */
+    @Test
+    fun buildSearchCommand_quotesRegexMetacharacters() {
+        for (pattern in listOf("^import", "x\$", "a[0-9]b", "x(1|2)", "a\\|b", "\\d+\\.")) {
+            val cmd = buildSearchCommand(parseShellWords("-n foo src/ | grep -E '$pattern'")!!)!!
+            assertTrue("正则须被引号包裹（pattern=$pattern）: $cmd", cmd.endsWith("grep '-E' '$pattern'"))
+        }
     }
 
     /** 管道段参数里的 shell 元字符一律拒绝（防借白名单命令逃逸）。 */
@@ -374,20 +394,21 @@ class ShellArgsTest {
     /**
      * 选项的**值位**也要过字符集：它是选项的值、不是位置参数，但仍受字符约束。
      *
-     * 曾经把字符集检查写在值位 `continue` 之后，于是 `grep -m 'a;touch x'`、
-     * `cut -d '$(id)' -f1` 这类把危险字符藏进选项值的写法只剩 shellQuote 一道。
-     * 实测引号能兜住（marker 未落盘），但少一道就少一分探错空间，且文件头声称的
-     * 「双重约束」不成立。
+     * 曾经把字符集检查写在值位 `continue` 之后，于是 `grep -m 'a;touch x'` 这类
+     * 把危险字符藏进选项值的写法只剩 shellQuote 一道。实测引号能兜住（marker 未落盘），
+     * 但少一道就少一分探错空间，且文件头声称的「双重约束」不成立。
      */
     @Test
     fun buildSearchCommand_rejectsDangerousCharsInOptionValues() {
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -m 'a;touch /tmp/x'")!!))
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | cut -d '\$(id)' -f1")!!))
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -t ' ' -k1")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | cut -d ';id' -f1")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -e 'x`id`'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -t ' ' -k1")!!))
         // 反向确认：合法的值位仍放行
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -m 5 x")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -t: -k2")!!))
+        // `$` 已入字符集，值位带 `$()` 放行（实测单引号内不展开）
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | cut -d '\$(id)' -f1")!!))
     }
 
     /**

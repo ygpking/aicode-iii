@@ -275,6 +275,12 @@ internal fun pipeOptionAllowed(command: String, arg: String): Boolean {
  * [buildSearchCommand] 对管道段逐 token 走 [shellQuote]——引号内的空格不会把参数拆成
  * 两个词，`|` 也不再构成管道，两者都只是字面量。
  *
+ * **正则元字符（`^$()[]\`）也在内**：正向字符集的代价是误拒合法写法，而这几个是 grep/rg
+ * 最常用的正则语法（`grep '^import'`、`grep 'x$'`、`grep -E 'a(b|c)'`、`grep 'a[0-9]b'`、
+ * `grep '\d+\.'`），原来全被拒。纳入前对每个字符实测了 shellQuote 后能否逃逸，
+ * 含与单引号、换行组合的极端用例（`it's$(touch F)`、`x\ntouch F`）——marker 全部零落盘，
+ * 故引号这一道确实能独立兜住它们。
+ *
  * 注意字符集只管「不借 shell 语法逃逸」，命令自身的内建能力由 [PIPE_OPTION_ALLOWLIST] 管。
  */
 private val SAFE_ARG_CHARS: Set<Char> = buildSet {
@@ -282,6 +288,8 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
     addAll('A'..'Z')
     addAll('0'..'9')
     "._/:=+-,#%~| ".forEach { add(it) }
+    // 正则元字符：逐个实测过 shellQuote 后不可逃逸（见上方 KDoc）
+    "^\$()[]\\".forEach { add(it) }
 }
 
 /**
