@@ -383,11 +383,20 @@ class ToolBatchSchedulerTest {
         assertTrue("read 必须先于 edit 执行，实测顺序=$order", readAt in 0 until firstEdit)
     }
 
-    /** 读失败也不能让依赖它的写永久挂起（finally 里必须发信号）。 */
+    /**
+     * 读失败也不能让依赖它的写永久挂起（finally 里必须发信号）。
+     *
+     * 「失败」用**返回值**表达而不是抛异常：生产里 readFile 失败由
+     * `StatefulAgentWorkflow.runToolSync` 的 catch 收成 ToolRunResult(TOOL_EXECUTION_FAILED)，
+     * exec 本身永不抛。用 error() 模拟会断言一个生产里不存在的语义——async 的异常会经
+     * awaitAll 重抛并取消兄弟协程，dispatch 随之抛出，这条用例拿到的是
+     * IllegalStateException 而不是 assertEquals 的结果（实测 3/3 复现）。
+     */
     @Test
     fun dispatch_failedReadDoesNotBlockDependentEdit(): Unit = runBlocking {
         val scheduler = ToolBatchScheduler()
         val executed = mutableListOf<String>()
+        val results = mutableListOf<String>()
         val calls = listOf(Call("readFile", "/a.kt"), Call("editFile", "/a.kt"))
         scheduler.dispatch(
             calls = calls,
@@ -397,10 +406,10 @@ class ToolBatchSchedulerTest {
             pathOf = { it.path },
         ) { call ->
             executed += call.name
-            if (call.name == "readFile") error("读失败")
-            1
-        }
+            if (call.name == "readFile") "FAIL" else "OK"
+        }.also { results += it }
         assertEquals("两个调用都应执行完（读失败不阻塞写）", listOf("readFile", "editFile"), executed)
+        assertEquals("读失败以结果值传递，不影响写", listOf("FAIL", "OK"), results)
     }
 
     private data class Call(val name: String, val path: String?)

@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.tool.explorer
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -151,15 +152,16 @@ class ShellArgsTest {
         val command = buildSearchCommand(
             parseShellWords("-n \"挂载\\|mount\" ~/workspace/app/src/main/res/values/strings.xml | head -30")!!
         )!!
-        assertTrue(command.endsWith(" | head -30"))
+        // 管道段参数同样被引号包裹：`-30` 变成 '-30'
+        assertTrue(command.endsWith(" | head '-30'"))
         assertTrue(command.contains("'挂载|mount'"))
     }
 
     @Test
     fun buildSearchCommand_headVariants_areAllowed() {
         assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head")!!)!!.endsWith(" | head"))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -n 30")!!)!!.endsWith(" | head -n 30"))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -30")!!)!!.endsWith(" | head -30"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -n 30")!!)!!.endsWith(" | head '-n' '30'"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -30")!!)!!.endsWith(" | head '-30'"))
     }
 
     @Test
@@ -180,13 +182,44 @@ class ShellArgsTest {
     /** 只读管道白名单（T2-A）：模型在 Bash 里用惯的 grep/sort/wc 等放行。 */
     @Test
     fun buildSearchCommand_allowsReadOnlyPipeCommands() {
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | grep bar")!!)!!.endsWith(" | grep bar"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | grep bar")!!)!!.endsWith(" | grep 'bar'"))
         assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | sort | uniq")!!)!!.endsWith(" | sort | uniq"))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | wc -l")!!)!!.endsWith(" | wc -l"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | wc -l")!!)!!.endsWith(" | wc '-l'"))
         // awk/sed 需要程序体（含 `{}`/`$`），与管道参数禁令不可兼得 → 不在白名单内
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | awk '{print \\$1}'")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sed 's/a/b/'")!!))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -30 | wc -l")!!)!!.endsWith(" | wc -l"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -30 | wc -l")!!)!!.endsWith(" | head '-30' | wc '-l'"))
+    }
+
+    /**
+     * 管道段注入：token 内的 `|` / 换行 / 写文件选项必须挡在容器 shell 之外。
+     *
+     * 这三条是**实测可达**的绕过（不是理论风险）：pr-56 放宽白名单后管道段裸拼进命令，
+     * `grep "x|touch /tmp/pwned"` 经 parseShellWords 合成单 token，拼出来的命令交给
+     * bash -c 真的执行了 touch（marker 落盘）。修法是管道段也逐 token shellQuote，
+     * 使引号内的 `|` 与换行退化成字面量。
+     *
+     * 断言口径：能安全放行的（字符全合法）必须**被引号包住**，让 `|` 与换行失去语义；
+     * 字符本身非法的（重定向、命令替换、`$()`）仍走 assertNull。
+     */
+    @Test
+    fun buildSearchCommand_rejectsPipeInjectionPayloads() {
+        // `|`：放行，但必须被引号包成字面量（否则会真的执行 touch）
+        val pipe = buildSearchCommand(parseShellWords("-n foo src/ | grep \"x|touch /tmp/pwned\"")!!)!!
+        assertTrue("payload 须被引号包裹: $pipe", pipe.endsWith("grep 'x|touch /tmp/pwned'"))
+        assertEquals("整条命令只应有一个裸管道符", 2, pipe.split(" | ").size)
+        // 换行：一律拒。它是 shell 的命令分隔符，且作为 pattern 毫无意义
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep \"x\ntouch /tmp/pwned\"")!!))
+        // 字符非法的（命令替换 / 变量展开 / 重定向 / 后台）一律拒
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep 'x\$(id)'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep 'x`id`'")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep bar > out.txt")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort &")!!))
+        // 命令自己的写文件 / 执行 / 挂起能力
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -o /tmp/pwned")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail -f")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -f /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --pre 'id'")!!))
     }
 
     /** 管道段参数里的 shell 元字符一律拒绝（防借白名单命令逃逸）。 */
@@ -200,11 +233,32 @@ class ShellArgsTest {
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -n -5")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -30 extra")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -c 100")!!))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -n 30")!!)!!.endsWith(" | head -n 30"))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | tail -5")!!)!!.endsWith(" | tail -5"))
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | cut -f1")!!)!!.endsWith(" | cut -f1"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -n 30")!!)!!.endsWith(" | head '-n' '30'"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | tail -5")!!)!!.endsWith(" | tail '-5'"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | cut -f1")!!)!!.endsWith(" | cut '-f1'"))
         // rg 在白名单内：容器必有（search 自身依赖它），与 grep 同族
-        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | rg -v bar")!!)!!.endsWith(" | rg -v bar"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | rg -v bar")!!)!!.endsWith(" | rg '-v' 'bar'"))
+    }
+
+    /** 管道段拼进命令前逐 token 引号包裹：token 内的 `|` 不得重新变成管道符。 */
+    @Test
+    fun buildSearchCommand_quotesPipeSegmentArgs() {
+        // 含 `|` 的 pattern 作为单 token 传入，拼出来的命令里它必须被引号包住
+        val command = buildSearchCommand(parseShellWords("-n foo src/ | grep 'a|b'")!!)
+        assertNotNull(command)
+        assertTrue("管道段参数须被引号包裹: $command", command!!.contains("grep 'a|b'"))
+        assertTrue("整条命令只应有一个裸管道符", command.split(" | ").size == 2)
+        // 参数含空格同样被引号包住，不会被拆成两个词
+        val spaced = buildSearchCommand(parseShellWords("-n foo src/ | grep -v 'LinuxContainerEngine|rg --line-number'")!!)!!
+        assertTrue("含空格的 pattern 须整体引号包裹: $spaced", spaced.endsWith("grep '-v' 'LinuxContainerEngine|rg --line-number'"))
+    }
+
+    /** 超范围行数不得抛异常（toIntOrNull），应走 INVALID_PIPE 而非兜底的 SEARCH_FAILED。 */
+    @Test
+    fun headLinesOf_oversizedLineCount_returnsNullNotException() {
+        assertNull(headLinesOf(listOf("head", "-n", "99999999999")))
+        assertNull(headLinesOf(listOf("head", "-99999999999")))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -n 99999999999")!!))
     }
 
     /** T1-A：正则括号不配对在调用前被挡下，不必等 rg 报错。 */

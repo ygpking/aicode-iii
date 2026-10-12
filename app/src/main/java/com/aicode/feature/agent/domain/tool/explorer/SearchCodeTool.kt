@@ -20,8 +20,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 
 /**
- * rg 风格的项目搜索工具。参数原样传给容器内的 ripgrep；支持 `| head [-n N]` 截断输出，
- * 其余管道命令一律拒绝（见 [buildSearchCommand]），容器未就绪则报错。
+ * rg 风格的项目搜索工具。参数原样传给容器内的 ripgrep；支持末尾接只读管道加工输出
+ * （命令名白名单 + 选项黑名单 + 参数字符集三道约束，见 [pipeSegmentAllowed]），容器未就绪则报错。
  */
 class SearchCodeTool @Inject constructor(
     private val commandEngine: CommandEngine,
@@ -74,7 +74,10 @@ class SearchCodeTool @Inject constructor(
 
             // 正则括号配对预检：不配对时本地直接挡下，省掉一次 rg 容器往返
             // （实测 73 次 regex parse error，40 次是括号不配对，单会话连错 10 次）。
-            rgPatternParenMismatch(tokens)?.let { reason ->
+            // 只校验 rg 段：管道段（`| grep '(bar'`）的正则不属于 rg，把整份 tokens 传进去
+            // 会让「rg 的正则合法、管道段的括号不配对」被误判成 rg 报错，白拒一次合法调用。
+            val (rgTokens, _) = splitPipes(tokens)
+            rgPatternParenMismatch(rgTokens)?.let { reason ->
                 return ToolResult.Error(reason, "INVALID_PATTERN")
             }
 
