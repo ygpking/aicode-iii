@@ -298,9 +298,13 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
  * 这类不带 `-` 的参数会被命令当作**待读取的文件名**——实测 `| grep root /etc/passwd`
  * 在容器里真的返回了 `/etc/passwd` 内容，而本工具的权限声明是 [ToolCapability.READ_WORKSPACE]
  * （`permissions` 里是 AUTO_APPROVE），读 workspace 之外的文件与此声明相违。
- * 靠选项黑名单管不住它们（位置参数根本没有选项形状），因此单独按数量与形态限制：
- *  - 以 `/` 或 `~` 开头的参数一律拒（绝对路径 / home）
- *  - 不含 `/` 的普通短词仍放行（`grep a.b` 的 pattern 合法）
+ * 靠选项黑名单管不住它们（位置参数根本没有选项形状），因此单独按形态限制：
+ *  - 以 `/` 开头的绝对路径拒
+ *  - 以 `~` 开头的 home 路径拒
+ *  - 含 `..` 路径段（`../../etc/passwd`）拒：**仅挡绝对路径不够**——proot 的
+ *    cwd 是 `/root/workspace`（`-w /root/workspace`），相对路径上跳同样能读到
+ *    workspace 之外，实测 `grep root ../../etc/passwd` 返回了 passwd 内容
+ *  - 不含路径分隔符的普通短词仍放行（`grep a.b` 的 pattern 合法）
  */
 private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
     val command = seg[0]
@@ -322,10 +326,25 @@ private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
         if (arg.startsWith("-") && !pipeOptionAllowed(command, arg)) return false
         if (arg.any { it !in SAFE_ARG_CHARS }) return false
         // 位置参数不得是路径：挡住读 workspace 之外的文件
-        if (!arg.startsWith("-") && (arg.startsWith("/") || arg.startsWith("~"))) return false
+        if (!arg.startsWith("-") && isOutsideWorkspacePath(arg)) return false
     }
     return true
 }
+
+/**
+ * 位置参数是否会读取 workspace 之外的文件。
+ *
+ * 三条判定，缺一不可（实测）：
+ *  - 绝对路径 `/etc/passwd`
+ *  - home 路径 `~/.ssh/id_rsa`
+ *  - 含 `..` 段的相对路径 `../../etc/passwd`——proot 以 `/root/workspace` 为 cwd，
+ *    上跳两次同样能读到 workspace 之外，只挡绝对路径会被它绕过
+ *
+ * 不含 `/` 的短词（`a.b`、`secret`）不拦：它们是 pattern 不是路径，且无法上跳。
+ * 这是「按能力判」而非「按形状判」的最小形式：只要这个参数能让命令去读别的文件，就拦。
+ */
+private fun isOutsideWorkspacePath(arg: String): Boolean =
+    arg.startsWith("/") || arg.startsWith("~") || arg.split('/').any { it == ".." }
 
 /**
  * 管道段是否可放行：命令在只读白名单内，参数字符合法、选项在该命令白名单内。

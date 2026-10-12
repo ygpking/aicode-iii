@@ -353,9 +353,14 @@ class ShellArgsTest {
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root /etc/shadow")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | nl /root/.ssh/id_rsa")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort ~/.aicode/config")!!))
+        // 相对路径上跳同样越界：proot 以 /root/workspace 为 cwd，只挡绝对路径会被绕过
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root ../../etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root ./../../etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | nl ../../../../etc/shadow")!!))
         // 反向确认：不含路径的普通 pattern 仍放行
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root foo")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep a.b")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep x secret")!!))
     }
 
     /**
