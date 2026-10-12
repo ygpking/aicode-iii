@@ -37,7 +37,12 @@ class SearchCodeTool @Inject constructor(
     override val name = "search"
     // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
     override val renderHint = ToolRenderHint.SEARCH
-    override val description = "按 rg 风格搜索文本（rg 默认递归、默认带文件名，勿加 -r——那是替换标志）。例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。支持追加 `| head [-n N]` 截断输出；路径不存在会直接报错，不确定时先 list 确认。"
+    override val description =
+        "按 rg 风格搜索文本（rg 默认递归、默认带文件名，勿加 -r——那是替换标志）。" +
+            "例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。" +
+            "支持末尾接只读管道（head/tail/grep/sort/uniq/wc/cut/tr/awk/sed/nl/rev/tac）加工输出；" +
+            "正则括号需成对（不配对会直接被挡下，不必等 rg 报错）；纯文本搜索加 -F 关闭正则最省心。" +
+            "路径不存在会直接报错，不确定时先 list 确认。"
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities = setOf(ToolCapability.READ_WORKSPACE)
 
@@ -45,7 +50,9 @@ class SearchCodeTool @Inject constructor(
         "args" to ToolParameter(
             name = "args",
             type = ParameterType.STRING,
-            description = "rg 风格参数。不填无效。常用：-i -F -e -g --hidden --。支持末尾追加 `| head [-n N]` 截断输出；其它管道命令（grep/sort/wc 等）不支持。",
+            description = "rg 风格参数。不填无效。常用：-i -F -e -g --hidden --。" +
+                "支持末尾接只读管道（head/tail/grep/sort/uniq/wc/cut/tr/awk/sed/nl/rev/tac）；" +
+                "重定向（> >> <）与写文件类命令（cp/mv/tee/install 等）不支持。",
             required = true
         )
     )
@@ -65,8 +72,18 @@ class SearchCodeTool @Inject constructor(
                 )
             if (tokens.isEmpty()) return ToolResult.Error("缺少搜索参数 args", "MISSING_ARGS")
 
+            // 正则括号配对预检：不配对时本地直接挡下，省掉一次 rg 容器往返
+            // （实测 73 次 regex parse error，40 次是括号不配对，单会话连错 10 次）。
+            rgPatternParenMismatch(tokens)?.let { reason ->
+                return ToolResult.Error(reason, "INVALID_PATTERN")
+            }
+
             val command = buildSearchCommand(tokens, pathHomeResolver.home())
-                ?: return ToolResult.Error("search 仅支持 | head [-n N] 截断输出，不支持其它管道命令", "INVALID_PIPE")
+                ?: return ToolResult.Error(
+                    "管道段不被支持：只允许只读加工命令（head/tail/grep/sort/uniq/wc/cut/tr/awk/sed/nl/rev/tac），" +
+                        "且参数不得含重定向（> >> <）或命令分隔符",
+                    "INVALID_PIPE"
+                )
 
             val startedAt = System.currentTimeMillis()
             val result = commandEngine.runCommandSyncIfReady(

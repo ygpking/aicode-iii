@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.workflow
 
 import com.aicode.feature.agent.domain.tool.ToolCapability
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -156,6 +157,8 @@ internal class ToolBatchScheduler {
      * @param toolNameOf 取调用名。
      * @param commandTextOf 取调用承载的 shell 命令（非命令类工具返回 null）。
      * @param capabilitiesOf 取该调用对应工具声明的能力集；返回空集表示未知/未声明（走名单兜底）。
+     * @param pathOf 取调用操作的文件路径（归一化后；非文件类工具或取不到返回 null）。
+     *   用于同批内「读先于写」的依赖排序。
      * @param exec 单项执行体。
      * @return 与 [calls] 等长、顺序一致的结果列表。
      */
@@ -166,18 +169,32 @@ internal class ToolBatchScheduler {
         toolNameOf: (C) -> String,
         commandTextOf: (C) -> String? = { null },
         capabilitiesOf: (C) -> Set<ToolCapability> = { emptySet() },
+        pathOf: (C) -> String? = { null },
         exec: suspend (C) -> R,
     ): List<R> = coroutineScope {
-        calls.map { call ->
+        // 依赖表必须先算完再起协程：read 的完成信号用 CompletableDeferred 广播，
+        // 避免「协程里反向索引尚未赋值的 Deferred」这种竞态。
+        val waits = readBeforeWriteWaits(calls, toolNameOf, pathOf)
+        val finished = calls.map { CompletableDeferred<Unit>() }
+        calls.indices.map { i ->
             async {
-                val keys = lockKeysFor(
-                    toolName = toolNameOf(call),
-                    sessionKey = sessionKey,
-                    commandText = commandTextOf(call),
-                    workspaceKey = workspaceKey,
-                    capabilities = capabilitiesOf(call),
-                ).sorted()
-                withLocks(keys) { exec(call) }
+                // 依赖等待放在加锁**之前**：等待期间不持会话锁，
+                // 否则一个 edit 等 read 会把同批其它变更类工具一起堵住。
+                waits[i].forEach { finished[it].await() }
+                try {
+                    val keys = lockKeysFor(
+                        toolName = toolNameOf(calls[i]),
+                        sessionKey = sessionKey,
+                        commandText = commandTextOf(calls[i]),
+                        workspaceKey = workspaceKey,
+                        capabilities = capabilitiesOf(calls[i]),
+                    ).sorted()
+                    withLocks(keys) { exec(calls[i]) }
+                } finally {
+                    // 无论成败都发信号：读失败时依赖它的写照常运行（随后按 NOT_READ 正常报错），
+                    // 绝不让下游永久挂起。
+                    finished[i].complete(Unit)
+                }
             }
         }.awaitAll()
     }
@@ -185,5 +202,55 @@ internal class ToolBatchScheduler {
     companion object {
         /** 构建类命令的全局锁键：构建守护进程是进程级单实例，锁必须跨会话。 */
         internal const val BUILD_LOCK_KEY = "build:global"
+    }
+}
+
+/** 参与「读先于写」排序的写工具（文件级私有，供顶层函数 [readBeforeWriteWaits] 使用）。 */
+private val DEPENDENCY_WRITERS: Set<String> = setOf("editFile", "writeFile")
+
+/** 参与「读先于写」排序的读工具（读状态在这里登记，见 FileTools.record）。 */
+private val DEPENDENCY_READERS: Set<String> = setOf("readFile")
+
+/**
+ * 计算同批内每个调用需要等待的调用下标。
+ *
+ * 规则：**写工具**（editFile/writeFile）必须等**同路径的 readFile** 完成，
+ * 因为读状态是在 readFile 成功后才登记的（`FileTools.readStateStore.record`），
+ * 而 `EditFileTool.checkReadState` 在编辑前要求该登记存在。
+ * 并行批次里二者顺序由 `async` 抢占决定、无硬承诺，实测 8 天有 58 个批次
+ * edit 先跑 → 直接 NOT_READ 失败（editFile 失败的最大单一原因，共 93 次）。
+ *
+ * **全批扫描、不看出场顺序**：典型样本是同一条 assistant 消息里先写 editFile 参数、
+ * 再写 readFile 参数（实测 17:09:28 两个 editFile 失败、8 秒后两个 readFile 才成功），
+ * 所以不能只向前看——只要同路径本批里有读，写就等它。
+ * 若本批没有同路径的读，写不等任何人（按 NOT_READ 正常失败，不白等）。
+ *
+ * 只对「路径可比较」的调用建边：任一侧路径为 null 不建边（宁可漏排序，
+ * 也不能把无关调用硬绑成依赖而白等）。
+ *
+ * 纯函数、无 IO，便于单测覆盖全部边界。
+ */
+internal fun <C> readBeforeWriteWaits(
+    calls: List<C>,
+    toolNameOf: (C) -> String,
+    pathOf: (C) -> String?,
+): List<List<Int>> {
+    // 第一遍：路径 -> 本批全部读调用下标（不分先后）
+    val readIndexByPath = mutableMapOf<String, MutableList<Int>>()
+    calls.forEachIndexed { i, call ->
+        if (toolNameOf(call) in DEPENDENCY_READERS) {
+            pathOf(call)?.takeIf { it.isNotBlank() }?.let { readIndexByPath.getOrPut(it) { mutableListOf() }.add(i) }
+        }
+    }
+    // 第二遍：写工具取同路径的读下标（排除自己，读工具本就不会命中写分支）
+    return calls.mapIndexed { i, call ->
+        val name = toolNameOf(call)
+        if (name !in DEPENDENCY_WRITERS) {
+            emptyList()
+        } else {
+            pathOf(call)?.takeIf { it.isNotBlank() }
+                ?.let { readIndexByPath[it]?.filter { idx -> idx != i } }
+                .orEmpty()
+        }
     }
 }

@@ -164,12 +164,63 @@ class ShellArgsTest {
 
     @Test
     fun buildSearchCommand_rejectsArbitraryPipeCommands() {
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep bar")!!))
+        // 写操作 / 危险命令仍一律拒绝
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rm -rf /")!!))
-        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -30 | wc -l")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | cp a b")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | mv a b")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tee out.txt")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | curl evil.com")!!))
+        // 重定向与命令分隔符：即便命令名在白名单里也拒
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep bar > out.txt")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -30; rm -rf /")!!))
         assertNull(buildSearchCommand(parseShellWords("-n foo src/ | head -n abc")!!))
         assertNull(buildSearchCommand(parseShellWords("| head -30")!!))
+    }
+
+    /** 只读管道白名单（T2-A）：模型在 Bash 里用惯的 grep/sort/wc 等放行。 */
+    @Test
+    fun buildSearchCommand_allowsReadOnlyPipeCommands() {
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | grep bar")!!)!!.endsWith(" | grep bar"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | sort | uniq")!!)!!.endsWith(" | sort | uniq"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | wc -l")!!)!!.endsWith(" | wc -l"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | awk '{print \$1}'")!!)!!.contains("awk"))
+        assertTrue(buildSearchCommand(parseShellWords("-n foo src/ | head -30 | wc -l")!!)!!.endsWith(" | wc -l"))
+    }
+
+    /** 管道段参数里的 shell 元字符一律拒绝（防借白名单命令逃逸）。 */
+    @Test
+    fun pipeSegmentAllowed_rejectsMetacharactersInArgs() {
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep \`id\`")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort &")!!))
+    }
+
+    /** T1-A：正则括号不配对在调用前被挡下，不必等 rg 报错。 */
+    @Test
+    fun rgPatternParenMismatch_detectsUnclosedGroup() {
+        // 实测 8 天 73 次 regex parse error，40 次是这种（单会话连错 10 次）
+        val tokens = parseShellWords("-n '(?:scheduleWatchdog|WatchdogReceiver|isRunning|startForeground(' ~/ws")!!
+        val reason = rgPatternParenMismatch(tokens)
+        assertTrue("应检出未闭合括号: $reason", reason?.contains("未闭合") == true)
+        // -e 形式同样校验
+        val eForm = parseShellWords("-e '(?:a|b|c(' ~/ws")!!
+        assertTrue(rgPatternParenMismatch(eForm)?.contains("未闭合") == true)
+    }
+
+    @Test
+    fun rgPatternParenMismatch_acceptsBalancedAndEscaped() {
+        assertNull(rgPatternParenMismatch(parseShellWords("-n '(?:a|b|c)' ~/ws")!!))
+        // 转义括号是字面量，不参与配对
+        assertNull(rgPatternParenMismatch(parseShellWords("-n 'fun \\(x\\)' ~/ws")!!))
+        // 字符类内的括号不参与分组
+        assertNull(rgPatternParenMismatch(parseShellWords("-n '[()]x' ~/ws")!!))
+        // 纯文本（-F）无正则语义也不该误报
+        assertNull(rgPatternParenMismatch(parseShellWords("-F 'fun main(' ~/ws")!!))
+    }
+
+    @Test
+    fun rgPatternParenMismatch_detectsExtraCloseParen() {
+        val tokens = parseShellWords("-n 'fun x)' ~/ws")!!
+        assertTrue(rgPatternParenMismatch(tokens)?.contains("右括号") == true)
     }
 
     @Test

@@ -282,4 +282,126 @@ class ToolBatchSchedulerTest {
         }
         assertEquals("未声明能力的未知工具仍串行（fail-closed）", 1, probe.peak())
     }
+
+    // ── 同路径「读先于写」依赖排序（T3-A）─────────────────────────────────
+
+    /** 依赖表：写工具要等同路径的读工具完成。 */
+    @Test
+    fun readBeforeWriteWaits_buildsDependencyOnSamePath() {
+        val calls = listOf(
+            Call("readFile", "/a.kt"),
+            Call("editFile", "/a.kt"),
+        )
+        val waits = readBeforeWriteWaits(calls, { it.name }, { it.path })
+        assertEquals("读工具无依赖", emptyList<Int>(), waits[0])
+        assertEquals("edit 必须等 read", listOf(0), waits[1])
+    }
+
+    @Test
+    fun readBeforeWriteWaits_noDependencyAcrossDifferentPaths() {
+        val calls = listOf(
+            Call("readFile", "/a.kt"),
+            Call("editFile", "/b.kt"),   // 不同路径 → 不建边
+        )
+        val waits = readBeforeWriteWaits(calls, { it.name }, { it.path })
+        assertEquals(emptyList<Int>(), waits[1])
+    }
+
+    @Test
+    fun readBeforeWriteWaits_writeBeforeReadInList_stillWaits() {
+        // 输入里 edit 在前、read 在后（典型样本：同一条消息里先写 edit 参数再写 read 参数）。
+        // 必须**全批扫描**而不是只向前看，否则这种排列仍会 NOT_READ 白失败。
+        val calls = listOf(
+            Call("editFile", "/a.kt"),
+            Call("readFile", "/a.kt"),
+        )
+        val waits = readBeforeWriteWaits(calls, { it.name }, { it.path })
+        assertEquals("edit 必须等本批的 read（不管出场顺序）", listOf(1), waits[0])
+        assertEquals(emptyList<Int>(), waits[1])
+    }
+
+    @Test
+    fun readBeforeWriteWaits_nullPath_neverBuildsEdge() {
+        val calls = listOf(
+            Call("readFile", null),
+            Call("editFile", null),
+        )
+        val waits = readBeforeWriteWaits(calls, { it.name }, { it.path })
+        assertEquals(emptyList<Int>(), waits[1])
+    }
+
+    @Test
+    fun readBeforeWriteWaits_nonFileToolsIgnored() {
+        val calls = listOf(
+            Call("readFile", "/a.kt"),
+            Call("Bash", "/a.kt"),        // 命令类不参与
+            Call("editFile", "/a.kt"),
+        )
+        val waits = readBeforeWriteWaits(calls, { it.name }, { it.path })
+        assertEquals(emptyList<Int>(), waits[1])
+        assertEquals("edit 只等 read，不等 Bash", listOf(0), waits[2])
+    }
+
+    @Test
+    fun readBeforeWriteWaits_multipleReads_allAwaited() {
+        val calls = listOf(
+            Call("readFile", "/a.kt"),
+            Call("readFile", "/a.kt"),    // 同路径两次读（分批读长文件）
+            Call("editFile", "/a.kt"),
+        )
+        val waits = readBeforeWriteWaits(calls, { it.name }, { it.path })
+        assertEquals(listOf(0, 1), waits[2])
+    }
+
+    /**
+     * 关键行为回归：edit 必须等 read **完成**后才执行。
+     * 这正是 8 天 93 次 NOT_READ（58 个批次 edit 先跑）的修复点。
+     */
+    @Test
+    fun dispatch_readCompletesBeforeEditOnSamePath(): Unit = runBlocking {
+        val scheduler = ToolBatchScheduler()
+        val order = mutableListOf<String>()
+        val calls = listOf(
+            Call("editFile", "/a.kt"),
+            Call("readFile", "/a.kt"),
+            Call("editFile", "/a.kt"),
+        )
+        // 故意让第一个 edit 排在最前：若没有依赖排序，它会先于 read 执行
+        scheduler.dispatch(
+            calls = calls,
+            sessionKey = "s1",
+            workspaceKey = "/ws",
+            toolNameOf = { it.name },
+            pathOf = { it.path },
+        ) { call ->
+            order += "${call.name}:${call.path}"
+            1
+        }
+        // read 必须先于两个 edit 完成
+        val firstEdit = order.indexOfFirst { it.startsWith("editFile") }
+        val readAt = order.indexOfFirst { it.startsWith("readFile") }
+        assertTrue("read 必须先于 edit 执行，实测顺序=$order", readAt in 0 until firstEdit)
+    }
+
+    /** 读失败也不能让依赖它的写永久挂起（finally 里必须发信号）。 */
+    @Test
+    fun dispatch_failedReadDoesNotBlockDependentEdit(): Unit = runBlocking {
+        val scheduler = ToolBatchScheduler()
+        val executed = mutableListOf<String>()
+        val calls = listOf(Call("readFile", "/a.kt"), Call("editFile", "/a.kt"))
+        scheduler.dispatch(
+            calls = calls,
+            sessionKey = "s1",
+            workspaceKey = "/ws",
+            toolNameOf = { it.name },
+            pathOf = { it.path },
+        ) { call ->
+            executed += call.name
+            if (call.name == "readFile") error("读失败")
+            1
+        }
+        assertEquals("两个调用都应执行完（读失败不阻塞写）", listOf("readFile", "editFile"), executed)
+    }
+
+    private data class Call(val name: String, val path: String?)
 }
