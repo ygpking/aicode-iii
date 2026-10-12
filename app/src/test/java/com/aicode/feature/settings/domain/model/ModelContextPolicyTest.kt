@@ -333,4 +333,27 @@ class ModelContextPolicyTest {
         val mixed = "hello 世界 hello 世界"
         assertTrue(ModelContextPolicy.estimateTokens(mixed) >= 1)
     }
+
+    // ---------- maxSummaryTokens：摘要长度上限 = 窗口 × 20%（B1 修复）----------
+
+    /** 摘要上限为摘要模型窗口的 20%。 */
+    @Test
+    fun maxSummaryTokens_isTwentyPercentOfWindow() {
+        assertEquals(20_000, ModelContextPolicy.maxSummaryTokens(100_000))
+        assertEquals(256_000, ModelContextPolicy.maxSummaryTokens(1_280_000))
+    }
+
+    /** 窗口非法（0/负）时回退默认窗口，仍需给出正上限，避免退化成「不封顶」。 */
+    @Test
+    fun maxSummaryTokens_zeroWindow_fallsBackToDefault() {
+        assertEquals((128_000 * 0.2).toInt(), ModelContextPolicy.maxSummaryTokens(0))
+        assertEquals((128_000 * 0.2).toInt(), ModelContextPolicy.maxSummaryTokens(-5))
+    }
+
+    /** 上限必须显著小于窗口本身，保证压缩后有净空、不会立即再触发。 */
+    @Test
+    fun maxSummaryTokens_muchSmallerThanWindow() {
+        val window = 1_000_000
+        assertTrue(ModelContextPolicy.maxSummaryTokens(window) < window / 2)
+    }
 }

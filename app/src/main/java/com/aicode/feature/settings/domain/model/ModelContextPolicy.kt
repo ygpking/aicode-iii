@@ -175,6 +175,26 @@ object ModelContextPolicy {
      *  与 [estimateTokens]`(chars: Int)` 同为 `(Int)->Int`，重载会冲突。 */
     fun estimateImageTokens(images: Int): Int = images * IMAGE_TOKENS
 
+    /** 摘要长度上限占摘要模型窗口的比例。 */
+    private const val SUMMARY_MAX_WINDOW_RATIO = 0.2
+
+    /**
+     * 压缩摘要的 **token 上限**：摘要自身不得超过「摘要模型窗口」的 [SUMMARY_MAX_WINDOW_RATIO]。
+     *
+     * 为什么必须封顶：摘要是「模型生成→落库→每轮回放」的常驻文本，且更新式摘要会把整份旧摘要回炉，
+     * 实测单会话摘要从 13k 单调膨胀到 105k 字符，直至摘要自身 ≈ 触发阈值，压缩后立即再触发
+     * （2026-10-11 会话 22ddb225：42 次压缩、重触发间隔 12.2min→2.9min，一阶自相关 r1=0.889）。
+     *
+     * 取值 20%：给摘要留出「够写任务状态+未决+下一步」的余量，同时保证摘要 ≪ 触发阈值
+     * （阈值通常 ≥ 窗口的 60%，摘要占 20% 窗口时压缩后仍有 ≥40% 窗口净空）。
+     *
+     * 返回 token 数；字符宽度由调用方 [estimateTokens] 的 CJK 口径折算，故更严。
+     */
+    fun maxSummaryTokens(summaryWindowTokens: Int): Int {
+        val window = summaryWindowTokens.takeIf { it > 0 } ?: DEFAULT_CONTEXT_TOKENS
+        return (window * SUMMARY_MAX_WINDOW_RATIO).toInt()
+    }
+
     /**
      * 按**文本内容**估算 token：CJK/全角标点分桶，修正 `chars/4` 对中文的约 2 倍低估。
      *
