@@ -76,9 +76,12 @@ class SearchCodeTool @Inject constructor(
             // （实测 73 次 regex parse error，40 次是括号不配对，单会话连错 10 次）。
             // 只校验 rg 段：管道段（`| grep '(bar'`）的正则不属于 rg，把整份 tokens 传进去
             // 会让「rg 的正则合法、管道段的括号不配对」被误判成 rg 报错，白拒一次合法调用。
-            val (rgTokens, _) = splitPipes(tokens)
-            rgPatternParenMismatch(rgTokens)?.let { reason ->
-                return ToolResult.Error(reason, "INVALID_PATTERN")
+            // splitPipes 返回 null 仅当 args 以 `|` 开头（无 rg 参数）——那种情况交给
+            // buildSearchCommand 去报 INVALID_PIPE，这里跳过预检。
+            splitPipes(tokens)?.first?.let { rgTokens ->
+                rgPatternParenMismatch(rgTokens)?.let { reason ->
+                    return ToolResult.Error(reason, "INVALID_PATTERN")
+                }
             }
 
             val command = buildSearchCommand(tokens, pathHomeResolver.home())

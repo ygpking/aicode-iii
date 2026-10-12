@@ -309,10 +309,71 @@ class ShellArgsTest {
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --field-separator=: -k2")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --color=never bar")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --max-count=5 bar")!!))
+        // 带值短选项：`-S1G` 里的 `1G` 是值，不是 `-1`/`-G` 两个选项；`nl -ba` 同理
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -S1G")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | nl -ba")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -m 5 x")!!))
     }
 
-    /** 超范围行数不得抛异常（toIntOrNull），应走 INVALID_PIPE 而非兜底的 SEARCH_FAILED。 */
+    /**
+     * 危险选项的**变体形态**必须逐轴钉住——精确/等号/附着/合并/缩写。
+     *
+     * 这组断言的存在理由：上一轮修好了 `--output=` 这类变体，却没写任何一条断言，
+     * 复核指岀「一旦有人回退成正向校验，29 条全绿无人知晓」。危险项必须按形态轴穷举，
+     * 而不是只测自己想到的写法。
+     */
     @Test
+    fun buildSearchCommand_rejectsDangerousOptionVariants() {
+        // sort 写文件：精确 / 等号 / 附着（无空格）/ 合并字母
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -o /tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --output=/tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -o/tmp/x")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --output /tmp/x")!!))
+        // 临时目录：精确 / 等号 / 附着
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -T /tmp")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --temporary-directory=/tmp")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -T/tmp")!!))
+        // 执行外部程序：等号 / 空格 / 附着
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --compress-program=id")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort --compress-program id")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --pre=id")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --pre id")!!))
+        // 跟随：精确 / 等号取值 / 缩写
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail -f")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail --follow=name")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail -F")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | tail --retry")!!))
+        // 从文件读 pattern：精确 / 等号 / 附着 / 合并
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -f /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --file=/etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -Ff/etc/passwd")!!))
+        // digit 早退不得让整串免检
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort -9o/tmp/x")!!))
+        // 位置参数不得读 workspace 之外
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root /etc/shadow")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | nl /root/.ssh/id_rsa")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | sort ~/.aicode/config")!!))
+        // 反向确认：不含路径的普通 pattern 仍放行
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep root foo")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep a.b")!!))
+    }
+
+    /**
+     * 取值选项表与选项白名单不得脱节：取值表里的每一项都必须在对应命令的允许集内。
+     *
+     * 这条防的是实测发生过的一次误拒：`grep -m 5 x` 被拒，因为 `-m` 写进了取值表
+     * （所以会把它后面的 `5` 标成选项值）却漏了写进 grep 的允许集。两表不一致时
+     * 表现是「合法用法静默被拒」，靠用例逐条发现不可持续，故直接做集合对账。
+     */
+    @Test
+    fun valueOptions_areSubsetOfAllowlist() {
+        val mismatches = PIPE_VALUE_OPTIONS.flatMap { (command, options) ->
+            options.filter { it !in PIPE_OPTION_ALLOWLIST[command].orEmpty() }.map { "$command $it" }
+        }
+        assertTrue("取值表里这些选项不在允许集，会被误拒: $mismatches", mismatches.isEmpty())
+    }
+
+    /** 超范围行数不得抛异常（toIntOrNull），应走 INVALID_PIPE 而非兜底的 SEARCH_FAILED。 */    @Test
     fun headLinesOf_oversizedLineCount_returnsNullNotException() {
         assertNull(headLinesOf(listOf("head", "-n", "99999999999")))
         assertNull(headLinesOf(listOf("head", "-99999999999")))

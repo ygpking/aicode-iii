@@ -140,16 +140,16 @@ private val READ_ONLY_PIPE_COMMANDS: Set<String> =
  * 才允许出现，其余一律拒。
  *
  * 为什么不能只靠字符集：字符集只能挡住 shell 元字符，挡不住命令**自身**的内建能力。
- * 逐个实测过（真跑、看 marker 是否落盘）：
+ * 逐项均在本容器（GNU coreutils 9.x / grep 3.11 / ripgrep）实跑验证，看 marker 是否落盘：
  *  - `awk 'BEGIN{system("touch x")}'` → 落盘（任意命令执行）
  *  - `sed 'e touch x'` / `sed 's/a/b/w x'` → 落盘（执行 / 写文件）
  *  - `sort -o FILE` / `sort --output=FILE` → 落盘（写文件）
  *  - `sort --compress-program=PROG` → 把参数当程序执行
- *  - `tail -f FILE` → 不退出，每次调用挂满 SEARCH_TIMEOUT_MS
+ *  - `tail -f FILE` → 不退出（`echo x | tail -f FILE` 实测 exit=124 挂满超时）
  *  - `grep -f FILE` / `rg --pre PROG` → 从文件读 pattern（绕过字符集）/ 执行预处理器
- *  - `tr/cut/nl/rev/tac -o FILE` → 写文件
  *  - `sort -T DIR` / `--temporary-directory=DIR` → 往指定目录写临时文件
- * 单引号包裹对这些**全部无效**：引号只保护 shell 元字符，不改变命令自己的语义。
+ * 注：`echo x | tail -f`（无文件参数）实测 exit=0——管道 stdin 读完即退；要带文件参数才挂。
+ * 单引号包裹对上述**全部无效**：引号只保护 shell 元字符，不改变命令自己的语言语义。
  *
  * 因此 awk/sed 根本不在 [READ_ONLY_PIPE_COMMANDS] 里——它们唯一有价值的用法就是
  * 携带程序体，而程序体一旦被允许就必然带上执行能力，与只读约束不可兼得。
@@ -157,12 +157,14 @@ private val READ_ONLY_PIPE_COMMANDS: Set<String> =
  * 长选项的等号形式（`--output=FILE`）与短选项的合并形式（`-rn`）由 [pipeOptionAllowed]
  * 归一化后判定，不在这里展开。
  */
-private val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
+internal val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
     "head" to setOf("-n", "-q", "-v", "-z"),
     "tail" to setOf("-n", "-q", "-v", "-z"),
     "grep" to setOf(
         "-i", "-v", "-c", "-l", "-L", "-n", "-o", "-h", "-H", "-w", "-x",
         "-e", "--regexp", "-E", "-F", "-G", "-P", "-a", "-I", "-U", "-b",
+        "-m", "--max-count", "-A", "-B", "-C",
+        "--after-context", "--before-context", "--context",
         "--color", "--include", "--exclude", "--include-dir", "--exclude-dir",
     ),
     "rg" to setOf(
@@ -208,26 +210,55 @@ private val PIPE_OPTION_ALLOWLIST: Map<String, Set<String>> = mapOf(
 )
 
 /**
+ * 需要**取值**的短选项：带值短选项把其后的字符当作值，不当选项名。
+ *
+ * 用途是正确拆合并写法。[pipeOptionAllowed] 逐字符拆合并短选项时，必须知道
+ * `-S1G` 里的 `1G` 是 `-S` 的值（不是 `-1`/`-G` 两个选项）、`nl -ba` 里的 `a`
+ * 是 `-b` 的值（`nl` 根本没有 `-a`）。缺这张表就只好靠「把值里的字母也塞进允许集」
+ * 来蒙混，结果既是错的（`sort -S1G` 反被拒）、又把允许集搅浑。
+ *
+ * **不变量：本表每一项必须同时出现在 [PIPE_OPTION_ALLOWLIST] 对应命令的允许集里。**
+ * 否则该选项会被当成「不在白名单」而整段拒绝（实测 `grep -m 5 x` 就是这么被误拒的）。
+ * 同一个选项的短长形式（`-m` 与 `--max-count`）要么都列、要么都不列，保持对称。
+ */
+internal val PIPE_VALUE_OPTIONS: Map<String, Set<String>> = mapOf(
+    "head" to setOf("-n"),
+    "tail" to setOf("-n"),
+    "grep" to setOf("-e", "-m", "-A", "-B", "-C"),
+    "rg" to setOf("-e", "-g", "-t", "-A", "-B", "-C", "-M", "-m", "-j", "-E"),
+    "sort" to setOf("-k", "-t", "-S"),
+    "uniq" to setOf("-f", "-s", "-w"),
+    "cut" to setOf("-b", "-c", "-d", "-f"),
+    "nl" to setOf("-b", "-d", "-f", "-h", "-i", "-l", "-n", "-s", "-v", "-w"),
+    "tac" to setOf("-s"),
+)
+
+/**
  * 单个选项是否在该命令的白名单内。归一化三种写法：
  *  - 长选项等号形式 `--output=FILE` → 取 `=` 前的 `--output` 判定
- *  - 合并短选项 `-rn` → 逐个拆成 `-r`/`-n` 分别判定（**这是等号形式之外第二个必漏点**：
- *    `-of` 拆开后含 `-f`，而 grep 的 `-f` 是「从文件读 pattern」，必须拒）
+ *  - 合并短选项 `-rn` → 逐字符拆；遇到 [PIPE_VALUE_OPTIONS] 里的选项则其后全是它的值
  *  - 纯数字 `-30` / `-12` → 放行（head/tail 的行数形式，语义由 [headLinesOf] 复核）
  *
  * 白名单外的选项一律拒，不做「看起来无害」的推断——黑名单逐个枚举必然漏变体
  * （实测漏掉 `--output=`、`--compress-program=`、`sort -T`、`tail --retry` 四种）。
  */
-private fun pipeOptionAllowed(command: String, arg: String): Boolean {
+internal fun pipeOptionAllowed(command: String, arg: String): Boolean {
     val allowed = PIPE_OPTION_ALLOWLIST[command] ?: return false
     if (!arg.startsWith("-") || arg == "-") return true
-    // 纯数字形式：head/tail 的 -N，行数合法性由 headLinesOf 单独校验
-    if (arg.length > 1 && arg[1].isDigit()) return true
     if (arg.startsWith("--")) return arg.substringBefore('=') in allowed
-    // 合并短选项：`-rn` = `-r -n`、`-f1,3` = `-f 1,3`、`-t:` = `-t :`。
-    // 判定规则：其中每个**字母**都须在白名单内（字母才是选项名）；非字母部分是上一个
-    // 选项的值（数字/逗号/冒号等），不参与判定。这样 `-of` 仍被拒（grep 的 -f 是
-    // 「从文件读 pattern」），`-f1,3` 放行。值本身已受过 [SAFE_ARG_CHARS] 与 shellQuote 双重约束。
-    return arg.drop(1).filter { it.isLetter() }.all { "-$it" in allowed }
+    // 整串都是数字：head/tail 的 -N，行数合法性由 headLinesOf 单独校验。
+    // 故意不用「首字符是数字就早退」——那会让 `sort -9o/tmp/x` 整串免检。
+    if (arg[1].isDigit()) return arg.drop(1).all(Char::isDigit)
+    val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
+    var i = 1
+    while (i < arg.length) {
+        val option = "-" + arg[i]
+        if (option !in allowed) return false
+        // 该选项取值：其后字符是它的值，不再当选项拆
+        if (option in valueOptions) return true
+        i++
+    }
+    return true
 }
 
 /**
@@ -253,19 +284,45 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
 }
 
 /**
- * 管道段参数是否安全：字符全在 [SAFE_ARG_CHARS] 内，且每个选项都在该命令的白名单内。
+ * 管道段参数是否安全：字符全在 [SAFE_ARG_CHARS] 内，选项在该命令白名单内，
+ * 且**不含读文件的位置参数**。
  *
  * 空参数一律拒（`grep ''` 在 shell 里是空 pattern，语义不明）。
  * 只含空白的参数（`" "`）同样拒：它经 shellQuote 后是 `' '`，是个合法但几乎必然非本意的
  * pattern，且真实语料里从未出现。
+ *
+ * **取值选项的独立形式**：`grep -m 5 x` 的 `5` 是 `-m` 的值而不是位置参数，需先标出
+ * 哪些 token 是前一个选项的值，再对剩下的位置参数做路径限制。
+ *
+ * **位置参数上限**：`sort secret.txt`、`nl /root/.ssh/id_rsa`、`cut -d: -f1 /etc/passwd`
+ * 这类不带 `-` 的参数会被命令当作**待读取的文件名**——实测 `| grep root /etc/passwd`
+ * 在容器里真的返回了 `/etc/passwd` 内容，而本工具的权限声明是 [ToolCapability.READ_WORKSPACE]
+ * （`permissions` 里是 AUTO_APPROVE），读 workspace 之外的文件与此声明相违。
+ * 靠选项黑名单管不住它们（位置参数根本没有选项形状），因此单独按数量与形态限制：
+ *  - 以 `/` 或 `~` 开头的参数一律拒（绝对路径 / home）
+ *  - 不含 `/` 的普通短词仍放行（`grep a.b` 的 pattern 合法）
  */
 private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
-    // seg[0] 是命令名，其余是参数
-    for (arg in seg.drop(1)) {
+    val command = seg[0]
+    val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
+    // 先标出「哪些 token 是前一个取值选项的值」，避开 `grep -m 5 x` 里把 5 当成位置参数
+    val args = seg.drop(1)
+    val isOptionValue = BooleanArray(args.size)
+    for (i in args.indices) {
+        val a = args[i]
+        if (!a.startsWith("-") || a.startsWith("--")) continue
+        // 附着形式（-m5）：值在同一 token 内，不需标下一个 token
+        if (a.length > 2 && ("-" + a[1]) in valueOptions) continue
+        if (a in valueOptions && i + 1 < args.size) isOptionValue[i + 1] = true
+    }
+    for ((index, arg) in args.withIndex()) {
         if (arg.isEmpty()) return false
         if (arg.isBlank()) return false
-        if (arg.startsWith("-") && !pipeOptionAllowed(seg[0], arg)) return false
+        if (isOptionValue[index]) continue
+        if (arg.startsWith("-") && !pipeOptionAllowed(command, arg)) return false
         if (arg.any { it !in SAFE_ARG_CHARS }) return false
+        // 位置参数不得是路径：挡住读 workspace 之外的文件
+        if (!arg.startsWith("-") && (arg.startsWith("/") || arg.startsWith("~"))) return false
     }
     return true
 }
