@@ -821,6 +821,20 @@ class AIAgentViewModel @Inject constructor(
         _rejectNotice.value = false
     }
 
+    /**
+     * reject 兜底轮询协程：**每会话至多一条**（去重）。
+     *
+     * 为什么必须去重：同会话被拒 N 次会走 N 次 reject 分支，若各起一条 `while(isActive)`
+     * 轮询，就是 N 条长命协程各自以 30s 间隔空转抢归属（只在 VM 销毁才收）——慢性累积。
+     * 用 map 覆盖式登记：已有在跑则本次不再起（沿用那条即可，它照样能消费本会话队列）。
+     * 消费成功 / 队列清空 / 会话删除时经 [cancelRejectPoller] 主动取消并从 map 移除。
+     */
+    private val rejectPollers = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    private fun cancelRejectPoller(sessionId: String) {
+        rejectPollers.remove(sessionId)?.cancel()
+    }
+
     private val _streamingTexts = MutableStateFlow<Map<String, String?>>(emptyMap())
     val streamingText: StateFlow<String?> = _currentSessionId
         .flatMapLatest { id ->
@@ -1338,12 +1352,20 @@ class AIAgentViewModel @Inject constructor(
         _queuedRequests.value = _queuedRequests.value + (sid to queue.filterNot { it.id == id })
     }
 
-    private fun processNextInQueue(sessionId: String) {
+    /**
+     * 消费该会话队列的下一条请求并启动流。
+     *
+     * @return true = 确实取出了请求并启动了流（归属已交由该流负责，调用方不得再释放）；
+     *         false = 走了早退（已有活跃 job / 无队列 / 队列空），**未消费任何东西**，
+     *                 调用方若刚抢占过归属，必须自行释放（否则归属被白占、该会话此后恒
+     *                 显示「正在其他窗口处理」）。
+     */
+    private fun processNextInQueue(sessionId: String): Boolean {
         // 已有活跃 job（可能是本次收尾前由通知合并/flush 等入口启动的）时不消费，
         // 避免队列被多个收尾入口重复消费、同一会话并发跑两个 job。
-        if (sessionJobs[sessionId]?.isActive == true) return
-        val queue = _queuedRequests.value[sessionId] ?: return
-        val next = queue.firstOrNull() ?: return
+        if (sessionJobs[sessionId]?.isActive == true) return false
+        val queue = _queuedRequests.value[sessionId] ?: return false
+        val next = queue.firstOrNull() ?: return false
         _queuedRequests.value = _queuedRequests.value + (sessionId to queue.drop(1))
         executeAgentRequestStream(
             request = next.request,
@@ -1356,6 +1378,7 @@ class AIAgentViewModel @Inject constructor(
             targetSessionId = sessionId,
             isAutoTrigger = next.isAutoTrigger
         )
+        return true
     }
 
     /**
@@ -1454,27 +1477,42 @@ class AIAgentViewModel @Inject constructor(
             // 被拒入队后若没有正常回合来消费，该会话的队列会永久滞留（实测：子代理 SPAWNED
             // 被 reject 后 updatedAt 恒等于 createdAt，UI 待发送队列永不消费）。
             // 兜底：延迟轮询流归属，持有者释放/进程消亡/已销毁 VM 被 GC 后抢占成功即消费队列。
-            // 不设轮询上限：持有者若是僵尸（VM 活着但流卡死），60s 后放弃只会让队列永久滞留、
-            // 用户被迫重启应用（2026-10-12 实测 07:28 即此形态）；改成退避轮询直到本 VM 销毁
-            // （onCleared 取消 viewModelScope）或成功消费为止。
-            viewModelScope.launch {
+            // 不设次数上限：持有者若是僵尸（VM 活着但流卡死），60s 后放弃只会让队列永久滞留；
+            // 但**每会话只保留一条**轮询（去重）——否则同会话被拒 N 次即 N 条长命协程空转。
+            // 取消时机：消费成功、队列已空、或 VM 销毁（onCleared 取消 viewModelScope）。
+            if (rejectPollers.containsKey(sessionId)) return@launch
+            val poller = viewModelScope.launch {
                 FileLogger.d(TAG, "stream reject 兜底轮询启动：sid=$sessionId 等待流归属释放（退避重试，最多 30s 间隔）")
                 var waitMs = 3_000L
-                while (isActive) {
-                    delay(waitMs)
-                    if (sessionJobs[sessionId]?.isActive == true) return@launch
-                    if (subAgentEventBus.tryAcquireFlow(sessionId, this@AIAgentViewModel)) {
-                        if (_queuedRequests.value[sessionId].isNullOrEmpty()) {
-                            subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
+                try {
+                    while (isActive) {
+                        delay(waitMs)
+                        if (sessionJobs[sessionId]?.isActive == true) return@launch
+                        if (subAgentEventBus.tryAcquireFlow(sessionId, this@AIAgentViewModel)) {
+                            // 抢占成功后的**单一释放点**：无论下面走哪条路（队列空早退、
+                            // 或 processNextInQueue 内部因 job 活跃/队列空早退而未真正消费），
+                            // 只要最终没有把归属交给一个新启动的流，就必须在此释放。
+                            // 否则归属被本 VM 白占 → 该会话此后恒显示「正在其他窗口处理」。
+                            var consumed = false
+                            try {
+                                if (!_queuedRequests.value[sessionId].isNullOrEmpty()) {
+                                    FileLogger.i(TAG, "stream reject 兜底抢占成功：sid=$sessionId 消费待发送队列")
+                                    consumed = processNextInQueue(sessionId)
+                                }
+                            } finally {
+                                if (!consumed) {
+                                    subAgentEventBus.releaseFlow(sessionId, this@AIAgentViewModel)
+                                }
+                            }
                             return@launch
                         }
-                        FileLogger.i(TAG, "stream reject 兜底抢占成功：sid=$sessionId 消费待发送队列")
-                        processNextInQueue(sessionId)
-                        return@launch
+                        waitMs = minOf(waitMs * 2, 30_000L)
                     }
-                    waitMs = minOf(waitMs * 2, 30_000L)
+                } finally {
+                    rejectPollers.remove(sessionId, coroutineContext[Job])
                 }
             }
+            rejectPollers[sessionId] = poller
             return@launch
         }
 
@@ -2722,6 +2760,8 @@ class AIAgentViewModel @Inject constructor(
      */
     override fun onCleared() {
         subAgentEventBus.releaseAllFlows(this@AIAgentViewModel)
+        rejectPollers.values.forEach { it.cancel() }
+        rejectPollers.clear()
         super.onCleared()
     }
 }

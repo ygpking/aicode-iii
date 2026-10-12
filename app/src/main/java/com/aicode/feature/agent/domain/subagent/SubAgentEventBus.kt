@@ -75,7 +75,10 @@ class SubAgentEventBus @Inject constructor() {
     // 归属也随 GC 失效、新实例可抢占；若存强引用则已销毁 VM 永不被回收，归属永久残留
     // （实测 2026-10-12 07:28 stream reject 卡死、用户重启才恢复）。
     // 注意：仍有活跃协程的 VM 不会被 GC，那类僵尸归属由 ViewModel.onCleared 的
-    // releaseAllFlows 兜底——弱引用与生命周期释放互补，不能只留一个。
+    // releaseAllFlows 兜底——弱引用与生命周期释放互补。
+    // 已知两者共同覆盖不到的盲区（不假装覆盖）：进程被杀时 onCleared 不执行，
+    // 且若 VM 仍被外部（如通知/Activity）强引用而流又卡死，则弱引用也不失效；
+    // 此时归属仍会残留，需靠新实例的 reject 兜底轮询在同会话重新抢占（见 AIAgentViewModel）。
     private val flowOwners = ConcurrentHashMap<String, WeakReference<Any>>()
 
     /**
@@ -98,10 +101,18 @@ class SubAgentEventBus @Inject constructor() {
         }
     }
 
-    /** 释放本实例持有的会话流归属（幂等：非本人持有则不动，不影响他人持有的归属）。 */
+    /**
+     * 释放本实例持有的会话流归属（幂等）。
+     *
+     * 两种清理：
+     * 1. 本人持有 → 置 null 删除条目；
+     * 2. **换代空弱引用**（持有者已被 GC，条目仍占着 key）→ 顺带清掉。
+     *    只做 1 不做 2 的话，每个被 GC 过的 owner 都会在 map 里留下永不清理的 key（泄漏）。
+     */
     fun releaseFlow(sessionId: String, owner: Any) {
         flowOwners.computeIfPresent(sessionId) { _, current ->
-            if (current.get() === owner) null else current
+            val live = current.get()
+            if (live === owner || live == null) null else current
         }
     }
 
