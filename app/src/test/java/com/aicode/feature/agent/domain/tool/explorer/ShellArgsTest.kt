@@ -413,6 +413,31 @@ class ShellArgsTest {
         // 反向确认：只给检索式、不带位置参数，仍放行
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -e foo")!!))
         assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | rg -e 'a|b'")!!))
+        // 附着 / 等号 / cluster 形态同样要归零：早先只认独立形态，`grep -efoo /etc/passwd`
+        // 因此漏过（真跑读到 passwd 内容）。形态穷举：独立、附着、等号×2、cluster、混合。
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -efoo /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --regexp=foo /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -e=foo /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg -efoo /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg --regexp=foo /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | rg -e=root /etc/shadow")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -m5 -efoo /etc/passwd")!!))
+        // 反向确认：附着形态不带位置参数仍放行
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep -efoo")!!))
+    }
+
+    /**
+     * `--color` 是**可选值**选项（`--color[=WHEN]`），独立 argv 不吞下一个 token。
+     *
+     * 把它列入取值表会让下一个 token 被误标成「值」而跳过位置参数计数，等于给 grep
+     * 的名称上限偷惄 +1：实测 `grep --color root /etc/passwd` 因此放行并读到 passwd。
+     * 修正后独立形态不标值，等号形态（`--color=never`，模型实际写法）不受影响。
+     */
+    @Test
+    fun buildSearchCommand_optionalValueOptionDoesNotShiftPositionalSlots() {
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --color root /etc/passwd")!!))
+        assertNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --color foo /etc/passwd")!!))
+        assertNotNull(buildSearchCommand(parseShellWords("-n foo src/ | grep --color=never foo")!!))
     }
 
     /**

@@ -241,8 +241,13 @@ internal val PIPE_VALUE_OPTIONS: Map<String, Set<String>> = mapOf(
     "grep" to setOf(
         "-e", "--regexp", "-m", "--max-count", "-A", "--after-context",
         "-B", "--before-context", "-C", "--context",
-        "--color", "--include", "--exclude", "--include-dir", "--exclude-dir",
+        "--include", "--exclude", "--include-dir", "--exclude-dir",
     ),
+    // 注：`--color` **不在**取值表。它是**可选值**选项（`--color[=WHEN]`），独立 argv
+    // 不会被它吞掉（实测 `grep --color never foo` 报 `foo: No such file or directory`，
+    // 即 never 被当 pattern）。若把它列入取值表，下一个 token 会被误标成「值」而跳过
+    // 位置参数计数，等于给 grep 的名称上限偷惄 +1：
+    // `grep --color root /etc/passwd` 会因此放行并真读到 passwd（实测）。
     "rg" to setOf(
         "-e", "--regexp", "-g", "--glob", "--iglob", "-t", "--type",
         "-A", "--after-context", "-B", "--before-context", "-C", "--context",
@@ -274,26 +279,67 @@ internal val PIPE_VALUE_OPTIONS: Map<String, Set<String>> = mapOf(
  * 白名单外的选项一律拒，不做「看起来无害」的推断——黑名单逐个枚举必然漏变体
  * （实测漏掉 `--output=`、`--compress-program=`、`sort -T`、`tail --retry` 四种）。
  */
+/**
+ * 一个 token 里**实际生效的选项名**列表（纯位置参数返回空）。形态解析的唯一出口。
+ *
+ * 早先这个解析散在三处（选项白名单、值位标记、`-e` 归零判定），每处只看一种写法，
+ * 四轮返工里每轮都漂移出一类新绕过（`--output=`、`-oFILE`、长选项空格值、`-e` 附着形态）。
+ * 合并到这里后，新形态只需在这一处加。
+ *
+ * 规则（按 GNU getopt 语义）：
+ *  - `--`：选项结束符，返回空（其后 token 一律当位置参数）
+ *  - `--name` / `--name=value`：取 `=` 前的名字
+ *  - `-abc` cluster：逐字符拆成 `-a`/`-b`/`-c`，**遇到取值选项即停**（其后字符是它的值）；
+ *    纯数字 `-30`（head/tail 行数）不是 cluster，返回空
+ *  - 无 `-` 前缀：位置参数
+ *
+ * 不判断合法性（那是 [pipeOptionAllowed] 的事），只回答「这串里出现了哪些选项名」。
+ */
+internal fun optionNamesIn(command: String, token: String): List<String> {
+    if (token == "--" || !token.startsWith("-") || token == "-") return emptyList()
+    if (token.startsWith("--")) return listOf(token.substringBefore('='))
+    // 纯数字是 head/tail 的行数，不是 cluster
+    if (token.length > 1 && token[1].isDigit()) return emptyList()
+    val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
+    val names = mutableListOf<String>()
+    var i = 1
+    while (i < token.length) {
+        val option = "-" + token[i]
+        names += option
+        // 取值选项：其后字符是它的值，不再当选项拆
+        if (option in valueOptions) break
+        i++
+    }
+    return names
+}
+
+/**
+ * 单个 token 是否是「独立形态的取值选项」（形如 `-e` / `--regexp`，值在**下一个** token）。
+ *
+ * 只认「token 本身就是一个选项名」：短选项长度为 2（`-e`），长选项不含 `=`。
+ * 附着（`-efoo`）、等号（`--regexp=foo`、`-e=foo`）、cluster（`-ie`）形态的值都在本 token 内，
+ * 不算独立——**这里不能借用 [optionNamesIn]**：它对 `-efoo` 也会拆出 `-e`，
+ * 若据此判独立，就会把下一个 token 误标成值而跳过位置参数计数（实测 `grep -efoo /etc/passwd` 因此读到了 passwd）。
+ */
+private fun isBareValueOption(command: String, token: String): Boolean {
+    val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
+    if (token.startsWith("--")) return !token.contains('=') && token in valueOptions
+    if (token.length != 2 || !token.startsWith("-")) return false
+    return token in valueOptions
+}
+
 internal fun pipeOptionAllowed(command: String, arg: String): Boolean {
     val allowed = PIPE_OPTION_ALLOWLIST[command] ?: return false
     if (!arg.startsWith("-") || arg == "-") return true
     // `--` 是选项结束符（后面的 token 强制当位置参数），它既不取值也不读文件，
     // 且工具 args 描述里正推荐用 `--`（如 `-- -leading-dash`），不接会与文案打脸。
     if (arg == "--") return true
-    if (arg.startsWith("--")) return arg.substringBefore('=') in allowed
-    // 整串都是数字：head/tail 的 -N，行数合法性由 headLinesOf 单独校验。
+    // 纯数字：head/tail 的 -N，行数合法性由 headLinesOf 单独校验。
     // 故意不用「首字符是数字就早退」——那会让 `sort -9o/tmp/x` 整串免检。
-    if (arg[1].isDigit()) return arg.drop(1).all(Char::isDigit)
-    val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
-    var i = 1
-    while (i < arg.length) {
-        val option = "-" + arg[i]
-        if (option !in allowed) return false
-        // 该选项取值：其后字符是它的值，不再当选项拆
-        if (option in valueOptions) return true
-        i++
+    if (arg.length > 1 && arg[1].isDigit() && !arg.startsWith("--")) {
+        return arg.drop(1).all(Char::isDigit)
     }
-    return true
+    return optionNamesIn(command, arg).all { it in allowed }
 }
 
 /**
@@ -380,25 +426,26 @@ private val PIPE_MAX_POSITIONAL: Map<String, Int> = mapOf(
  */
 private fun pipeSegmentArgsSafe(seg: List<String>): Boolean {
     val command = seg[0]
-    val valueOptions = PIPE_VALUE_OPTIONS[command].orEmpty()
     // 先标出「哪些 token 是前一个取值选项的值」，避开 `grep -m 5 x` 里把 5 当成位置参数。
-    // 长选项（`--max-count 5`）与短选项（`-m 5`）两种形态都要标——早先只处理短选项（`continue`
-    // 里把 `--` 开头全跳过），导致带值长选项的值被当位置参数计数，合法用法被误拒。
+    // 长短选项、独立与附着形态的判定全部交给 [optionNamesIn]/[isBareValueOption]，
+    // 本函数不再自己解析形态（早先自己解析，四轮里漂移出四类绕过）。
     val args = seg.drop(1)
     val isOptionValue = BooleanArray(args.size)
     var patternFromOption = false
     for (i in args.indices) {
         val a = args[i]
         if (!a.startsWith("-")) continue
-        // 附着（value）或等号（=value）形式：值在同一 token 内，不需标下一个 token
-        if (a.contains('=')) continue
-        if (a.length > 2 && !a.startsWith("--") && ("-" + a[1]) in valueOptions) continue
-        if (a in valueOptions) {
+        // 取值选项：独立形态才标下一个 token 为值；附着/等号形态值在本 token 内
+        if (isBareValueOption(command, a)) {
             if (i + 1 < args.size) isOptionValue[i + 1] = true
-            // `grep -e PAT` / `rg -e PAT`：pattern 已由选项提供，此后的位置参数只能是**文件名**
-            if (command in PATTERN_FROM_OPTION_COMMANDS && a in PATTERN_OPTION_NAMES) {
-                patternFromOption = true
-            }
+        }
+        // `-e`/`--regexp`：pattern 已由选项提供，无论哪种形态（`-e PAT`、`-ePAT`、
+        // `-e=PAT`、`--regexp=PAT`、`-ie PAT`）都算——此后位置参数只能是**文件名**。
+        // 早先只认独立形态，`grep -efoo /etc/passwd` 因此漏过（实测读到 passwd）。
+        if (command in PATTERN_FROM_OPTION_COMMANDS &&
+            optionNamesIn(command, a).any { it in PATTERN_OPTION_NAMES }
+        ) {
+            patternFromOption = true
         }
     }
     // pattern 已由 `-e` 给出时，位置参数不再保留 pattern 名额（避免 `grep -e foo /etc/passwd` 读文件）
