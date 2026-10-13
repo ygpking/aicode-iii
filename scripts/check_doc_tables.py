@@ -229,6 +229,7 @@ def self_test() -> int:
     # 锚点」）；键也没写时等价于压根没写锚点，归入下方边界①。
     # 对账作用域只含「真正带判据的函数」：三个函数体外还有散文提到 `# RULE:xxx`，
     # 不放进来就天然免疫；放进来会多一层依赖反引号才能不误匹配。
+    # 副作用：作用域内不能再写含 `# RULE:` 字面量的说明注释（会被当疑似锚点报红）。
     scope = "".join(inspect.getsource(f) for f in (cell_count, _fence_open, scan))
     anchored = set(re.findall(r"#\s*RULE:([^\s`]+)\s*$", scope, re.M))
     # 形态卫生：域内出现 `# RULE:` 字面量但形态不合法（未独占行尾）时直接报出。
