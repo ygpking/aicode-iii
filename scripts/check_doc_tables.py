@@ -42,12 +42,18 @@ def cell_count(line: str) -> int:
     return line.replace("\\|", "\x00").count("|")
 
 
-def _fence_open(line: str) -> str | None:
-    """该行是否为围栏代码块的起始围栏；是则返回其围栏串（``` 或 ~~~），否则 None。"""
+def _fence_open(line: str) -> tuple[str, int] | None:
+    """该行是否为围栏代码块的起始围栏；是则返回（围栏字符, 长度），否则 None。
+
+    必须带上长度：GFM 规定闭合围栏须「同字符且长度 ≥ 开栏长度」，只比字符种类会让
+    ````markdown 外层包住 ``` 示例时误配对（4 反引号开、3 反引号被当闭合），
+    其后内容全部漏检。
+    """
     stripped = line.lstrip()
-    for fence in ("```", "~~~"):
-        if stripped.startswith(fence):
-            return fence
+    for ch in ("`", "~"):
+        n = len(stripped) - len(stripped.lstrip(ch))
+        if n >= 3:
+            return ch, n
     return None
 
 
@@ -59,13 +65,13 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
     problems: list[str] = []
     checked_rows = 0
     i = 0
-    fence: str | None = None
+    fence: tuple[str, int] | None = None
     fence_start = 0
     while i < len(lines):
         opened = _fence_open(lines[i])
         if opened is not None:
-            # 围栏内不解析表格；遇到同种围栏即闭合
-            if fence == opened:
+            # 围栏内不解析表格；闭合须同字符且长度 ≥ 开栏长度
+            if fence is not None and opened[0] == fence[0] and opened[1] >= fence[1]:
                 fence = None
             elif fence is None:
                 fence, fence_start = opened, i + 1
@@ -92,7 +98,7 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
                 )
     if fence is not None:
         problems.append(
-            f"{label}:{fence_start} 围栏代码块（{fence}）未闭合，自该行起余下内容未被检查"
+            f"{label}:{fence_start} 围栏代码块（{fence[0] * fence[1]}）未闭合，自该行起余下内容未被检查"
         )
     return problems, checked_rows
 
@@ -128,7 +134,7 @@ def main() -> int:
         for p in problems:
             print(f"  {p}")
         return 1
-    print("[OK] 全部表格列数与表头一致")
+    print("[OK] 表格列数一致且围栏闭合")
     return 0
 
 
