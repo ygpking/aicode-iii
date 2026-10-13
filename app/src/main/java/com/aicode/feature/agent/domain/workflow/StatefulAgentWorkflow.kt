@@ -41,8 +41,6 @@ import com.aicode.feature.agent.domain.tool.ToolSpec
 import com.aicode.feature.agent.domain.tool.ValidationResult
 import com.aicode.feature.agent.domain.tool.partitionByRoundLimit
 import com.aicode.feature.agent.domain.tool.unknownToolGuidance
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalChoice
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalManager
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
@@ -107,7 +105,6 @@ class StatefulAgentWorkflow @Inject constructor(
     private val permissionManager: ToolPermissionManager,
     private val policyEngine: ToolPermissionPolicyEngine,
     private val contextCompactor: ContextCompactor,
-    private val planApprovalManager: PlanApprovalManager,
     private val toolOutputStore: ToolOutputStore,
     private val modelMetadataService: ModelMetadataService,
     private val compactionModelSettingsRepository: CompactionModelSettingsRepository,
@@ -295,7 +292,7 @@ class StatefulAgentWorkflow @Inject constructor(
         ) : AgentAction
     }
 
-    private data class PermissionCheckResult(
+    internal data class PermissionCheckResult(
         val approved: Boolean,
         val denyReason: String = "用户拒绝执行该工具",
         val errorCode: String = "USER_REJECTED"
@@ -1113,7 +1110,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         }
 
                         // 统一记录 checkpoint（editFile/writeFile 修改前快照），再并行执行；
-                        // mode 切换检查在结果收集后于主协程串行处理（planApproval 单例）。
+                        // mode 切换检查在结果收集后于主协程串行处理。
                         toRun.forEach { toolCall ->
                             if (EvidenceGuard.isWriteTool(toolCall.name)) {
                                 (toolCall.arguments["path"] as? JsonPrimitive)?.contentOrNull?.let { path ->
@@ -1229,27 +1226,11 @@ class StatefulAgentWorkflow @Inject constructor(
                                     ?: ""
                                 send(AgentEvent.ModeChanged(newCtx.mode, reason))
 
-                                // 退出 PLAN 时挂起 workflow，等待用户在计划审查面板批准后才继续
-                                if (currentContext.mode == AgentMode.PLAN && newCtx.mode != AgentMode.PLAN) {
-                                    val choice = planApprovalManager.awaitApproval(reason, currentContext.sessionId)
-                                    if (choice == PlanApprovalChoice.APPROVE) {
-                                        currentContext = newCtx
-                                        // system 与 mode 已解耦（SystemPromptProvider 不再注入模式提示词），
-                                        // 切换不重建 systemPrompt，避免 system 前缀变化打断缓存；模式状态通过工具结果与下轮消息提醒告知。
-                                        rawResult += buildModeSwitchNotice(newCtx.mode)
-                                    } else {
-                                        // 用户选择继续反馈，回滚到 PLAN 模式，修正工具结果让 AI 知道切换被取消并等待用户反馈
-                                        currentContext = currentContext.copy(mode = AgentMode.PLAN)
-                                        rawResult = ToolResult.Error(
-                                            "用户希望补充说明或调整方案，当前保持在 PLAN 模式。请等待用户输入具体的补充或修改意见，不要自行臆测修改，待用户明确反馈后再继续。",
-                                            "MODE_SWITCH_REJECTED"
-                                        ).toTransportString()
-                                        isError = true
-                                    }
-                                } else {
-                                    currentContext = newCtx
-                                    rawResult += buildModeSwitchNotice(newCtx.mode)
-                                }
+                                // 退出 PLAN 无需批准：模式切换本身不再拦，直接切走；
+                                // system 与 mode 已解耦（SystemPromptProvider 不再注入模式提示词），
+                                // 切换不重建 systemPrompt，避免 system 前缀变化打断缓存；模式状态通过工具结果与下轮消息提醒告知。
+                                currentContext = newCtx
+                                rawResult += buildModeSwitchNotice(newCtx.mode)
                             }
                             batchResults.add(ToolBatchResult(toolCall.id, toolCall.name, rawResult, isError, runResult.attachments, runResult.images))
                         }
@@ -1744,11 +1725,11 @@ class StatefulAgentWorkflow @Inject constructor(
         AgentMode.PLAN -> "\n\n" + promptProvider.resolvePrompt(MODE_REMINDER_PLAN_FILE)
             .replace(LEADING_COMMENT, "")
             .trim()
-        AgentMode.BUILD -> "\n\n【模式切换】计划已获用户批准，你已切换到 BUILD（构建）模式，可以开始执行计划。"
-        AgentMode.AUTO -> "\n\n【模式切换】计划已获用户批准，你已恢复到 AUTO（自动）模式，可以开始执行计划（工具调用将自动放行）。"
+        AgentMode.BUILD -> "\n\n【模式切换】已退出 PLAN，恢复为 BUILD（构建）模式，可以开始执行计划（写操作按当前模式规则放行）。"
+        AgentMode.AUTO -> "\n\n【模式切换】已退出 PLAN，恢复为 AUTO（自动）模式，可以开始执行计划（工具调用将自动放行）。"
     }
 
-    /** 用户在外部（界面）手动切换模式时拼进工具结果的提示；与 AI 自切的 [buildModeSwitchNotice] 区分，避免误称「计划已获批准」。 */
+    /** 用户在外部（界面）手动切换模式时拼进工具结果的提示；与 AI 自切的 [buildModeSwitchNotice] 区分。 */
     private fun buildExternalModeSwitchNotice(mode: AgentMode): String = when (mode) {
         AgentMode.PLAN -> "\n\n" + promptProvider.resolvePrompt(MODE_REMINDER_PLAN_FILE)
             .replace(LEADING_COMMENT, "")
@@ -1950,7 +1931,11 @@ class StatefulAgentWorkflow @Inject constructor(
         return if (normalized == call.arguments) call else call.copy(arguments = normalized)
     }
 
-    private suspend fun requestPermissionIfNeeded(
+    /**
+     * 权限判定。DENY 必须先于 AUTO_APPROVE 短路——否则 PLAN 下的写拦截会被工具自带的
+     * AUTO_APPROVE 绕开（提取为 internal 以供回归测试钉住该顺序）。
+     */
+    internal suspend fun requestPermissionIfNeeded(
         tool: AgentTool?,
         callId: String,
         arguments: Map<String, JsonElement>,
@@ -1960,16 +1945,6 @@ class StatefulAgentWorkflow @Inject constructor(
     ): PermissionCheckResult {
         if (tool == null) {
             return PermissionCheckResult(true)
-        }
-
-        // planMode 退出 PLAN 时，后续会有计划审查面板兜底用户决策，
-        // 此处权限弹窗冗余，直接放行；BUILD→PLAN 方向无后续审查面板，仍走权限弹窗。
-        if (tool.name == "planMode" && mode == AgentMode.PLAN) {
-            val action = (arguments["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
-            if (action == "exit") {
-                FileLogger.i(TAG, "权限判定放行 ${tool.name}（exit PLAN：计划审查面板兜底，跳过弹窗）")
-                return PermissionCheckResult(true)
-            }
         }
 
         val eval = policyEngine.evaluate(tool, tool.name, arguments, mode)

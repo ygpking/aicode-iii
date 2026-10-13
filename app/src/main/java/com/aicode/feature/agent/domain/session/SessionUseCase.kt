@@ -70,6 +70,8 @@ class SessionUseCase @Inject constructor(
             workspacePath = workspacePath,
             createdAt = now,
             updatedAt = now,
+            // 默认 AUTO：用户已预先授权全自动执行，无需逐次弹窗。
+            mode = AgentMode.AUTO.name,
             providerId = providerId,
             model = model,
             reasoningEffort = reasoningEffort
@@ -80,6 +82,24 @@ class SessionUseCase @Inject constructor(
         val clean = request.trim().replace(Regex("\\s+"), " ")
         return if (clean.length <= TITLE_MAX) clean.ifBlank { "新对话" }
         else clean.take(TITLE_MAX) + "…"
+    }
+
+    /**
+     * 一次性把已有根会话的模式切到 AUTO。返回改动数（已是 AUTO 的根会话不计）。
+     *
+     * 排除两类：子代理会话（模式由 [resolveStricterMode] 按父会话重算，改库无意义）；
+     * 停在 PLAN 的会话（PLAN 被用作「临时禁写」，自动切回 AUTO 会把用户手动踩的刹车静默松掉）。
+     */
+    suspend fun switchRootSessionsToAuto(): Int {
+        val targets = chatSessionDao.getAllOnce()
+            .filter {
+                it.parentId == null &&
+                    it.mode != AgentMode.AUTO.name &&
+                    it.mode != AgentMode.PLAN.name
+            }
+        if (targets.isEmpty()) return 0
+        chatSessionDao.upsertAll(targets.map { it.copy(mode = AgentMode.AUTO.name) })
+        return targets.size
     }
 
     /** 删除会话及其全部子代理会话（消息 + 会话记录一并删除）。返回被删除的会话 id 列表。 */

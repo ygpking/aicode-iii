@@ -171,6 +171,10 @@ class AIEditorApp : Application(), Configuration.Provider {
     @Inject
     lateinit var defaultContainerBootstrap: com.aicode.feature.agent.domain.container.DefaultContainerBootstrap
 
+    /** 一次性把已有根会话默认模式切到 AUTO（幂等，只跑一次）。 */
+    @Inject
+    lateinit var autoModeDefaultMigrator: com.aicode.feature.agent.domain.session.AutoModeDefaultMigrator
+
     /** 应用语言偏好仓库：持久化用户选择的语言，供 attachBaseContext 同步读取。 */
     @Inject
     lateinit var languageSettings: LanguageSettingsRepository
@@ -255,6 +259,10 @@ class AIEditorApp : Application(), Configuration.Provider {
         // 只跑一次、失败静默回退，不阻塞启动。
         appScope.launch {
             defaultContainerBootstrap.startIfNeeded()
+        }
+        // 一次性把已有根会话的模式切到 AUTO（与新会话默认 AUTO 配套），幂等只跑一次。
+        appScope.launch {
+            autoModeDefaultMigrator.applyIfNeeded()
         }
         // 启动即把旧 Room git 凭据一次性迁移到 git-credentials 文件（真源已迁到文件，删表由迁移器完成）。
         appScope.launch {

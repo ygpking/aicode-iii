@@ -580,9 +580,6 @@
     <string name="chat_perm_deny">Deny</string>
     <string name="chat_perm_always_allow">Always Allow</string>
     <string name="chat_perm_session_label">Session "%1$s"</string>
-    <string name="chat_plan_completed">Plan completed</string>
-    <string name="chat_continue_feedback">Continue feedback</string>
-    <string name="chat_approve_and_implement">Approve and implement</string>
 
     <!-- Checkpoint & Rewind -->
     <string name="checkpoint_rewind_title">Checkpoint &amp; Rewind</string>

@@ -86,7 +86,6 @@ import com.aicode.feature.agent.domain.session.MessagePersistenceUseCase
 import com.aicode.feature.agent.domain.session.SessionUseCase
 import com.aicode.feature.agent.domain.tool.mcp.ManageMcpTool
 import com.aicode.feature.agent.domain.tool.memory.MemoryTool
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalManager
 import com.aicode.feature.agent.domain.tool.mode.PlanModeTool
 import com.aicode.feature.agent.domain.tool.search.WebFetchTool
 import com.aicode.feature.agent.domain.tool.search.WebSearchTool
@@ -135,6 +134,12 @@ object AgentModule {
     fun provideChatSessionDao(database: AgentDatabase): ChatSessionDao {
         return database.chatSessionDao()
     }
+
+    @Provides
+    @Singleton
+    fun provideAutoModeMigrationFlag(
+        store: com.aicode.feature.agent.data.AutoModeMigrationFlagStore
+    ): com.aicode.feature.agent.domain.session.AutoModeMigrationFlag = store
 
     @Provides
     @Singleton
@@ -359,7 +364,6 @@ object AgentModule {
         permissionManager: ToolPermissionManager,
         policyEngine: ToolPermissionPolicyEngine,
         contextCompactor: ContextCompactor,
-        planApprovalManager: PlanApprovalManager,
         toolOutputStore: ToolOutputStore,
         modelMetadataService: ModelMetadataService,
         compactionModelSettingsRepository: CompactionModelSettingsRepository,
@@ -387,7 +391,6 @@ object AgentModule {
             permissionManager,
             policyEngine,
             contextCompactor,
-            planApprovalManager,
             toolOutputStore,
             modelMetadataService,
             compactionModelSettingsRepository,
