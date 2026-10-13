@@ -29,6 +29,8 @@ class SubAgentWriteLease @Inject constructor(
         val WHOLE_WORKSPACE = setOf("*", ".", "")
         /** 容器内 `~` 恒为 /root（proot 根里的家目录）。 */
         const val CONTAINER_HOME = "/root"
+        /** 容器内工作区根（`~/workspace`）。相对路径声明的基准。 */
+        const val CONTAINER_WORKSPACE = "$CONTAINER_HOME/workspace"
     }
 
     /** 子代理会话 id → 其声明的写路径（原样保存，比较时归一化）。 */
@@ -122,12 +124,17 @@ class SubAgentWriteLease @Inject constructor(
      * 先展开 `~` 再归一化：子代理的 readFile/editFile 返回路径是容器绝对路径（/root/...），
      * 而 write_paths 声明多为 `~/...`——若不展开，`~/workspace/app` 与 `/root/workspace/app`
      * 会被视为不同路径，导致声明正确仍 WRITE_LEASE_DENIED（已实测三连）。
+     *
+     * 相对路径也统一挂到工作区根下：`task(create)` 的 write_paths 常被写成
+     * `app/src/...`（相对工作区），而工具落盘时用的是绝对路径，不补齐前缀同样会误拒
+     * （2026-10-13 实测复现）。
      */
     private fun normalizeWritePath(raw: String): String {
         val expanded = when {
             raw == "~" -> CONTAINER_HOME
             raw.startsWith("~/") -> CONTAINER_HOME + raw.substring(1)
-            else -> raw
+            raw.startsWith("/") -> raw
+            else -> "$CONTAINER_WORKSPACE/$raw"
         }
         val absolute = expanded.startsWith("/")
         val parts = ArrayDeque<String>()

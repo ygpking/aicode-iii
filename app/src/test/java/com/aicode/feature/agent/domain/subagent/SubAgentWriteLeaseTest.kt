@@ -133,4 +133,34 @@ class SubAgentWriteLeaseTest {
         assertTrue(lease.findConflict(listOf("/root/workspace/app/a.kt")).contains("s1"))
         assertTrue(lease.findConflict(listOf("~/workspace/app")).contains("s1"))
     }
+
+    @Test
+    fun relativeDeclarationMatchesContainerAbsolutePath() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        // 声明写成相对工作区（常见），目标用工具落盘的绝对路径——2026-10-13 实测被误拒的情形
+        lease.acquire("s1", listOf("app/src/test/Foo.kt"))
+        assertTrue(lease.isWithinLease("s1", "/root/workspace/app/src/test/Foo.kt"))
+        assertFalse(lease.isWithinLease("s1", "/root/workspace/app/src/other/Bar.kt"))
+    }
+
+    @Test
+    fun relativeDeclarationMatchesTildeTarget() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        lease.acquire("s1", listOf("app/src/test"))
+        assertTrue(lease.isWithinLease("s1", "~/workspace/app/src/test/Foo.kt"))
+        assertFalse(lease.isWithinLease("s1", "~/workspace/app/src/main/Bar.kt"))
+    }
+
+    @Test
+    fun relativeDeclarationConflictIsDetectedAcrossForms() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        lease.acquire("s1", listOf("app/src/test/Foo.kt"))
+        // 相对、~、绝对三种写法应归一到同一路径而判冲突
+        assertTrue(lease.findConflict(listOf("/root/workspace/app/src/test/Foo.kt")).contains("s1"))
+        assertTrue(lease.findConflict(listOf("~/workspace/app/src/test/Foo.kt")).contains("s1"))
+        assertTrue(lease.findConflict(listOf("app/src/test/Foo.kt")).contains("s1"))
+    }
 }
