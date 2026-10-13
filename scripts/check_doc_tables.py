@@ -63,11 +63,11 @@ def _fence_open(line: str) -> tuple[str, int, int, str] | None:
       开栏缩进 +3**，否则顶格围栏里用缩进展示的示例会被当成闭合。
     - 带 info string：闭合围栏不得带 info（`` ```markdown `` 不能当闭栏）。
     """
-    indent = len(line) - len(line.lstrip(" "))
+    indent = len(line) - len(line.lstrip(" "))  # RULE:开栏任意缩进
     stripped = line[indent:]
     for ch in ("`", "~"):
         n = len(stripped) - len(stripped.lstrip(ch))
-        if n >= 3:
+        if n >= 3:                              # RULE:三反引号门槛
             return ch, n, indent, stripped[n:].strip()
     return None
 
@@ -131,13 +131,18 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
 # ② 字典引用的样例名必须在 SELF_TESTS 里存在；
 # ③ 每条样例必须至少被一个规则引用。
 #
-# 边界：若新增一条判据时**既不给样例、也不写 `# RULE:` 锚点**，本条对账无法感知
-# （它无从得知那个 if 是一条独立判据）。锚点是「人为声明」，能扭住的是「声明与
-# 样例不匹配」，扭不住「压根不声明」。
+# 边界（两类都抓不到，都要靠人）：
+# ① 新增判据时既不给样例、也不写 `# RULE:` 锚点——它无从得知那个 if 是判据；
+# ② 名义配对：锚点写了、键登记了，但样例挂错（挂了一条跟该判据无关的红/绿样例）。
+#    此时双向对账全绿，而判据行为已坏。要抓这类需变异对账（实现在内存里改坏
+#    判据、断言声明样例必须翻转），成本高，当前不引入。
+# 锚点是「人为声明」，能扭住的是「声明与样例不匹配」，扭不住上述两类。
 RULE_TO_SAMPLES: dict[str, list[str]] = {
+    "开栏任意缩进": ["列表项内缩进的围栏不应假红"],
+    "三反引号门槛": ["围栏内坏表不应假红"],
     "同字符": ["异种围栏不能闭合"],
     "长度比较": ["4 反引号外层包 3 反引号示例后跟坏表应红"],
-    "缩进放宽": ["顶格围栏内缩进 4 空格的示例不应红", "列表项内缩进的围栏不应假红"],
+    "缩进放宽": ["顶格围栏内缩进 4 空格的示例不应红"],
     "info规则": ["带 info 的伪闭栏后跟合法表应红"],
     "未闭合红灯": ["未闭合围栏应红", "未闭合 ~~~ 应红"],
     "表格列数": [
@@ -207,7 +212,16 @@ def self_test() -> int:
     # 只对样例侧单向对账不够——实测：规则存在但无样例时静默全绿（这正是本脚本的
     # 真实成因：「同字符」条件一度无任何样例钉住）。双向差集能把「新增判据忘配样例」
     # 也变成红灯；反过来锚点被删/改名同样立刻报红。
-    anchored = set(re.findall(r"#\s*RULE:(\S+)", inspect.getsource(scan) + inspect.getsource(cell_count)))
+    #
+    # 正则要求锚点**独占行尾**（`# RULE:名字` 后只能是行尾）：
+    # 早期用 `\S+` 会吞下散文里的字面量（如注释里写「见 `# RULE:xxx` 的形式」），
+    # 一旦这类句子进了函数体，锚点集会被污染成假红。
+    # 字符类用 [^\s`]+：\S+ 会吞反引号、也不允许名字带空格（正是上一笔
+    # 「info 规则」与「info规则」错配的成因），收紧后带空格的锚点会被显式报出。
+    # 对账作用域只含「真正带判据的函数」：三个函数体外还有散文提到 `# RULE:xxx`，
+    # 不放进来就天然免疫；放进来会多一层依赖反引号才能不误匹配。
+    scope = "".join(inspect.getsource(f) for f in (cell_count, _fence_open, scan))
+    anchored = set(re.findall(r"#\s*RULE:([^\s`]+)\s*$", scope, re.M))
     declared = set(RULE_TO_SAMPLES)
     for rule in sorted(anchored - declared):
         failures += 1
