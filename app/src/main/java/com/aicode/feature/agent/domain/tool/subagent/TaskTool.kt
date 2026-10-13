@@ -124,7 +124,8 @@ class TaskTool @Inject constructor(
             type = ParameterType.ARRAY,
             description = "该子代理要写入的文件或目录路径（create 可选）。多个子代理并行时用于避免同时改同一批文件：" +
                 "与运行中的子代理写路径冲突会被拒绝。只读任务应省略此参数（不占租约、不受限制）；" +
-                "确需独占整个工作区时传 [\"*\"]",
+                "路径支持工作区相对（`app/src/...`）、`~/workspace/...` 与容器绝对三种写法；" +
+                "需要不受限地写（含工作区外）时传 [\"*\"]",
             required = false,
             itemsSchema = mapOf("type" to "string")
         )
