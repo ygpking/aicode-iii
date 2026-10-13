@@ -234,14 +234,17 @@ def self_test() -> int:
     anchored = set(re.findall(r"#\s*RULE:([^\s`]+)\s*$", scope, re.M))
     # 形态卫生：域内出现 `# RULE:` 字面量但形态不合法（未独占行尾）时直接报出。
     # 否则作者以为「写了锚点」，而它等于没写。
-    # 用**计数式**而非集合相减：集合相减下，畸形锚点若与某条合法锚点同名会被减掉而静默
-    # （实测：复用一个已存在的规则名再挂尾注 → 退 0，那处锚点实际没被认出）。
+    # 比较的是**匹配数**而不是集合大小：集合大小会把合法的同名锚点也算成不符
+    # （同一条判据在两处实现、两处都独占行尾时合法，实测集合式会误报）。
     total_markers = len(re.findall(r"#\s*RULE:", scope))
-    if total_markers != len(anchored):
+    well_formed = len(re.findall(r"#\s*RULE:([^\s`]+)\s*$", scope, re.M))
+    if total_markers != well_formed:
         malformed = set(re.findall(r"#\s*RULE:(\S+)", scope)) - anchored
-        for bad in sorted(malformed) or ["(与合法锚点同名，看不出名字)"]:
+        for bad in sorted(malformed) or ["(名字与某条合法锚点相同，看不出是哪个)"]:
             failures += 1
-            print(f"  [FAIL] 疑似锚点但形态不合法：「{bad}」——`# RULE:名字` 后必须是行尾")
+            print(
+                f"  [FAIL] 疑似锚点但形态不合法：「{bad}」——`# RULE:名字` 后必须是行尾"
+            )
     declared = set(RULE_TO_SAMPLES)
     for rule in sorted(anchored - declared):
         failures += 1
