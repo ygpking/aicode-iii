@@ -42,6 +42,19 @@ internal object AgentEventTracer {
     }
 
     /**
+     * 从 loadSkill 的参数里抽技能名。
+     *
+     * 动机（真机踩坑）：轨迹里 loadSkill 事件只有 id 与结果字数，**不记加载了哪个技能**。
+     * 于是「这个技能到底有没有被用过、哪些技能造了没人用」这类治理问题完全无法从日志回答——
+     * 只能去 grep ai-logs，而那里 system 提示词的技能清单、工具 schema、AI 自己的推理文本
+     * 会把技能名刷成上千条命中，自污染到分不出真实调用。技能名本就在参数里，值得落一行。
+     */
+    private val SKILL_NAME_IN_JSON = Regex("\"skill_name\"\\s*:\\s*\"([^\"]{1,64})\"")
+
+    private fun skillEvidence(text: String): String? =
+        SKILL_NAME_IN_JSON.find(text)?.groupValues?.get(1)
+
+    /**
      * 从工具结果的 transport JSON 里抽 `status.code`（如 `TOOL_TIMEOUT`）。
      *
      * 动机：失败行此前只有 120 字中文摘要，无法按类聚合、无法稳定区分「重试中的失败」与
@@ -100,6 +113,8 @@ internal object AgentEventTracer {
             append("tool_started ${event.toolName} id=${event.id}")
             // 参数里带路径的（editFile/readFile/writeFile/…）落一份，事后一眼看出「动的哪个文件」。
             pathEvidence(event.argsPreview)?.let { append(" path=$it") }
+            // 加载技能时记下技能名，让「哪个技能被用过」变成可按轨迹统计的量。
+            if (event.toolName == "loadSkill") skillEvidence(event.argsPreview)?.let { append(" skill=$it") }
         }
         is AgentEvent.ToolCallFinished -> buildString {
             append("tool_finished ${event.toolName} id=${event.id} ")
