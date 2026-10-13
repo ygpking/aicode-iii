@@ -28,9 +28,10 @@ class SubAgentWriteLease @Inject constructor(
         /**
          * 不受限声明：该子代理的写路径**不受任何限制**，工作区内外均可写。
          * 创建期仍会与其它在跑的子代理判冲突（防两个子代理互相覆盖，与写路径无关）。
-         * 空串永远进不到集合判断：登记与查冲突两侧都先 `filter { it.isNotEmpty() }`（空串等价于不声明）。
+         * 空串不用列在这里：三处判定点（登记、查冲突、创建期越界检查）都在之前
+         * `filter { it.isNotEmpty() }`，空串等价于不声明。
          */
-        val WHOLE_WORKSPACE = setOf("*", ".", "")
+        val WHOLE_WORKSPACE = setOf("*", ".")
         /** 容器内 `~` 恒为 /root（proot 根里的家目录）。 */
         const val CONTAINER_HOME = "/root"
         /** 容器内工作区根（`~/workspace`）。相对路径声明的基准。 */
@@ -78,7 +79,7 @@ class SubAgentWriteLease @Inject constructor(
     fun impossibleRelativePaths(writePaths: List<String>): List<String> = writePaths
         .map { it.trim() }
         .filter { it.isNotEmpty() && !isWholeWorkspace(it) && !it.startsWith("~") && !it.startsWith("/") }
-        .filter { raw -> !isAnchoredInWorkspace(collapse("$CONTAINER_WORKSPACE/$raw")) }
+        .filter { raw -> !sameOrUnder(collapse("$CONTAINER_WORKSPACE/$raw"), CONTAINER_WORKSPACE) }
 
     /**
      * 找出与新任务 [writePaths] 冲突的、仍活跃的子代理会话 id。
@@ -122,7 +123,8 @@ class SubAgentWriteLease @Inject constructor(
         if (isWholeWorkspace(a) || isWholeWorkspace(b)) return true
         val na = normalizeWritePath(a)
         val nb = normalizeWritePath(b)
-        return na == nb || na.startsWith("$nb/") || nb.startsWith("$na/")
+        // 冲突是双向的：任一方包含另一方即算撞上
+        return sameOrUnder(na, nb) || sameOrUnder(nb, na)
     }
 
     /**
@@ -132,10 +134,19 @@ class SubAgentWriteLease @Inject constructor(
      */
     private fun covered(declared: String, target: String): Boolean {
         if (isWholeWorkspace(declared)) return true
-        val nd = normalizeWritePath(declared)
-        val nt = normalizeWritePath(target)
-        return nt == nd || nt.startsWith("$nd/")
+        // 覆盖是单向的：只看目标是否在声明之下，反之不算
+        return sameOrUnder(normalizeWritePath(target), normalizeWritePath(declared))
     }
+
+    /**
+     * [path] 是否等于 [base] 或位于其下。
+     *
+     * 与 `core/watch/isUnderPath` 字面同形但**前提不同**：此处两侧均由 [collapse] / [normalizeWritePath]
+     * 纯词法归一，不访问文件系统、不保证与真实路径解析结果一致；`isUnderPath` 则要求两侧已由
+     * `canonicalHostPath` 归一。两者不可合并，否则会把词法域与真实路径域混起来。
+     */
+    private fun sameOrUnder(path: String, base: String): Boolean =
+        path == base || path.startsWith("$base/")
 
     private fun isWholeWorkspace(path: String): Boolean = path.trim() in WHOLE_WORKSPACE
 
@@ -166,13 +177,9 @@ class SubAgentWriteLease @Inject constructor(
         raw.startsWith("/") -> collapse(raw)
         else -> {
             val anchored = collapse("$CONTAINER_WORKSPACE/$raw")
-            if (isAnchoredInWorkspace(anchored)) anchored else collapse(raw)
+            if (sameOrUnder(anchored, CONTAINER_WORKSPACE)) anchored else collapse(raw)
         }
     }
-
-    /** 归一后的绝对路径是否落在工作区根之内（含根本身）。 */
-    private fun isAnchoredInWorkspace(normalized: String): Boolean =
-        normalized == CONTAINER_WORKSPACE || normalized.startsWith("$CONTAINER_WORKSPACE/")
 
     /** 纯字符串展开：按段消解 `.` 与 `..`，去重复斜杠，让同一路径的不同写法得到同一结果。 */
     private fun collapse(path: String): String {

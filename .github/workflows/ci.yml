@@ -66,6 +66,11 @@ jobs:
       - name: Check architecture conventions
         run: python3 scripts/check_architecture.py
 
+      # 文档表格体检：表格行必须与表头列数一致。Markdown 没有编译器兜底，
+      # 单元格内的 `|` 忘转义或误删换行都会静默渲染成错列（实测有缺陷随 tag 发进过 rc）。
+      - name: Check doc tables
+        run: python3 scripts/check_doc_tables.py
+
       # 上下文压缩全流程回归：纯 py3 建模仿真 + 失败注入自检。
       # 压缩链路的缺陷不产生编译错误，单测也覆盖不到（依赖真实消息时序与 DAO 状态）：
       # 本项目实测踩过「恢复段锚最前端 → 压缩被永久跳过」「恢复段超预算仍受保护 → 重复压缩」。

@@ -405,7 +405,7 @@ AICODE_KEY_ACCOUNT_ID=<当前 API Key>。
 
 - **属性说明**：
   | 属性 | 类型 | 必填 | 默认值 | 说明 |
-  | :--- | :--- | :--- | :--- |
+  | :--- | :--- | :--- | :--- | :--- |
   | `type` | String | 是 | - | 固定 `"ActionButton"`（别名 `"button"`、`"action"`） |
   | `title` | String | 是 | - | 按钮文本（如 `"前往充值"`, `"复制卡密"`） |
   | `action` | String | 否 | `"openUrl"` | 行为类型：`"openUrl"`（打开链接）/ `"copy"`（复制文本）/ `"refresh"`（刷新面板） |

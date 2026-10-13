@@ -230,8 +230,11 @@ class SubAgentWriteLeaseTest {
         val bus = busWithActive("s1")
         val lease = SubAgentWriteLease(bus)
         // 防误报：所有正常写法都不得被判为越界。
-        // 后三条是「绝对/`~` 形态且含 `..`」的探针：它们分别钉住三个前置 guard
-        // （绝对、`~`、整工作区）——少了它们，删掉任一 guard 本用例仍会全绿（复核实测）。
+        // 后三条是「绝对/`~` 形态且含 `..`」的探针。逐条变异复算（删掉某个前置 guard 看哪条探针被误报）：
+        //   `/../x`、`/etc/../..` -> 钉绝对 guard；`~/../../x` -> 钉 `~` guard。
+        // 整工作区 guard 当前无探针：成员集 `{*, ., 空}` 下不可观测（`*`/`.` 挂前缀后
+        // 仍锚在工作区内，空串先被 `isNotEmpty` 滤掉），故不为它造断言。
+        // 但它不是冗余：若日后往 `WHOLE_WORKSPACE` 加 `..` 类成员，该 guard 即变必要（复核实测）。
         val valid = listOf(
             "app/src/test/Foo.kt", "app/src", "src", "app/./src", "app/src/../src/Foo.kt",
             "./app/src", "a", "app/src/test/",
