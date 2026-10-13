@@ -232,9 +232,11 @@ class SubAgentWriteLeaseTest {
         // 防误报：所有正常写法都不得被判为越界。
         // 后三条是「绝对/`~` 形态且含 `..`」的探针。逐条变异复算（删掉某个前置 guard 看哪条探针被误报）：
         //   `/../x`、`/etc/../..` -> 钉绝对 guard；`~/../../x` -> 钉 `~` guard。
-        // 整工作区 guard 当前无探针：成员集 `{*, ., 空}` 下不可观测（`*`/`.` 挂前缀后
-        // 仍锚在工作区内，空串先被 `isNotEmpty` 滤掉），故不为它造断言。
-        // 但它不是冗余：若日后往 `WHOLE_WORKSPACE` 加 `..` 类成员，该 guard 即变必要（复核实测）。
+        // 本链的整工作区 guard（只影响相对声明的过滤）当前无探针：`*`/`.` 挂前缀后仍锚在
+        // 工作区内，当前成员集下不可观测（`WHOLE_WORKSPACE` 已不含空串）。
+        // 但它不是冗余：若日后往里加 `..` 类成员，该 guard 即变必要（复核实测）。
+        // （整工作区**语义**本身有覆盖：`wholeWorkspaceConflictsWithEverything` 钉查冲突短路、
+        //  `wholeWorkspaceDeclarationLeavesPathsUnrestricted` 钉写工具放行。）
         val valid = listOf(
             "app/src/test/Foo.kt", "app/src", "src", "app/./src", "app/src/../src/Foo.kt",
             "./app/src", "a", "app/src/test/",
