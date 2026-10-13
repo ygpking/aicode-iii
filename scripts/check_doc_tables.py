@@ -10,15 +10,23 @@
 2026-10-13 实例：补 `error-codes.md` 时误删行尾换行，两行挤成一行（竖线数变 5），
 该缺陷随 tag 发进了 rc10；另一份 `dashboard-cards.md` 的分隔行少一列，同批扫出。
 
-**判据覆盖范围的边界**（`[OK]` 只说明「本判据覆盖的那类表格没问题」，不是「所有表格都没问题」）：
-只检查**带首尾竖线**、且**至少两行连排**的 GFM 表。以下四类不覆盖（均实测）：
-省略行首竖线的合法行（`a | b |`）、引用块内的表格（`> | a | b |`）、
-只有表头没有分隔行的两行表、单行表。围栏代码块（``` / ~~~）内的内容会被跳过。
+## 判据覆盖范围的边界
+
+`[OK]` 只说明「**本判据覆盖的那类表格**没问题」，不是「所有表格都没问题」。
+
+- **不覆盖**（均实测）：省略**行首**竖线的合法行（`a | b |`）、引用块内的表格
+  （`> | a | b |`）、只有表头没有分隔行的两行表、单行表。
+- **有意判红**（本仓约定：表格行必须带首尾竖线）：省略**尾部**竖线的 `| d | e | f`
+  会被当作缺陷拦下，而不是按 GFM 合法行放行。
+- **能抓**：反引号内的裸 `|` 在 GFM 里仍算列分隔符，故 ``| `A` 或 `B | C` 混 | x |``
+  这类错列会被抓到，不需要为代码段做豁免。
+- 围栏代码块（``` / ~~~）内的内容一律跳过；**围栏未闭合**会使该文件自此行起的内容
+  无法解析，故判红（避免「解析不了」被静默当成「没问题」）。
 
 ## 用法
 
     python3 scripts/check_doc_tables.py                    # 查 docs-site/docs 全量
-    python3 scripts/check_doc_tables.py a.md b.md          # 查指定文件
+    python3 scripts/check_doc_tables.py a.md b.md          # 查指定文件（须逐个列文件，不支持目录）
 
 退出码：0 = 全部表格列数一致；1 = 有不一致（可据此在 CI 中拦截）。
 """
@@ -43,17 +51,24 @@ def _fence_open(line: str) -> str | None:
     return None
 
 
-def find_mismatches(path: pathlib.Path) -> list[str]:
-    """返回该文件里所有「与同表表头列数不一致」的行描述。"""
+def scan(lines: list[str], label: str) -> tuple[list[str], int]:
+    """扫描一个文件的行，返回（问题描述列表, 实际检查的表格行数）。
+
+    `label` 仅用于问题描述里的定位前缀（调用方已知文件路径）。
+    """
     problems: list[str] = []
-    lines = path.read_text(encoding="utf-8").split("\n")
+    checked_rows = 0
     i = 0
     fence: str | None = None
+    fence_start = 0
     while i < len(lines):
         opened = _fence_open(lines[i])
         if opened is not None:
             # 围栏内不解析表格；遇到同种围栏即闭合
-            fence = None if fence == opened else (fence or opened)
+            if fence == opened:
+                fence = None
+            elif fence is None:
+                fence, fence_start = opened, i + 1
             i += 1
             continue
         if fence is not None:
@@ -69,12 +84,17 @@ def find_mismatches(path: pathlib.Path) -> list[str]:
         block = lines[start:i]
         head = cell_count(block[0])
         for offset, row in enumerate(block):
+            checked_rows += 1
             cols = cell_count(row)
             if cols != head:
                 problems.append(
-                    f"{path}:{start + offset + 1} 表头 {head} 列、本行 {cols} 列 — {row.strip()[:80]}"
+                    f"{label}:{start + offset + 1} 表头 {head} 列、本行 {cols} 列 — {row.strip()[:80]}"
                 )
-    return problems
+    if fence is not None:
+        problems.append(
+            f"{label}:{fence_start} 围栏代码块（{fence}）未闭合，自该行起余下内容未被检查"
+        )
+    return problems, checked_rows
 
 
 def main() -> int:
@@ -93,17 +113,18 @@ def main() -> int:
     bad_files = 0
     for f in files:
         if not f.is_file():
-            print(f"[FAIL] 文件不存在：{f}")
+            print(f"[FAIL] 文件不存在：{f}（只接受文件路径，不支持目录）")
             return 1
-        found = find_mismatches(f)
-        rows += sum(1 for ln in f.read_text(encoding="utf-8").split("\n") if ln.lstrip().startswith("|"))
+        lines = f.read_text(encoding="utf-8").split("\n")
+        found, checked = scan(lines, str(f))
+        rows += checked
         if found:
             bad_files += 1
         problems += found
 
     print(f"文档表格体检：{len(files)} 个文件 / {rows} 个表格行")
     if problems:
-        print(f"[FAIL] {bad_files} 个文件含 {len(problems)} 处列数与表头不一致：")
+        print(f"[FAIL] {bad_files} 个文件含 {len(problems)} 处问题：")
         for p in problems:
             print(f"  {p}")
         return 1
