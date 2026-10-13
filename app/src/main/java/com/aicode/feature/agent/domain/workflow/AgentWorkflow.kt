@@ -100,7 +100,11 @@ sealed class AgentEvent {
     /** 整个流程结束。 */
     object Completed : AgentEvent()
 
-    /** 模式已切换（AI 调 planMode 或用户在界面切换均可触发）；UI 的模式标识与轨迹记录据此更新。 */
+    /**
+     * 模式已切换。仅由 AI 调 planMode 触发（唯一发送点：StatefulAgentWorkflow 的工具结果分支）；
+     * 用户在界面手切不发本事件（走 MODE_CHANGE 通知 + SessionUseCase.updateMode）。
+     * 当前唯一消费方是轨迹记录 AgentEventTracer；UI 模式标识由会话流 currentSessionMode 驱动。
+     */
     data class ModeChanged(val newMode: AgentMode, val reason: String) : AgentEvent()
 
     /**
