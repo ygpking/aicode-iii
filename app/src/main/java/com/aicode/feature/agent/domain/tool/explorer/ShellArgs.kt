@@ -395,6 +395,14 @@ internal fun pipeOptionAllowed(command: String, arg: String): Boolean {
  * 故引号这一道确实能独立兜住它们。
  *
  * 注意字符集只管「不借 shell 语法逃逸」，命令自身的内建能力由 [PIPE_OPTION_ALLOWLIST] 管。
+ *
+ * **glob 元字符 `*` 也在内**：它是 grep/rg 的 glob 过滤（`--include '*.kt'`、`rg -g '*.kt'`）
+ * 与正则量词（`grep 'x*'`、`grep -E 'ab*'`）的必需字符，而这两类都是真实语料里的高频写法
+ * （1799 例语料含 `*` 的 325 例）。纳入依据与 `^$()[]` 同源：管道段逐 token [shellQuote]，
+ * 单引号内 `*` 不展开、不递归——实测 `*.kt`、`*.kt; touch PWN`、`*$(touch PWN)`、
+ * `*`touch PWN`` 四种形态交 `bash -c` 真跑，argv 均收到字面量、marker 零落盘。
+ * 对比参选方案（含代价）：删 glob 类选项会让这些过滤全不可用；只对值位放行 `*`
+ * 会连 `grep 'x*'` 这类常见 pattern 一起误拒（见 /tmp/v1_glob_star/sim2.py 的候选矩阵）。
  */
 private val SAFE_ARG_CHARS: Set<Char> = buildSet {
     addAll('a'..'z')
@@ -403,6 +411,8 @@ private val SAFE_ARG_CHARS: Set<Char> = buildSet {
     "._/:=+-,#%~| ".forEach { add(it) }
     // 正则元字符：逐个实测过 shellQuote 后不可逃逸（见上方 KDoc）
     "^\$()[]\\".forEach { add(it) }
+    // glob 元字符：同上（实测单引号内不展开，见上方 KDoc）
+    add('*')
 }
 
 /**
@@ -515,6 +525,65 @@ fun pipeSegmentAllowed(seg: List<String>): Boolean =
     seg.isNotEmpty() && seg[0] in READ_ONLY_PIPE_COMMANDS && pipeSegmentArgsSafe(seg) &&
         (seg[0] != "head" || headLinesOf(seg) != null)
 
+/** 不应被 search 读取的系统级路径前缀。 */
+private val RESTRICTED_SEARCH_PATHS: List<String> = listOf(
+    "/etc", "/proc", "/sys", "/dev", "/boot", "/system", "/vendor",
+    "/data/data", "/data/misc", "/data/system", "/data/adb",
+    "/root/.ssh", "/root/.android", "/root/.gnupg",
+)
+
+/**
+ * rg 主命令段的路径参数越界时返回说明，否则返回 null。
+ *
+ * **为什么管**：工具声明 `capabilities = READ_WORKSPACE`、`permissionPolicy = AUTO_APPROVE`，
+ * 但 rg 段参数此前不做任何路径校验——`search(args="-n root /etc/passwd")` 实测读到内容，
+ * `../../etc/passwd`（相对上跳）同样读到，声明与实际能力不符。
+ *
+ * **为什么只拦系统目录、不做 workspace 白名单**：语料 150 例 workspace 外路径里 139 例是
+ * `/root/work/...`——AI 自己的临时工作目录，活跃在用，白名单会把它们全误伤（实测误伤率
+ * 139/1799）；而真正该拦的是系统面。对比过的候选与实测数据见 /tmp/v2_main_path/sim.py。
+ *
+ * **为什么必须先归一化**：`../../etc/passwd`、`sub/../../../etc/shadow` 要先合并 `..` 才能
+ * 命中黑名单，只比对字面前缀会漏判。`~` 展开同理（单引号包裹后 shell 不会展开 `~`）。
+ */
+fun rgSearchPathIssue(tokens: List<String>, home: String = "/root"): String? {
+    // 形态解析复用 optionNamesIn/isBareValueOption（与管道段同出口，不再另写一套）
+    val isOptionValue = BooleanArray(tokens.size)
+    var patternFromOption = false
+    for (i in tokens.indices) {
+        val a = tokens[i]
+        if (!a.startsWith("-")) continue
+        if (isBareValueOption("rg", a) && i + 1 < tokens.size) isOptionValue[i + 1] = true
+        if (optionNamesIn("rg", a).any { it in PATTERN_OPTION_NAMES }) patternFromOption = true
+    }
+    val positionals = mutableListOf<String>()
+    for ((i, a) in tokens.withIndex()) {
+        if (a == "--" || a.startsWith("-") || isOptionValue[i]) continue
+        positionals += a
+    }
+    // 未用 -e/--regexp 时，第一个位置参数是检索式（pattern），不是路径
+    val paths = if (patternFromOption) positionals else positionals.drop(1)
+    for (raw in paths) {
+        val normalized = normalizeSearchPath(expandTilde(raw, home), home)
+        if (normalized == "/") {
+            return "路径 `$raw` 会递归扫描整个容器文件系统。请指定具体目录，如 ~/workspace/app。"
+        }
+        RESTRICTED_SEARCH_PATHS.firstOrNull { normalized == it || normalized.startsWith("$it/") }
+            ?.let {
+                return "路径 `$raw` 指向系统目录 $it，search 只用于搜索工作区内容。"
+            }
+    }
+    return null
+}
+
+/** 归一化路径：相对路径按 [home]/workspace 拼接后合并 `.` 与 `..`。 */
+private fun normalizeSearchPath(path: String, home: String): String = try {
+    val base = if (path.startsWith("/")) path else "$home/workspace/$path"
+    java.nio.file.Paths.get(base).normalize().toString()
+} catch (_: Exception) {
+    path
+}
+
 /**
  * 正则括号配对预检（T1-A）。
  *
@@ -590,11 +659,11 @@ fun rgPatternParenMismatch(tokens: List<String>): String? {
  * token，裸拼后真的在容器 shell 里执行了 touch（marker 落盘）。rg/ls 参数与管道段
  * 必须同口径，否则前一道引号等于白加。
  *
- * **已知既有面（非本函数引入，此处仅记录以免被当成新洞）**：rg 段自身的参数不限制路径，
- * `search(args="-n x /etc/passwd")` 同样能读到 workspace 之外。rg 是主命令，限制它等于
- * 限制 search 的基本能力，与「管道段只能加工上游输出」不同，不属本 PR 的修复范围。
- * 同理，管道段的位置参数按每命令上限约束（见 [PIPE_MAX_POSITIONAL]），
- * 而**主命令段（rg 段）不受任何路径限制**。
+ * **主命令段（rg 段）的路径限制**：由 [rgSearchPathIssue] 在调用前拦下——拒系统目录
+ * （/etc、/proc、/data/data 等）与搜索根目录 `/`，但**放行** `/root/work/...` 这类 AI 临时
+ * 工作目录（语料里 139 例在用，做白名单会全误伤）。这曾是个「声明与实际能力不符」的面：
+ * 工具声明 `READ_WORKSPACE`，但 `search(args="-n root /etc/passwd")` 实测真读到内容。
+ * 管道段则另有一道：位置参数按每命令上限约束（见 [PIPE_MAX_POSITIONAL]）。
  *
  * [home] 为命令执行环境的 home（本地 PRoot 容器为 /root，远程 SSH 为远程用户 home），
  * 用于展开 `~/` 参数——quote 后 shell 不会自动展开 `~`，故在构造命令时显式展开。

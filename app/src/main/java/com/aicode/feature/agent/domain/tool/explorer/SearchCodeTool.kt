@@ -88,6 +88,9 @@ class SearchCodeTool @Inject constructor(
                 rgPatternParenMismatch(rgTokens)?.let { reason ->
                     return ToolResult.Error(reason, "INVALID_PATTERN")
                 }
+                rgSearchPathIssue(rgTokens, pathHomeResolver.home())?.let { reason ->
+                    return ToolResult.Error(reason, "PATH_NOT_ALLOWED")
+                }
             }
 
             val command = buildSearchCommand(tokens, pathHomeResolver.home())

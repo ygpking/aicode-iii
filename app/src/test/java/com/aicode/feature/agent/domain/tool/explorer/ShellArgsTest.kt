@@ -602,4 +602,79 @@ class ShellArgsTest {
         val command = buildSearchCommand(parseShellWords("-n \"it's\" src/")!!)!!
         assertTrue(command.contains("'it'\"'\"'s'"))
     }
+
+    @Test
+    fun rgSearchPathIssue_blocksSystemDirsAndRelativeEscapes() {
+        val blocked = listOf(
+            "-n root /etc/passwd",
+            "-n root ../../etc/passwd",
+            "-n root ./../../etc/shadow",
+            "-n x sub/../../../etc/passwd",
+            "-n x /proc/self/environ",
+            "-n x /data/data/com.other/files/db",
+            "-n x /root/.ssh/id_rsa",
+            "-n x /",
+            "-e foo /etc/passwd"
+        )
+        for (args in blocked) {
+            val tokens = parseShellWords(args)!!
+            assertNotNull("应拦住：$args", rgSearchPathIssue(tokens, "/root"))
+        }
+    }
+
+    @Test
+    fun rgSearchPathIssue_allowsWorkspaceAndTempDirs() {
+        // /root/work/... 是 AI 自己的临时工作目录（语料 139 例在用），不能误伤；
+        // 首位置参数是检索式而非路径，pattern 以 / 开头也不得误判。
+        val allowed = listOf(
+            "-n x /root/work/port/smali-loomy/out",
+            "-n x /tmp",
+            "-n fun ~/workspace/app",
+            "-n x /root/workspace/app/src",
+            "-n x app/src",
+            "-n '^/' /root/workspace/app",
+            "-e foo /root/work/port",
+            "-n x",
+            "-g '*.kt' pat",
+            "--files /root/.aicode/ai-logs-view"
+        )
+        for (args in allowed) {
+            val tokens = parseShellWords(args)!!
+            assertNull("不应拦住：$args", rgSearchPathIssue(tokens, "/root"))
+        }
+    }
+
+    @Test
+    fun rgSearchPathIssue_patternLookalike_isNotTreatedAsPath() {
+        // 首位置参数是检索式而非路径：即使它长得像路径也不能拦（否则会误拒合法搜索）。
+        // 这条是 M19（把 pattern 也当路径）的区分用例——无它则该注入检出 0。
+        for (args in listOf(
+            "-n /etc /root/workspace/app",
+            "-n /proc/x /root/workspace/app",
+            "-n ~/.ssh /root/workspace/app"
+        )) {
+            val tokens = parseShellWords(args)!!
+            assertNull("pattern 不应被当作路径：$args", rgSearchPathIssue(tokens, "/root"))
+        }
+    }
+
+    @Test
+    fun rgSearchPathIssue_tildeEscapingStillChecked() {
+        // ~/.ssh 展开后必须命中黑名单（expandTilde 先行，否则前缀比对会漏）
+        val tokens = parseShellWords("-n x ~/.ssh")!!
+        assertNotNull(rgSearchPathIssue(tokens, "/root"))
+    }
+
+    @Test
+    fun globMetacharacter_isAllowedInPipeSegment() {
+        // 单引号内 `*` 不展开，已在 /tmp/v1_glob_star/sim2.py 实测（marker 零落盘）
+        for (args in listOf(
+            "-n foo src/ | grep --include '*.kt' foo",
+            "-n foo src/ | rg -g '*.kt' pat",
+            "-n foo src/ | grep 'x*'",
+            "-n foo src/ | rg --iglob '*.rs' pat"
+        )) {
+            assertNotNull("应放行：$args", buildSearchCommand(parseShellWords(args)!!))
+        }
+    }
 }
