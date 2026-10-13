@@ -103,6 +103,37 @@ internal object CommandOutcome {
     fun hasFailureSignal(output: String?): Boolean =
         !output.isNullOrBlank() && FAILURE_SIGNAL_RE.containsMatchIn(output)
 
+    /**
+     * 命令**没跑成**的输出特征（超时被杀、环境缺工具、测试框架零收集）。
+     *
+     * 与 [FAILURE_SIGNAL_RE] 分开成两张表：「跑了但失败」与「根本没跑成」对凭证的处置
+     * 相同（都不算凭证），但语义不同——合表会让只读 [hasFailureSignal] 的调用方
+     * 把「超时」理解成「命令执行过且失败」。
+     *
+     * 超时文案由容器引擎在终止进程后追加（见 `LinuxContainerEngine` 的
+     * 「[命令执行超时：超过 …ms 已被强制终止。…]」），它既不在失败特征表里、
+     * 也不在环境缺失表（`ENV_FAILURE` 只在 [classify] 里用，而 [classify] 需要退出码）——
+     * 故超时被杀的命令此前会被当成「验证成功」的凭证（真机 2026-10-13 实测：
+     * 两天 12 次命令超时，其中 5 次是编译/验证类）。
+     */
+    private val UNRUNNABLE_SIGNAL_RE = Regex(
+        "命令执行超时|已被强制终止|command not found|no tests ran|collected 0 items",
+        RegexOption.IGNORE_CASE,
+    )
+
+    /** 输出文本是否表明命令**没跑成**（超时被杀、命令不存在、测试零收集）。 */
+    fun hasUnrunnableSignal(output: String?): Boolean =
+        !output.isNullOrBlank() && UNRUNNABLE_SIGNAL_RE.containsMatchIn(output)
+
+    /**
+     * 该次命令输出能否作为「跑过且成功」的凭证。**凭证判定的唯一出口**。
+     *
+     * 四处共用（R1 验证、R5 检索、R6 git 对账、账本的命令成败），集中一处防口径漂移：
+     * 只判 [hasFailureSignal] 会把「超时被杀 / 没跑成」算成成功凭证（假 PASS）。
+     */
+    fun isUsableCredentialOutput(output: String?): Boolean =
+        !hasFailureSignal(output) && !hasUnrunnableSignal(output)
+
     /** [outputEdges] 头、尾各保留的字符数。 */
     const val OUTPUT_EDGE_CHARS = 2000
 

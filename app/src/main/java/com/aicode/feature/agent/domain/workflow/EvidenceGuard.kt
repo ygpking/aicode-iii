@@ -78,6 +78,19 @@ internal object EvidenceGuard {
      */
     internal fun isWriteTool(name: String): Boolean = name in WRITE_TOOLS
 
+    /**
+     * 该工具集是否**不可能产生写文件凭证**（不含任何写文件工具）。
+     *
+     * 用途：只读会话（如只做复核的子代理）天然拿不出 R2/R3 要的写凭证，
+     * 走守卫只会被系统性误伤，故整体跳过。
+     *
+     * 判据取「能力」而非「本次有没有写」：一次 run 里没写过文件的主代理会话**不**豁免——
+     * 它可能是「上一轮写了、这一轮汇报」（由账本窗口负责），也可能是「压根没写却说写了」
+     * （正是 R2 要拦的）。`Bash` 不算写工具：写凭证本来就只认 `editFile`/`writeFile`。
+     */
+    internal fun isReadOnlyToolset(toolNames: Collection<String>): Boolean =
+        toolNames.none { isWriteTool(it) }
+
     /** 该工具是否为「检索/调研」工具（供 workflow 的 readsOf 与本守卫共用）。 */
     internal fun isReadTool(name: String): Boolean = name in READ_TOOLS
 
@@ -208,7 +221,11 @@ internal object EvidenceGuard {
         }
 
         // R4：测试作弊——写了测试却在削弱它。与「有没有跑」无关，单独成条。
-        records.filter { it.tampered && !it.isError }.forEach { rec ->
+        // 只认每个路径**最后一次成功的写入**：同一 run 内后续写回会覆盖更早的削弱痕迹。
+        // 记录若不可撤销，「全量覆盖压成 1 个用例 → 40 秒后 edit 补回」会被连拉三次
+        // 并达上限上报（真机 2026-10-13 实测）。最后那次写失败（没成功落盘）不算复原，
+        // 仍按前一次报——否则「写坏又写挂」反而能逃过。
+        finalTamperedWrites(records).forEach { rec ->
             notices += "检测到对测试的改动可能削弱了验证（`${rec.path ?: "-"}`）：请说明为什么必须改测试，或改回测试并修真实问题。"
         }
 
@@ -242,16 +259,28 @@ internal object EvidenceGuard {
     fun verdict(message: String, records: List<ToolRecord>): Verdict {
         val notices = evaluate(message, records)
         if (notices.isEmpty()) return Verdict.PASS
-        return if (records.any { it.tampered && !it.isError }) Verdict.SUSPECT else Verdict.FAIL
+        return if (finalTamperedWrites(records).isNotEmpty()) Verdict.SUSPECT else Verdict.FAIL
     }
+
+    /**
+     * 每个路径**最后一次成功写入**里仍带削弱特征的记录。
+     *
+     * R4 与 [verdict] 共用，防两处口径漂移——按路径分组取末次，是因为同一 run 内
+     * 后续写回就是最终态（详见 [evaluate] 的 R4 说明）。
+     */
+    private fun finalTamperedWrites(records: List<ToolRecord>): List<ToolRecord> =
+        records.filter { !it.isError && isWriteTool(it.toolName) && it.path != null }
+            .associateBy { it.path!! }
+            .values.filter { it.tampered }
 
     private fun hasSuccessfulVerifyCommand(records: List<ToolRecord>): Boolean =
         records.any { rec ->
             !rec.isError && rec.command != null &&
                 CommandOutcome.isVerifyCommand(rec.command) &&
-                // 输出里带失败信号则不算凭证——工具层把非零退出包成 Success，
-                // 不看输出会让「BUILD FAILED 后声称测试通过」成为漏网的正例。
-                !CommandOutcome.hasFailureSignal(rec.outputTail) &&
+                // 输出里带失败信号或「没跑成」信号则不算凭证——工具层把非零退出包成 Success，
+                // 不看输出会让「BUILD FAILED 后声称测试通过」成为漏网的正例；
+                // 超时被杀的命令同理（它连结果都没跑到）。
+                CommandOutcome.isUsableCredentialOutput(rec.outputTail) &&
                 TamperDetector.inspectCommand(rec.command, isVerifyCommand = true).isEmpty()
         }
 
@@ -275,7 +304,7 @@ internal object EvidenceGuard {
             !rec.isError &&
                 (isReadTool(rec.toolName) ||
                     (rec.command != null && CommandOutcome.isReadonlySearchCommand(rec.command) &&
-                        !CommandOutcome.hasFailureSignal(rec.outputTail)))
+                        CommandOutcome.isUsableCredentialOutput(rec.outputTail)))
         }
 
     /** 范围对账凭证（R6）：本回合有成功的 git status/diff。git log 等看不到工作区范围，不算。 */
@@ -285,7 +314,7 @@ internal object EvidenceGuard {
         records.any { rec ->
             !rec.isError && rec.command != null &&
                 GIT_RECONCILE_RE.containsMatchIn(rec.command) &&
-                !CommandOutcome.hasFailureSignal(rec.outputTail)
+                CommandOutcome.isUsableCredentialOutput(rec.outputTail)
         }
 
     /** 路径匹配：等值、或一方是另一方的工作区相对路径（`app/x.kt` ↔ `/root/workspace/app/x.kt`）。 */
