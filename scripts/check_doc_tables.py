@@ -38,7 +38,9 @@
 退出码：0 = 全部表格列数一致；1 = 有不一致或自检失败（可据此在 CI 中拦截）。
 """
 
+import inspect
 import pathlib
+import re
 import sys
 
 DOCS_ROOT = "docs-site/docs"
@@ -48,7 +50,7 @@ FENCE_CLOSE_INDENT_SLACK = 3
 
 def cell_count(line: str) -> int:
     """数一行的竖线数（先剥掉单元格内已转义的 `\\|`，它们不是列分隔符）。"""
-    return line.replace("\\|", "\x00").count("|")
+    return line.replace("\\|", "\x00").count("|")  # RULE:转义剥离
 
 
 def _fence_open(line: str) -> tuple[str, int, int, str] | None:
@@ -85,10 +87,10 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
         if opened is not None:
             closes = (
                 fence is not None
-                and opened[0] == fence[0]           # 同字符
-                and opened[1] >= fence[1]           # 长度不短于开栏
-                and opened[2] <= fence[2] + FENCE_CLOSE_INDENT_SLACK  # 缩进不放宽太多
-                and not opened[3]                   # 不带 info string
+                and opened[0] == fence[0]           # RULE:同字符
+                and opened[1] >= fence[1]           # RULE:长度比较
+                and opened[2] <= fence[2] + FENCE_CLOSE_INDENT_SLACK  # RULE:缩进放宽
+                and not opened[3]                   # RULE:info规则
             )
             if closes:
                 fence = None
@@ -111,11 +113,11 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
         for offset, row in enumerate(block):
             checked_rows += 1
             cols = cell_count(row)
-            if cols != head:
+            if cols != head:                        # RULE:表格列数
                 problems.append(
                     f"{label}:{start + offset + 1} 表头 {head} 列、本行 {cols} 列 — {row.strip()[:80]}"
                 )
-    if fence is not None:
+    if fence is not None:                           # RULE:未闭合红灯
         problems.append(
             f"{label}:{fence_start} 围栏代码块（{fence[0] * fence[1]}）未闭合，自该行起余下内容未被检查"
         )
@@ -125,14 +127,18 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
 # 判别力自检：(名字, 内容行, 期望退出是否为红)
 #
 # 规则 ↔ 样例的勾稽由 RULE_TO_SAMPLES 维护，并在 self_test 末尾机器对账：
-# 规则名下的样例名必须存在（防写错名字），每条样例必须至少被一个规则引用
-# （防新增判据忘配样例——实测发生过：「同字符」条件一度无任何样例钉住）。
+# ① 源码里的 `# RULE:xxx` 锚点集合 与 字典键集合 取双向差集；
+# ② 字典引用的样例名必须在 SELF_TESTS 里存在；
+# ③ 每条样例必须至少被一个规则引用。
+#
+# 边界：若新增一条判据时**既不给样例、也不写 `# RULE:` 锚点**，本条对账无法感知
+# （它无从得知那个 if 是一条独立判据）。锚点是「人为声明」，能扭住的是「声明与
+# 样例不匹配」，扭不住「压根不声明」。
 RULE_TO_SAMPLES: dict[str, list[str]] = {
     "同字符": ["异种围栏不能闭合"],
     "长度比较": ["4 反引号外层包 3 反引号示例后跟坏表应红"],
-    "缩进放宽": ["顶格围栏内缩进 4 空格的示例不应红"],
-    "列表缩进": ["列表项内缩进的围栏不应假红"],
-    "info 规则": ["带 info 的伪闭栏后跟合法表应红"],
+    "缩进放宽": ["顶格围栏内缩进 4 空格的示例不应红", "列表项内缩进的围栏不应假红"],
+    "info规则": ["带 info 的伪闭栏后跟合法表应红"],
     "未闭合红灯": ["未闭合围栏应红", "未闭合 ~~~ 应红"],
     "表格列数": [
         "围栏闭合后的坏表应红",
@@ -196,9 +202,20 @@ def self_test() -> int:
         failures += 1
         print("  [FAIL] 阳性对照失败：没有任何样例会在「判据恒不报」时变红，样例无判别力")
 
-    # 勾稽对账：规则名下的样例名必须存在，且每条样例必须至少被一个规则引用。
-    # 后者防的是「新增判据忘配样例」——实测发生过一次（「同字符」条件无样例钉住，
-    # 删掉它 13 条样例 + 阳性对照仍全绿）。
+    # 勾稽对账（双向）：从源码里抽 `# RULE:xxx` 锚点得到「实现里有多少条判据」，
+    # 与 RULE_TO_SAMPLES 的键取双向差集。
+    # 只对样例侧单向对账不够——实测：规则存在但无样例时静默全绿（这正是本脚本的
+    # 真实成因：「同字符」条件一度无任何样例钉住）。双向差集能把「新增判据忘配样例」
+    # 也变成红灯；反过来锚点被删/改名同样立刻报红。
+    anchored = set(re.findall(r"#\s*RULE:(\S+)", inspect.getsource(scan) + inspect.getsource(cell_count)))
+    declared = set(RULE_TO_SAMPLES)
+    for rule in sorted(anchored - declared):
+        failures += 1
+        print(f"  [FAIL] 源码里有判据锚点「{rule}」但 RULE_TO_SAMPLES 未登记（新增判据忘配样例？）")
+    for rule in sorted(declared - anchored):
+        failures += 1
+        print(f"  [FAIL] RULE_TO_SAMPLES 里的「{rule}」在源码里找不到 `# RULE:` 锚点（判据可能已被删/改名）")
+
     sample_names = {name for name, _, _ in SELF_TESTS}
     referenced: set[str] = set()
     for rule, names in RULE_TO_SAMPLES.items():
@@ -210,7 +227,7 @@ def self_test() -> int:
     unreferenced = sorted(sample_names - referenced)
     if unreferenced:
         failures += 1
-        print(f"  [FAIL] 有样例未被任何规则引用（新增判据可能忘了挂样例）：{unreferenced}")
+        print(f"  [FAIL] 有样例未被任何规则引用（改名未同步，或该样例已无对应判据）：{unreferenced}")
 
     if failures:
         print(f"自检失败：{failures} 项不符（判据已失去判别力）")
