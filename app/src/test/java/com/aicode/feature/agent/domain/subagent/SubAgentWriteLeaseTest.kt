@@ -229,11 +229,14 @@ class SubAgentWriteLeaseTest {
     fun normalPathsAreNotFlaggedAsImpossible() {
         val bus = busWithActive("s1")
         val lease = SubAgentWriteLease(bus)
-        // 防误报：所有正常写法都不得被判为越界
+        // 防误报：所有正常写法都不得被判为越界。
+        // 后三条是「绝对/`~` 形态且含 `..`」的探针：它们分别钉住三个前置 guard
+        // （绝对、`~`、整工作区）——少了它们，删掉任一 guard 本用例仍会全绿（复核实测）。
         val valid = listOf(
             "app/src/test/Foo.kt", "app/src", "src", "app/./src", "app/src/../src/Foo.kt",
             "./app/src", "a", "app/src/test/",
-            "~/workspace/app", "~/.aicode/x", "/root/workspace/app", "/etc/hosts", "*", "."
+            "~/workspace/app", "~/.aicode/x", "/root/workspace/app", "/etc/hosts", "*", ".",
+            "/../x", "/etc/../..", "~/../../x"
         )
         assertEquals(emptyList<String>(), lease.impossibleRelativePaths(valid))
     }

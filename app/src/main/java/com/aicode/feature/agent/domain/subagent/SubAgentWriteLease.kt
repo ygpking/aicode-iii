@@ -28,7 +28,7 @@ class SubAgentWriteLease @Inject constructor(
         /**
          * 不受限声明：该子代理的写路径**不受任何限制**，工作区内外均可写。
          * 创建期仍会与其它在跑的子代理判冲突（防两个子代理互相覆盖，与写路径无关）。
-         * 空串在登记/查冲突时已被 `filter { it.isNotEmpty() }` 滤掉（等价于不声明），保留在这里只为包容旧数据。
+         * 空串永远进不到集合判断：登记与查冲突两侧都先 `filter { it.isNotEmpty() }`（空串等价于不声明）。
          */
         val WHOLE_WORKSPACE = setOf("*", ".", "")
         /** 容器内 `~` 恒为 /root（proot 根里的家目录）。 */

@@ -133,7 +133,8 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `A11Y_NOT_ENABLED` / `OPEN_FAILED` / `CLICK_FAILED` / `SWIPE_FAILED` / `INPUT_FAILED` / `SCREENSHOT_FAILED` / `VSCREEN_FAILED` / `CLOSE_FAILED` / `MISSING_ARGS` / `INVALID_ARGS` | 虚拟屏 | 无障碍未开启（见[软件权限](/guide/app-permissions)），或参数缺失（click 缺 text/id/bounds）、bounds 非四整数、打开 / 点击 / 滑动 / 输入 / 截图 / 关闭失败 |
 | `SESSION_NOT_FOUND` / `NO_SESSION` | 多工具通用 | 会话不存在或未绑定会话 |
 | `NO_WORKSPACE` | 多工具通用 | 尚未打开工作区 |
-| `ROUND_TOOL_LIMIT` | 框架层 | 单回合工具调用数已达上限 || `MODE_SWITCH_REJECTED` / `INVALID_TOOL_ARGUMENTS` | 框架层 | 模式切换被拒或工具参数非法 |
+| `ROUND_TOOL_LIMIT` | 框架层 | 单回合工具调用数已达上限 |
+| `MODE_SWITCH_REJECTED` / `INVALID_TOOL_ARGUMENTS` | 框架层 | 模式切换被拒或工具参数非法 |
 | `TOOL_TIMEOUT` / `TOOL_EXECUTION_FAILED` / `TOOL_NOT_EXECUTED` / `TOOL_NOT_FOUND` / `MISSING_STREAM_RESULT` | 框架层 | 工具执行超时 / 异常 / 未执行 / 不存在 / 流式无返回 |
 
 ### 问询工具
