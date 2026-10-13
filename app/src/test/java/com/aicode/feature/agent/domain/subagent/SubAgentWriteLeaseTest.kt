@@ -163,4 +163,30 @@ class SubAgentWriteLeaseTest {
         assertTrue(lease.findConflict(listOf("~/workspace/app/src/test/Foo.kt")).contains("s1"))
         assertTrue(lease.findConflict(listOf("app/src/test/Foo.kt")).contains("s1"))
     }
+
+    @Test
+    fun parentRelativeDeclarationDoesNotEscapeWorkspace() {
+        val bus = busWithActive("s1", "s2")
+        // `..` 开头声明挂上工作区前缀后归一结果会跳出工作区（/root、/root/.aicode），
+        // 等于把家目录整棵树（含凭据目录）纳入租约——此类声明不得获得工作区外的覆盖面
+        val lease = SubAgentWriteLease(bus)
+        lease.acquire("s1", listOf(".."))
+        assertFalse(lease.isWithinLease("s1", "/root/.aicode/credentials/x"))
+        assertFalse(lease.isWithinLease("s1", "/root/.aicode/memory/a.md"))
+        assertFalse(lease.isWithinLease("s1", "/root/workspace/app/x.kt"))
+
+        val lease2 = SubAgentWriteLease(bus)
+        lease2.acquire("s2", listOf("../.aicode"))
+        assertFalse(lease2.isWithinLease("s2", "/root/.aicode/credentials/x"))
+    }
+
+    @Test
+    fun parentRelativeTargetDoesNotEscapeWorkspace() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        // 目标側同理：声明相对工作区时，工作区外的目标不应被判为覆盖
+        lease.acquire("s1", listOf("app/src"))
+        assertTrue(lease.isWithinLease("s1", "/root/workspace/app/src/Foo.kt"))
+        assertFalse(lease.isWithinLease("s1", "/root/.aicode/credentials/x"))
+    }
 }

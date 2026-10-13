@@ -24,13 +24,15 @@ class AutoModeDefaultMigrator @Inject constructor(
 
     /** 幂等：已跑过直接返回；失败不写标记，下次启动重试。 */
     suspend fun applyIfNeeded() = withContext(Dispatchers.IO) {
-        // 标记位读失败时视为「已应用」而跳过本次迁移：宁可少做一次，也不在标记不可信时
-        // 批量改用户会话的模式（标记写不进时每次启动都会重跑，反复把用户手动切回 BUILD 的
-        // 会话拉回 AUTO）。下次启动会重新尝试读取。
+        // 标记位读失败（IO 异常、DataStore 损坏）时视为「已应用」而跳过本次迁移：读不到
+        // 标记就无从判断迁移是否已做过，此时宁可少做一次，也不在状态不可信时批量改用户
+        // 会话的模式。下次启动会重新尝试读取。
         val applied = runCatchingCancellable { flagStore.isApplied() }
             .onFailure { FileLogger.w(TAG, "读取迁移标记失败，本次跳过: ${it.message}") }
             .getOrDefault(true)
         if (applied) return@withContext
+        // 标记未置位才重试：置位失败（如 DataStore 写异常）时下次启动会重跑本迁移，
+        // 也就是把用户手动切回 BUILD 的会话再次拉回 AUTO。
         runCatchingCancellable {
             val changed = sessionUseCase.switchRootSessionsToAuto()
             flagStore.markApplied()

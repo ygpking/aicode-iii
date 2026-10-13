@@ -128,17 +128,27 @@ class SubAgentWriteLease @Inject constructor(
      * 相对路径也统一挂到工作区根下：`task(create)` 的 write_paths 常被写成
      * `app/src/...`（相对工作区），而工具落盘时用的是绝对路径，不补齐前缀同样会误拒
      * （2026-10-13 实测复现）。
+     *
+     * 但挂前缀前先做归一后的边界检查：像 `..`、`../.aicode` 这类以 `..` 开头的声明，
+     * 挂到工作区根后归一的结果会**跳出**工作区（`/root`、`/root/.aicode`），等于把家目录
+     * 整棵树纳入租约（凭据目录在内）。此类声明退回不挂前缀，保持相对形态——它不与任何
+     * 绝对路径互为前缀，也就不会误放行。
      */
     private fun normalizeWritePath(raw: String): String {
-        val expanded = when {
-            raw == "~" -> CONTAINER_HOME
-            raw.startsWith("~/") -> CONTAINER_HOME + raw.substring(1)
-            raw.startsWith("/") -> raw
-            else -> "$CONTAINER_WORKSPACE/$raw"
+        if (raw == "~" || raw.startsWith("~/") || raw.startsWith("/")) {
+            val expanded = if (raw == "~") CONTAINER_HOME else if (raw.startsWith("~/") ) CONTAINER_HOME + raw.substring(1) else raw
+            return collapse(expanded)
         }
-        val absolute = expanded.startsWith("/")
+        val anchored = collapse("$CONTAINER_WORKSPACE/$raw")
+        val withinWorkspace = anchored == CONTAINER_WORKSPACE || anchored.startsWith("$CONTAINER_WORKSPACE/")
+        return if (withinWorkspace) anchored else collapse(raw)
+    }
+
+    /** 纯字符串展开：按段消解 `.` 与 `..`，去重复斜杠，让同一路径的不同写法得到同一结果。 */
+    private fun collapse(path: String): String {
+        val absolute = path.startsWith("/")
         val parts = ArrayDeque<String>()
-        for (segment in expanded.split('/')) {
+        for (segment in path.split('/')) {
             when (segment) {
                 "", "." -> Unit
                 ".." -> if (parts.isNotEmpty() && parts.last() != "..") parts.removeLast() else if (!absolute) parts.addLast("..")
