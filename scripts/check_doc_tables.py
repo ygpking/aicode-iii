@@ -22,8 +22,9 @@
   这类错列会被抓到，不需要为代码段做豁免。
 - 围栏代码块（``` / ~~~）内的内容一律跳过；**围栏未闭合**会使该文件自此行起的内容
   无法解析，故判红（避免「解析不了」被静默当成「没问题」）。
-- 围栏行按 CommonMark 判定：前导空格 ≤ 3 才算围栏，缩进 ≥ 4 的行在围栏内只是内容；
-  闭合围栏须与开栏同字符、长度 ≥ 开栏长度、且不带 info string。
+- 围栏闭合按 CommonMark 近似：同字符、长度 ≥ 开栏长度、不带 info string，
+  且闭栏缩进不超过开栏缩进 +3（后者让列表项内缩进书写的围栏也能正确配对——
+  用「绝对缩进 ≤3」会误判列表里的围栏）。
 
 ## 用法
 
@@ -38,7 +39,8 @@ import pathlib
 import sys
 
 DOCS_ROOT = "docs-site/docs"
-MAX_FENCE_INDENT = 3
+# 闭栏相对开栏允许的最大额外缩进（开栏可任意缩进，以兼容列表项内的围栏）
+FENCE_CLOSE_INDENT_SLACK = 3
 
 
 def cell_count(line: str) -> int:
@@ -46,24 +48,22 @@ def cell_count(line: str) -> int:
     return line.replace("\\|", "\x00").count("|")
 
 
-def _fence_open(line: str) -> tuple[str, int, str] | None:
-    """该行是否为围栏行；是则返回（围栏字符, 长度, info string），否则 None。
+def _fence_open(line: str) -> tuple[str, int, int, str] | None:
+    """该行是否为围栏行；是则返回（围栏字符, 长度, 缩进, info string），否则 None。
 
     三处都必须对，否则围栏与内容的边界会算错，进而漏检或误报：
     - 带长度：GFM 规定闭合围栏须「同字符且长度 ≥ 开栏长度」，只比字符种类会让
       ````markdown 外层包住 ``` 示例时误配对（4 反引号开、3 反引号被当闭合）。
-    - 限定缩进：CommonMark 规定缩进 ≥ 4 的行在围栏内只是内容，不构成围栏；
-      不限定的话，围栏里用缩进展示的示例会被当成闭合。
+    - 带缩进：开栏可任意缩进（列表项内书写的围栏合法），但**闭栏缩进不得超过
+      开栏缩进 +3**，否则顶格围栏里用缩进展示的示例会被当成闭合。
     - 带 info string：闭合围栏不得带 info（`` ```markdown `` 不能当闭栏）。
     """
     indent = len(line) - len(line.lstrip(" "))
-    if indent > MAX_FENCE_INDENT:
-        return None
     stripped = line[indent:]
     for ch in ("`", "~"):
         n = len(stripped) - len(stripped.lstrip(ch))
         if n >= 3:
-            return ch, n, stripped[n:].strip()
+            return ch, n, indent, stripped[n:].strip()
     return None
 
 
@@ -75,13 +75,19 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
     problems: list[str] = []
     checked_rows = 0
     i = 0
-    fence: tuple[str, int, str] | None = None
+    fence: tuple[str, int, int, str] | None = None
     fence_start = 0
     while i < len(lines):
         opened = _fence_open(lines[i])
         if opened is not None:
-            # 围栏内不解析表格；闭合须同字符、长度 ≥ 开栏、且不带 info string
-            if fence is not None and opened[0] == fence[0] and opened[1] >= fence[1] and not opened[2]:
+            closes = (
+                fence is not None
+                and opened[0] == fence[0]           # 同字符
+                and opened[1] >= fence[1]           # 长度不短于开栏
+                and opened[2] <= fence[2] + FENCE_CLOSE_INDENT_SLACK  # 缩进不放宽太多
+                and not opened[3]                   # 不带 info string
+            )
+            if closes:
                 fence = None
             elif fence is None:
                 fence, fence_start = opened, i + 1
@@ -114,6 +120,17 @@ def scan(lines: list[str], label: str) -> tuple[list[str], int]:
 
 
 # 判别力自检：(名字, 内容行, 期望退出是否为红)
+#
+# 规则 ↔ 样例勾稽（每条判据都至少有一条样例在「该规则被删掉」时会变红；
+# `--self-test` 末尾的阳性对照会兜住「样例整体失去判别力」）：
+#   长度比较   ← 4 反引号外层包 3 反引号示例后跟坏表应红
+#   缩进放宽   ← 缩进 4 空格的顶格围栏内示例不应红（去掉放宽则红）
+#   列表缩进   ← 列表项内缩进的围栏不应红（用绝对缩进判据则红）
+#   info 规则  ← 带 info 的伪闭栏后跟合法表应红（去掉该规则则绿）
+#   未闭合红灯 ← 未闭合 ``` / ~~~
+#   转义剥离   ← 单元格内含转义竖线不应红（去掉剥离则红）
+#   尾竖线约定 ← 省略尾竖线按本仓约定判红
+#   反引号裸线 ← 反引号内裸竖线算分隔符
 SELF_TESTS: list[tuple[str, list[str], bool]] = [
     ("围栏内坏表不应假红", ["```", "| a | b |", "|---|---|---|", "```"], False),
     ("围栏闭合后的坏表应红", ["```", "| a | b |", "```", "| h1 | h2 |", "| --- | --- |", "| x | y | z |"], True),
@@ -121,12 +138,16 @@ SELF_TESTS: list[tuple[str, list[str], bool]] = [
     ("未闭合 ~~~ 应红", ["~~~", "x"], True),
     ("4 反引号外层包 3 反引号示例后跟坏表应红",
      ["````markdown", "```", "````", "| h1 | h2 |", "| --- | --- |", "| x | y | z |", "```"], True),
-    ("缩进 4 空格的围栏行是内容不构成闭合",
+    ("顶格围栏内缩进 4 空格的示例不应红",
      ["```", "    ```", "    demo", "```", "", "| h1 | h2 |", "| --- | --- |", "| a | b |"], False),
-    ("缩进 4 空格示例后跟坏表应红",
+    ("顶格围栏内缩进示例后跟坏表应红",
      ["```", "    ```", "    demo", "```", "", "| h1 | h2 |", "| --- | --- |", "| x | y | z |"], True),
-    ("闭合围栏带 info string 不算闭合",
-     ["```", "x", "```markdown", "| h1 | h2 |", "| --- | --- |", "| x | y | z |"], True),
+    ("列表项内缩进的围栏不应假红",
+     ["- step:", "", "    ```", "    | a | b |", "    |---|---|---|", "    ```"], False),
+    ("带 info 的伪闭栏后跟合法表应红",
+     ["```", "x", "```markdown", "| h1 | h2 |", "| --- | --- |", "| a | b |"], True),
+    ("单元格内含转义竖线不应假红",
+     ["| h1 | h2 |", "| --- | --- |", "| a \\| b | c |"], False),
     ("省略尾竖线按本仓约定判红",
      ["| h1 | h2 | h3 |", "| --- | --- | --- |", "| d | e | f"], True),
     ("反引号内裸竖线算分隔符",
@@ -136,18 +157,33 @@ SELF_TESTS: list[tuple[str, list[str], bool]] = [
 
 
 def self_test() -> int:
+    scan_original = scan
     failures = 0
     for name, lines, want_red in SELF_TESTS:
-        problems, _ = scan(lines, "<case>")
+        problems, _ = scan_original(lines, "<case>")
         got_red = bool(problems)
         if got_red != want_red:
             failures += 1
             print(f"  [FAIL] {name}：期望{'红' if want_red else '绿'}，实际{'红' if got_red else '绿'} {problems}")
     total = len(SELF_TESTS)
+
+    # 阳性对照：把 scan 桩成「恒不报」，必须有样例因此失败；否则说明样例本身
+    # 已失去判别力（判据改瞎和样例改瞎两种失效都要被这条命令抓到）。
+    # 直接用模块字典替换，不用 global（避免与 scan 的直接引用冲突）。
+    stubbed = lambda _lines, _label: ([], 0)  # noqa: E731
+    globals()["scan"] = stubbed
+    try:
+        still_green = [name for name, lines, want_red in SELF_TESTS if want_red and not scan(lines, "<case>")[0]]
+    finally:
+        globals()["scan"] = scan_original
+    if not still_green:
+        failures += 1
+        print("  [FAIL] 阳性对照失败：没有任何样例会在「判据恒不报」时变红，样例无判别力")
+
     if failures:
-        print(f"自检失败：{failures}/{total} 条不符（判据已失去判别力）")
+        print(f"自检失败：{failures} 项不符（判据已失去判别力）")
         return 1
-    print(f"自检通过：{total} 条样例的期望红/绿全部符合")
+    print(f"自检通过：{total} 条样例的期望红/绿全部符合，阳性对照有效")
     return 0
 
 
