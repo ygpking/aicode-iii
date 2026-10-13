@@ -32,3 +32,8 @@ jobs:
 
       - name: Check doc tables
         run: python3 scripts/check_doc_tables.py
+
+      # 判据自身的判别力自检：内嵌样例要求各自红/绿，不符即退 1。
+      # 防止日后改这个脚本时把判据改瞎——那时常规检查仍会报绿，只有自检能发现。
+      - name: Check doc tables self-test
+        run: python3 scripts/check_doc_tables.py --self-test

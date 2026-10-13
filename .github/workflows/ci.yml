@@ -71,6 +71,11 @@ jobs:
       - name: Check doc tables
         run: python3 scripts/check_doc_tables.py
 
+      # 判据自身的判别力自检：内嵌样例要求各自红/绿，不符即退 1。
+      # 防止日后改这个脚本时把判据改瞎——那时常规检查仍会报绿，只有自检能发现。
+      - name: Check doc tables self-test
+        run: python3 scripts/check_doc_tables.py --self-test
+
       # 上下文压缩全流程回归：纯 py3 建模仿真 + 失败注入自检。
       # 压缩链路的缺陷不产生编译错误，单测也覆盖不到（依赖真实消息时序与 DAO 状态）：
       # 本项目实测踩过「恢复段锚最前端 → 压缩被永久跳过」「恢复段超预算仍受保护 → 重复压缩」。
