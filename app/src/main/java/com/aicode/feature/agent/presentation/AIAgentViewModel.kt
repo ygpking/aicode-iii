@@ -201,7 +201,9 @@ class AIAgentViewModel @Inject constructor(
     val currentSessionTodoItems: StateFlow<List<TodoItem>> = _currentSessionId
         .flatMapLatest { id ->
             if (id.isNullOrBlank()) flowOf(emptyList())
-            else todoItemDao.getBySession(id).map { entities -> entities.map { it.toDomain() } }
+            else todoItemDao.getBySession(id).map { entities ->
+                entities.map { it.toDomain() }.filterNot { it.isStaleForPanel() }
+            }
         }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 

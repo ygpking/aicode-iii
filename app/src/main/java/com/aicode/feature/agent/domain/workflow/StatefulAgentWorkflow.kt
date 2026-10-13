@@ -219,6 +219,12 @@ class StatefulAgentWorkflow @Inject constructor(
         const val MAX_TOOLS_PER_ROUND = 12
 
         /**
+         * 参与批内「读先于写」依赖排序的工具（与 [ToolBatchScheduler] 的名单保持一致）。
+         * 这三个工具的写前校验都依赖 readFile 已登记读状态，并行时必须让读先完成。
+         */
+        val PATH_DEPENDENCY_TOOLS: Set<String> = setOf("readFile", "editFile", "writeFile")
+
+        /**
          * run 级工具输出字符预算（本次请求内累计喂进上下文的正文总量）。
          *
          * 取值权衡：单个大输出最大内联 40000 字符，一条 Bash 吐 20 万字符很常见。
@@ -1136,6 +1142,10 @@ class StatefulAgentWorkflow @Inject constructor(
                         val executed = if (toRun.isEmpty()) {
                             emptyList()
                         } else {
+                            // 同路径 readFile 先于 editFile/writeFile：读状态在 readFile 成功后
+                            // 才登记，而 checkReadState 在编辑前要求它存在。并行批次里二者顺序
+                            // 由 async 抢占决定，实测 58 个批次 edit 先跑 → NOT_READ 白失败一轮。
+                            val normalizedPaths = normalizedPathsOf(toRun)
                             // 收敛：只读工具并行；命令类仅会话内串行、跨会话并行；文件类保持全局互斥。
                             // 构建类命令追加全局锁，防多会话争抢同一构建守护进程（实测并发 gradlew 互杀）。
                             toolBatchScheduler.dispatch(
@@ -1149,6 +1159,11 @@ class StatefulAgentWorkflow @Inject constructor(
                                 capabilitiesOf = { call ->
                                     toolRegistry.getTool(call.name)?.effectiveCapabilities(call.arguments)
                                         ?: emptySet()
+                                },
+                                pathOf = { call ->
+                                    if (call.name !in PATH_DEPENDENCY_TOOLS) null
+                                    else (call.arguments["path"] as? JsonPrimitive)?.contentOrNull
+                                        ?.takeIf { it.isNotBlank() }?.let { normalizedPaths[it] }
                                 },
                             ) { toolCall ->
                                 val tool = toolRegistry.getTool(toolCall.name)
@@ -1655,6 +1670,23 @@ class StatefulAgentWorkflow @Inject constructor(
             toolCall.name == "terminal" && action == "start" -> (args["command"] as? JsonPrimitive)?.contentOrNull
             toolCall.name == "terminal" && action == "send" -> (args["input"] as? JsonPrimitive)?.contentOrNull
             else -> null
+        }
+    }
+
+    /**
+     * 取调用操作的文件路径，供批内「读先于写」依赖排序用。
+     *
+     * 与 [checkReadState] 同口径：用 `fileAccess.toDisplayPath` 归一化后再比较，
+     * 否则 `~/x` 与 `/root/x` 会被当成两个路径、依赖建不上。
+     * 归一化结果预计算成 raw→normalized 映射，[dispatch] 的 pathOf 只做查表（同步）。
+     */
+    private suspend fun normalizedPathsOf(calls: List<ToolCall>): Map<String, String> {
+        val raws = calls.mapNotNull { call ->
+            if (call.name !in PATH_DEPENDENCY_TOOLS) return@mapNotNull null
+            (call.arguments["path"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        }.distinct()
+        return raws.associateWith { raw ->
+            runCatchingCancellable { fileAccess.toDisplayPath(raw) }.getOrNull() ?: raw
         }
     }
 

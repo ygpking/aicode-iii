@@ -20,8 +20,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 
 /**
- * rg 风格的项目搜索工具。参数原样传给容器内的 ripgrep；支持 `| head [-n N]` 截断输出，
- * 其余管道命令一律拒绝（见 [buildSearchCommand]），容器未就绪则报错。
+ * rg 风格的项目搜索工具。参数原样传给容器内的 ripgrep；支持末尾接只读管道加工输出
+ * （命令名白名单 + 逐命令选项白名单 + 参数字符集三道约束，见 [pipeSegmentAllowed]），容器未就绪则报错。
  */
 class SearchCodeTool @Inject constructor(
     private val commandEngine: CommandEngine,
@@ -37,7 +37,14 @@ class SearchCodeTool @Inject constructor(
     override val name = "search"
     // 呈现意图：UI 卡片按此选样式（抄 DSH defineTool 的 present 元数据）
     override val renderHint = ToolRenderHint.SEARCH
-    override val description = "按 rg 风格搜索文本（rg 默认递归、默认带文件名，勿加 -r——那是替换标志）。例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。支持追加 `| head [-n N]` 截断输出；路径不存在会直接报错，不确定时先 list 确认。"
+    override val description =
+        "按 rg 风格搜索文本（rg 默认递归、默认带文件名，勿加 -r——那是替换标志）。" +
+            "例：args=\"-n \\\"fun main\\\" ~/workspace/app\"。" +
+            "支持末尾接只读管道（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac）加工输出；" +
+            "管道段只能带该命令的常用只读选项，也不要给它文件名——管道段只能加工上游输出、不能另读文件" +
+            "（`| grep x /etc/passwd` 会被拒；`| head -30`、`| grep -i foo` 正常）；" +
+            "正则括号需成对（不配对会直接被挡下，不必等 rg 报错）；纯文本搜索加 -F 关闭正则最省心。" +
+            "路径不存在会直接报错，不确定时先 list 确认。"
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities = setOf(ToolCapability.READ_WORKSPACE)
 
@@ -45,7 +52,13 @@ class SearchCodeTool @Inject constructor(
         "args" to ToolParameter(
             name = "args",
             type = ParameterType.STRING,
-            description = "rg 风格参数。不填无效。常用：-i -F -e -g --hidden --。支持末尾追加 `| head [-n N]` 截断输出；其它管道命令（grep/sort/wc 等）不支持。",
+            description = "rg 风格参数。不填无效。常用：-i -F -e -g --hidden --。" +
+                "支持末尾接只读管道（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac），" +
+                "管道段只能用这些命令的常用只读选项（写文件/执行外部程序的选项一律拒），" +
+                "并且只能加工上游输出、不能另读文件（各命令允许的位置参数个数固定：" +
+                "head/tail/sort/uniq/wc/cut/nl/rev/tac 不允许带参数，grep/rg 只接一个检索词" +
+                "（用 -e/--regexp 提供检索式后不再接任何位置参数））；" +
+                "重定向（> >> <）与写文件类命令（cp/mv/tee/install 等）不支持。",
             required = true
         )
     )
@@ -65,8 +78,29 @@ class SearchCodeTool @Inject constructor(
                 )
             if (tokens.isEmpty()) return ToolResult.Error("缺少搜索参数 args", "MISSING_ARGS")
 
+            // 正则括号配对预检：不配对时本地直接挡下，省掉一次 rg 容器往返
+            // （实测 73 次 regex parse error，40 次是括号不配对，单会话连错 10 次）。
+            // 只校验 rg 段：管道段（`| grep '(bar'`）的正则不属于 rg，把整份 tokens 传进去
+            // 会让「rg 的正则合法、管道段的括号不配对」被误判成 rg 报错，白拒一次合法调用。
+            // splitPipes 返回 null 仅当 args 以 `|` 开头（无 rg 参数）——那种情况交给
+            // buildSearchCommand 去报 INVALID_PIPE，这里跳过预检。
+            splitPipes(tokens)?.first?.let { rgTokens ->
+                rgPatternParenMismatch(rgTokens)?.let { reason ->
+                    return ToolResult.Error(reason, "INVALID_PATTERN")
+                }
+                rgSearchPathIssue(rgTokens, pathHomeResolver.home())?.let { reason ->
+                    return ToolResult.Error(reason, "PATH_NOT_ALLOWED")
+                }
+            }
+
             val command = buildSearchCommand(tokens, pathHomeResolver.home())
-                ?: return ToolResult.Error("search 仅支持 | head [-n N] 截断输出，不支持其它管道命令", "INVALID_PIPE")
+                ?: return ToolResult.Error(
+                    "管道段不被支持。只允许只读加工命令（head/tail/grep/rg/sort/uniq/wc/cut/tr/nl/rev/tac），" +
+                        "且它们只能带常用只读选项、只能加工上游输出（不能另接文件名或路径），" +
+                        "参数中也不得含重定向（> >> <）、反引号或命令分隔符。" +
+                        "如果管道只是为了截断行数，可直接用 `| head -N`。",
+                    "INVALID_PIPE"
+                )
 
             val startedAt = System.currentTimeMillis()
             val result = commandEngine.runCommandSyncIfReady(
