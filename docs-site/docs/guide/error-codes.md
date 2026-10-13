@@ -86,7 +86,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | 错误码 | 含义 | 常见处置 |
 | --- | --- | --- |
 | `FETCH_FAILED` | 网页抓取失败 | 检查网址可访问性，或改用搜索工具 |
-| `SEARCH_FAILED` / `SEARCH_HTTP_ERROR` | 联网搜索失败（后者特指 HTTP 层失败，可稍后重试） | 稍后重试 |
+| `SEARCH_HTTP_ERROR` | 联网搜索在 HTTP 层失败（可稍后重试） | 稍后重试 |
 | `BROWSER_NOT_READY` / `BROWSER_ERROR` | 内置浏览器未就绪或操作出错 | 重开浏览器面板后重试 |
 | `TIMEOUT` | 操作超时 | 目标无响应，见气泡文本 |
 
@@ -111,6 +111,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `SKILL_NOT_FOUND` / `MISSING_SKILL_NAME` | 加载技能 | 技能名缺失或找不到 |
 | `SHIZUKU_NOT_READY` / `SHIZUKU_EXEC_FAILED` | Shizuku | 服务未就绪或命令执行失败 |
 | `MCP_SERVER_NOT_FOUND` / `MCP_MANAGE_FAILED` / `MCP_TOOL_ERROR` / `MCP_TOOL_EXEC_FAILED` | MCP | 服务器找不到 / 管理失败 / 远端工具执行失败 |
+| `MCP_SERVER_FROM_EXTENSION` | MCP | 该 server 由扩展包提供，不能用工具增删改（扩展包里的配置是唯一来源）；改扩展包或换个名字 |
 | `MISSING_SERVER_NAME` / `INVALID_SERVER_NAME` | MCP | 服务器名缺失或格式非法 |
 | `MEMORY_NOT_FOUND` / `MEMORY_FAILED` / `WRITE_FAILED` / `DELETE_FAILED` / `CURATION_FAILED` / `APPLY_FAILED` | 记忆 | 记忆条目找不到或增删改失败 |
 | `MISSING_RECEIPT_ID` / `MISSING_DESCRIPTION` / `MISSING_STALE_DAYS` / `INVALID_STALE_DAYS` | 记忆 | 回执号 / 描述 / 过期天数参数缺失或非法 |
@@ -119,6 +120,10 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `SEND_FILE_ERROR` / `MISSING_PATH` / `MISSING_PATHS` / `ARGS_MISMATCH` / `TOO_MANY_FILES` | 发送文件 | 发送失败、路径缺失、参数不匹配或文件过多 |
 | `LIST_ERROR` / `UNSUPPORTED_OPTION` | 列目录 | 列目录失败或选项不支持 |
 | `RG_MISSING` / `RG_ERROR` / `MISSING_ARGS` | 代码检索 | 检索工具不可用、执行失败或参数缺失 |
+| `SEARCH_FAILED` | 代码检索 / 联网搜索 / 日志诊断 | 搜索过程本身失败（三个工具共用这个码）；联网搜索另见「网络与联网工具」的 HTTP 层码 |
+| `INVALID_PATTERN` / `PATH_NOT_ALLOWED` | 代码检索 | 检索式括号不配对，或检索路径不被允许（越出工作区）；AI 会改正后重试 |
+| `INVALID_KIND` / `NO_LOG_FILE` / `READ_FAILED` | 日志诊断 | 日志类型不认识（可选 app/trace/ai）、暂无日志文件（首次启动或日志等级为 NONE）、文件不可读 |
+| `BAD_ACTION` / `BLOCK_NOT_FOUND` | 历史与压缩块 | 动作名不认识（可选 preview/blocks/restore），或指定的压缩块不存在 / 校验不通过；AI 会先列出可用块再恢复 |
 | `MISSING_SESSION` | 浏览历史 | 未绑定会话 |
 | `MISSING_EDITS` | 编辑文件 | 未提供任何修改内容 |
 | `MISSING_SCRIPT` | 浏览器 | 缺少要执行的脚本 |
@@ -128,8 +133,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `A11Y_NOT_ENABLED` / `OPEN_FAILED` / `CLICK_FAILED` / `SWIPE_FAILED` / `INPUT_FAILED` / `SCREENSHOT_FAILED` / `VSCREEN_FAILED` / `CLOSE_FAILED` / `MISSING_ARGS` / `INVALID_ARGS` | 虚拟屏 | 无障碍未开启（见[软件权限](/guide/app-permissions)），或参数缺失（click 缺 text/id/bounds）、bounds 非四整数、打开 / 点击 / 滑动 / 输入 / 截图 / 关闭失败 |
 | `SESSION_NOT_FOUND` / `NO_SESSION` | 多工具通用 | 会话不存在或未绑定会话 |
 | `NO_WORKSPACE` | 多工具通用 | 尚未打开工作区 |
-| `ROUND_TOOL_LIMIT` | 框架层 | 单回合工具调用数已达上限 |
-| `MODE_SWITCH_REJECTED` / `INVALID_TOOL_ARGUMENTS` | 框架层 | 模式切换被拒或工具参数非法 |
+| `ROUND_TOOL_LIMIT` | 框架层 | 单回合工具调用数已达上限 || `MODE_SWITCH_REJECTED` / `INVALID_TOOL_ARGUMENTS` | 框架层 | 模式切换被拒或工具参数非法 |
 | `TOOL_TIMEOUT` / `TOOL_EXECUTION_FAILED` / `TOOL_NOT_EXECUTED` / `TOOL_NOT_FOUND` / `MISSING_STREAM_RESULT` | 框架层 | 工具执行超时 / 异常 / 未执行 / 不存在 / 流式无返回 |
 
 ### 问询工具
