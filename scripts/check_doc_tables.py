@@ -36,6 +36,13 @@
     python3 scripts/check_doc_tables.py --self-test        # 跑内嵌判别力自检
 
 退出码：0 = 全部表格列数一致；1 = 有不一致或自检失败（可据此在 CI 中拦截）。
+
+## 维护策略
+
+**只修真缺陷，不再扩判据、不再加对账强度。** 真实判据只有 9 条条件；语料侧全绿，
+rc10 那类表格缺陷的直接判据已闭环。历轮已引入：围栏跳过、长度比较、缩进放宽（相对
+缩进）、未闭合判红、转义剥离、`--self-test` 与锚点双向对账——继续加固的收益已归零。
+新增对账机制前先问「它拦的是哪类真实缺陷，有没有实例」，拿不出实例就不加。
 """
 
 import inspect
@@ -217,11 +224,19 @@ def self_test() -> int:
     # 早期用 `\S+` 会吞下散文里的字面量（如注释里写「见 `# RULE:xxx` 的形式」），
     # 一旦这类句子进了函数体，锚点集会被污染成假红。
     # 字符类用 [^\s`]+：\S+ 会吞反引号、也不允许名字带空格（正是上一笔
-    # 「info 规则」与「info规则」错配的成因），收紧后带空格的锚点会被显式报出。
+    # 「info 规则」与「info规则」错配的成因）。注意：锚点必须**独占行尾**才被认出，
+    # 所以「带空格的锚点会被显式报出」只在字典里还留着该键时成立（此时报「找不到
+    # 锚点」）；键也没写时等价于压根没写锚点，归入下方边界①。
     # 对账作用域只含「真正带判据的函数」：三个函数体外还有散文提到 `# RULE:xxx`，
     # 不放进来就天然免疫；放进来会多一层依赖反引号才能不误匹配。
     scope = "".join(inspect.getsource(f) for f in (cell_count, _fence_open, scan))
     anchored = set(re.findall(r"#\s*RULE:([^\s`]+)\s*$", scope, re.M))
+    # 形态卫生：域内出现 `# RULE:` 字面量但形态不合法（未独占行尾）时直接报出。
+    # 否则作者以为「写了锚点」，而它等于没写——实测这种版本行为已回归、自检却全绿。
+    malformed = set(re.findall(r"#\s*RULE:(\S+)", scope)) - anchored
+    for bad in sorted(malformed):
+        failures += 1
+        print(f"  [FAIL] 疑似锚点但形态不合法：「{bad}」——`# RULE:名字` 后必须是行尾")
     declared = set(RULE_TO_SAMPLES)
     for rule in sorted(anchored - declared):
         failures += 1
