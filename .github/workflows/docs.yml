@@ -5,20 +5,20 @@ name: Docs
 # 渲染出来就是错列，本地探针、单测、架构检查全都发现不了。
 # 已实测：引入 rc10 坏表格的那笔（只改一个 .md）在 GitHub 上只有 Android Release 一条 run。
 #
+# paths 必须与 check_doc_tables.py 的扫描面（DOCS_ROOT = docs-site/docs）一致：
+# 触发面若大于扫描面（如笼统的 `**.md`），改别处的 md 会跑出一个必然 OK 的空跑，
+# 即「跑了但什么也没查」的假绿。
+#
 # 这里只跑秒级的静态检查，不构建、不跑测试。
 on:
   push:
     branches: [ main ]
     paths:
-      - '**.md'
-      - 'docs/**'
-      - 'docs-site/**'
+      - 'docs-site/docs/**'
   pull_request:
     branches: [ main ]
     paths:
-      - '**.md'
-      - 'docs/**'
-      - 'docs-site/**'
+      - 'docs-site/docs/**'
 
 concurrency:
   group: docs-${{ github.ref }}

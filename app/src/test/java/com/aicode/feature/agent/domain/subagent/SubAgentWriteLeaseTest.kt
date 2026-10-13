@@ -213,6 +213,19 @@ class SubAgentWriteLeaseTest {
     }
 
     @Test
+    fun workspaceRootDeclarationIsNotUnrestricted() {
+        val bus = busWithActive("s1")
+        // `app/..` 归一后正是工作区根：合法声明（不拦），但它**不等于** `*`。
+        // 本用例钉住这个取向，防止日后有人把这个差异顺手抹平。
+        val lease = SubAgentWriteLease(bus)
+        assertEquals(emptyList<String>(), lease.impossibleRelativePaths(listOf("app/..")))
+        lease.acquire("s1", listOf("app/.."))
+        assertTrue(lease.isWithinLease("s1", "/root/workspace/app/x.kt"))
+        assertFalse(lease.isWithinLease("s1", "/etc/passwd"))
+        assertFalse(lease.isWithinLease("s1", "/root/.aicode/credentials/x"))
+    }
+
+    @Test
     fun impossibleRelativePathsAreRejectedAtCreateTime() {
         val bus = busWithActive("s1")
         val lease = SubAgentWriteLease(bus)

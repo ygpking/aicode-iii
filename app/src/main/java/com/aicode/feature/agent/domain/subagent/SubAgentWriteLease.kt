@@ -144,6 +144,10 @@ class SubAgentWriteLease @Inject constructor(
      * 与 `core/watch/isUnderPath` 字面同形但**前提不同**：此处两侧均由 [collapse] / [normalizeWritePath]
      * 纯词法归一，不访问文件系统、不保证与真实路径解析结果一致；`isUnderPath` 则要求两侧已由
      * `canonicalHostPath` 归一。两者不可合并，否则会把词法域与真实路径域混起来。
+     *
+     * 同形但不同域的还有 `BackupManagerImpl`（真文件树域，用 `File.separator`）与
+     * `ProviderProxyRegistry`（HTTP 路径域，多一个 `base.isEmpty()` 短路）——若日后有人做
+     * 「路径工具收口」，这三处都不可盲合。
      */
     private fun sameOrUnder(path: String, base: String): Boolean =
         path == base || path.startsWith("$base/")
