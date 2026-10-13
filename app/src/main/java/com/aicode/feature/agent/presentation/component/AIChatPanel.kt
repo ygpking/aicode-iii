@@ -1421,24 +1421,6 @@ fun AIChatPanel(
                 }
             }
 
-            val planApproval by viewModel.pendingPlanApproval.collectAsStateWithLifecycle()
-            val planForPanel = rememberLastNonNull(planApproval)
-            AnimatedVisibility(
-                visible = planApproval != null,
-                modifier = Modifier.graphicsLayer { alpha = floatingPanelAlpha },
-                enter = fadeIn() + expandVertically(),
-                exit = fadeOut() + shrinkVertically()
-            ) {
-                planForPanel?.let { state ->
-                    PlanApprovalPanel(
-                        state = state,
-                        onApprove = { viewModel.approvePlanAndBuild() },
-                        onRefine = { viewModel.refinePlan() },
-                        forceCollapse = dashboardCollapseActive
-                    )
-                }
-            }
-
             ChatInputBar(
                 value = inputText,
                 onValueChange = { inputText = it; viewModel.updateInputDraft(it) },
@@ -1477,7 +1459,7 @@ fun AIChatPanel(
                 todoItems = currentTodoItems,
                 sessionId = currentSessionId.orEmpty(),
                 onTodoExpandedChange = { todoExpanded = it },
-                forceCollapseDashboard = pendingPermission != null || pendingQuestion != null || planApproval != null || imeVisible,
+                forceCollapseDashboard = pendingPermission != null || pendingQuestion != null || imeVisible,
                 onDashboardExpandedChange = { dashboardExpanded = it },
                 onRefreshDashboard = {
                     activeProvider?.let {

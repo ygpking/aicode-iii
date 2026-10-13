@@ -78,9 +78,6 @@ import com.aicode.feature.agent.domain.workflow.RecoveryVerdict
 import com.aicode.feature.agent.domain.workflow.TaskEvent
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolRegistry
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalChoice
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalManager
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalRequest
 import com.aicode.feature.agent.domain.tool.question.AskUserQuestionManager
 import com.aicode.feature.agent.domain.tool.question.UserQuestionAnswer
 import com.aicode.feature.agent.domain.session.SessionUseCase
@@ -149,7 +146,6 @@ class AIAgentViewModel @Inject constructor(
     private val containerEngine: LinuxContainerEngine,
     private val sessionUseCase: SessionUseCase,
     private val messagePersistenceUseCase: MessagePersistenceUseCase,
-    private val planApprovalManager: PlanApprovalManager,
     private val terminalSessionManager: TerminalSessionManager,
     private val slashCommandRegistry: SlashCommandRegistry,
     private val checkpointManager: CheckpointManager,
@@ -918,8 +914,6 @@ class AIAgentViewModel @Inject constructor(
             else _queuedRequests.map { it[id] ?: emptyList() }
         }
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-
-    val pendingPlanApproval: StateFlow<PlanApprovalRequest?> = planApprovalManager.pendingApproval
 
     // 工具调用传入参数（argsPreview）按落库消息 id 暂存：ToolCallStarted 落库后，
     // ToolCallFinished / 用户停止会用同 id REPLACE 整行，需在此把参数带到后续落库。
@@ -1830,8 +1824,7 @@ class AIAgentViewModel @Inject constructor(
                         )
                     }
                     is AgentEvent.ModeChanged -> {
-                        // 模式切换事件：PlanApprovalManager 已在 workflow 层面挂起等待用户批准
-                        // 这里只更新 streamingText 显示
+                        // 模式切换事件：进出 PLAN 已自动批准，无待决决策；模式提醒由 workflow 注入。
                     }
                 }
             }
@@ -2316,16 +2309,6 @@ class AIAgentViewModel @Inject constructor(
             }
         }
         sessionJobs[sid] = job
-    }
-
-    /** 用户批准计划，唤醒 workflow 继续在 BUILD 模式执行。 */
-    fun approvePlanAndBuild() {
-        planApprovalManager.resolve(PlanApprovalChoice.APPROVE)
-    }
-
-    /** 用户选择继续反馈，唤醒 workflow 回滚到 PLAN 模式。 */
-    fun refinePlan() {
-        planApprovalManager.resolve(PlanApprovalChoice.REFINE)
     }
 
     fun selectSession(id: String) {

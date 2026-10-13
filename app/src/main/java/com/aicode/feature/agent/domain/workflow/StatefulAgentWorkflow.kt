@@ -41,8 +41,6 @@ import com.aicode.feature.agent.domain.tool.ToolSpec
 import com.aicode.feature.agent.domain.tool.ValidationResult
 import com.aicode.feature.agent.domain.tool.partitionByRoundLimit
 import com.aicode.feature.agent.domain.tool.unknownToolGuidance
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalChoice
-import com.aicode.feature.agent.domain.tool.mode.PlanApprovalManager
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
@@ -107,7 +105,6 @@ class StatefulAgentWorkflow @Inject constructor(
     private val permissionManager: ToolPermissionManager,
     private val policyEngine: ToolPermissionPolicyEngine,
     private val contextCompactor: ContextCompactor,
-    private val planApprovalManager: PlanApprovalManager,
     private val toolOutputStore: ToolOutputStore,
     private val modelMetadataService: ModelMetadataService,
     private val compactionModelSettingsRepository: CompactionModelSettingsRepository,
@@ -1113,7 +1110,7 @@ class StatefulAgentWorkflow @Inject constructor(
                         }
 
                         // 统一记录 checkpoint（editFile/writeFile 修改前快照），再并行执行；
-                        // mode 切换检查在结果收集后于主协程串行处理（planApproval 单例）。
+                        // mode 切换检查在结果收集后于主协程串行处理。
                         toRun.forEach { toolCall ->
                             if (EvidenceGuard.isWriteTool(toolCall.name)) {
                                 (toolCall.arguments["path"] as? JsonPrimitive)?.contentOrNull?.let { path ->
@@ -1229,27 +1226,11 @@ class StatefulAgentWorkflow @Inject constructor(
                                     ?: ""
                                 send(AgentEvent.ModeChanged(newCtx.mode, reason))
 
-                                // 退出 PLAN 时挂起 workflow，等待用户在计划审查面板批准后才继续
-                                if (currentContext.mode == AgentMode.PLAN && newCtx.mode != AgentMode.PLAN) {
-                                    val choice = planApprovalManager.awaitApproval(reason, currentContext.sessionId)
-                                    if (choice == PlanApprovalChoice.APPROVE) {
-                                        currentContext = newCtx
-                                        // system 与 mode 已解耦（SystemPromptProvider 不再注入模式提示词），
-                                        // 切换不重建 systemPrompt，避免 system 前缀变化打断缓存；模式状态通过工具结果与下轮消息提醒告知。
-                                        rawResult += buildModeSwitchNotice(newCtx.mode)
-                                    } else {
-                                        // 用户选择继续反馈，回滚到 PLAN 模式，修正工具结果让 AI 知道切换被取消并等待用户反馈
-                                        currentContext = currentContext.copy(mode = AgentMode.PLAN)
-                                        rawResult = ToolResult.Error(
-                                            "用户希望补充说明或调整方案，当前保持在 PLAN 模式。请等待用户输入具体的补充或修改意见，不要自行臆测修改，待用户明确反馈后再继续。",
-                                            "MODE_SWITCH_REJECTED"
-                                        ).toTransportString()
-                                        isError = true
-                                    }
-                                } else {
-                                    currentContext = newCtx
-                                    rawResult += buildModeSwitchNotice(newCtx.mode)
-                                }
+                                // 退出 PLAN 无需批准：模式切换本身不再拦，直接切走；
+                                // system 与 mode 已解耦（SystemPromptProvider 不再注入模式提示词），
+                                // 切换不重建 systemPrompt，避免 system 前缀变化打断缓存；模式状态通过工具结果与下轮消息提醒告知。
+                                currentContext = newCtx
+                                rawResult += buildModeSwitchNotice(newCtx.mode)
                             }
                             batchResults.add(ToolBatchResult(toolCall.id, toolCall.name, rawResult, isError, runResult.attachments, runResult.images))
                         }
@@ -1960,16 +1941,6 @@ class StatefulAgentWorkflow @Inject constructor(
     ): PermissionCheckResult {
         if (tool == null) {
             return PermissionCheckResult(true)
-        }
-
-        // planMode 退出 PLAN 时，后续会有计划审查面板兜底用户决策，
-        // 此处权限弹窗冗余，直接放行；BUILD→PLAN 方向无后续审查面板，仍走权限弹窗。
-        if (tool.name == "planMode" && mode == AgentMode.PLAN) {
-            val action = (arguments["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase()
-            if (action == "exit") {
-                FileLogger.i(TAG, "权限判定放行 ${tool.name}（exit PLAN：计划审查面板兜底，跳过弹窗）")
-                return PermissionCheckResult(true)
-            }
         }
 
         val eval = policyEngine.evaluate(tool, tool.name, arguments, mode)

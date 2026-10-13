@@ -29,8 +29,8 @@ class PlanModeTool @Inject constructor(
     }
 
     override val name = "planMode"
-    override val description = "进入或退出 PLAN（计划）模式。action=\"enter\"：进入计划模式，转为只读探索、构思复杂改动方案，不要在 BUILD 模式直接写代码；action=\"exit\"：计划已经完成、要开始动手时退出计划模式。退出后会自动恢复到进入 PLAN 之前的模式（从 AUTO 进入就回到 AUTO，从 BUILD 进入就回到 BUILD），无需你指定目标模式。进入与退出都需要用户授权，退出还会额外经过计划审查面板确认。注意：AUTO（自动）模式只能由用户在界面上手动进入，本工具无法进入 AUTO；但处于 AUTO 模式时可以 action=\"enter\" 进入 PLAN（这是 AI 退出 AUTO 的唯一路径）。"
-    override val permissionPolicy = ToolPermissionPolicy.ASK
+    override val description = "进入或退出 PLAN（计划）模式。action=\"enter\"：进入计划模式，转为只读探索、构思复杂改动方案，不要在 BUILD 模式直接写代码；action=\"exit\"：计划已经完成、要开始动手时退出计划模式。退出后会自动恢复到进入 PLAN 之前的模式（从 AUTO 进入就回到 AUTO，从 BUILD 进入就回到 BUILD），无需你指定目标模式。进入与退出都无需用户批准。注意：AUTO（自动）模式只能由用户在界面上手动进入，本工具无法进入 AUTO；但处于 AUTO 模式时可以 action=\"enter\" 进入 PLAN（这是 AI 退出 AUTO 的唯一路径）。"
+    override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities = setOf(ToolCapability.MODIFY_SESSION_STATE)
 
     override val parameters: Map<String, ToolParameter> = mapOf(
