@@ -100,7 +100,7 @@ sealed class AgentEvent {
     /** 整个流程结束。 */
     object Completed : AgentEvent()
 
-    /** 模式已切换（由 AI 调用 planMode 触发），UI 据此展示计划审查面板等。 */
+    /** 模式已切换（AI 调 planMode 或用户在界面切换均可触发）；UI 的模式标识与轨迹记录据此更新。 */
     data class ModeChanged(val newMode: AgentMode, val reason: String) : AgentEvent()
 
     /**

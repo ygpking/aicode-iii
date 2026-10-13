@@ -74,6 +74,7 @@ class PlanWriteBlockedRegressionTest {
         mockk<GeminiApi>(relaxed = true),
         mockk<SystemPromptProvider>(relaxed = true),
         mockk<ToolPermissionManager>(relaxed = true),
+        // 必须是真引擎：换成 mockk 也会编译通过，但断言恒真（假绿）
         engine(),
         mockk<ContextCompactor>(relaxed = true),
         mockk<ToolOutputStore>(relaxed = true),
