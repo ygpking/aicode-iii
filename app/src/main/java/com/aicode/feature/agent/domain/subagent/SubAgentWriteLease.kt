@@ -25,7 +25,10 @@ class SubAgentWriteLease @Inject constructor(
 ) {
     private companion object {
         const val TAG = "SubAgentWriteLease"
-        /** 整工作区租约：声明该值时独占整个工作区，与任何其它写租约冲突。 */
+        /**
+         * 整工作区声明（`*` / `.` / 空）：该子代理的写路径**不受任何限制**，工作区内外均可写。
+         * 创建期仍会与其它在跑的子代理判冲突（防两个子代理互相覆盖，与写路径无关）。
+         */
         val WHOLE_WORKSPACE = setOf("*", ".", "")
         /** 容器内 `~` 恒为 /root（proot 根里的家目录）。 */
         const val CONTAINER_HOME = "/root"
@@ -110,16 +113,12 @@ class SubAgentWriteLease @Inject constructor(
     /**
      * 声明的租约路径是否覆盖目标路径（用于写工具校验）。
      *
-     * 整工作区声明（`*`/`.`）只覆盖工作区内：`WHOLE_WORKSPACE` 的语义是「独占整个工作区」，
-     * 不是「不受任何限制」。早期写法（短路在前、不判目标）会让声明 `*` 连 `/etc/passwd`
-     * 都判覆盖，已改为先归一再判。
+     * 整工作区声明（`*` / `.`）表示该子代理的写路径不受限制，此时一律判覆盖（工作区内外均可写）。
      */
     private fun covered(declared: String, target: String): Boolean {
-        val nt = normalizeWritePath(target)
-        if (isWholeWorkspace(declared)) {
-            return nt == CONTAINER_WORKSPACE || nt.startsWith("$CONTAINER_WORKSPACE/")
-        }
+        if (isWholeWorkspace(declared)) return true
         val nd = normalizeWritePath(declared)
+        val nt = normalizeWritePath(target)
         return nt == nd || nt.startsWith("$nd/")
     }
 
