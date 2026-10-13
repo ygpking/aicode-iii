@@ -57,10 +57,25 @@ class SessionUseCaseDefaultModeTest {
 
         val saved = slot<List<ChatSessionEntity>>()
         coVerify(exactly = 1) { dao.upsertAll(capture(saved)) }
-        // 子代理会话与已是 AUTO 的根会话都不写
-        assertEquals(listOf("root-build", "root-plan"), saved.captured.map { it.id })
-        assertEquals(2, changed)
-        assertEquals(AgentMode.AUTO.name, saved.captured.first().mode)
+        // 子代理会话、停在 PLAN 的会话、已是 AUTO 的根会话都不写
+        assertEquals(listOf("root-build"), saved.captured.map { it.id })
+        // 写回的模式必须逐条改成 AUTO（不能只看第一条）
+        assertEquals(listOf(AgentMode.AUTO.name), saved.captured.map { it.mode })
+        assertEquals(1, changed)
+    }
+
+    @Test
+    fun switchRootSessionsToAuto_skipsPlanSessions() = runTest {
+        val dao = mockk<ChatSessionDao>(relaxed = true)
+        coEvery { dao.getAllOnce() } returns listOf(
+            session("only-plan", AgentMode.PLAN.name)
+        )
+
+        val changed = useCase(dao).switchRootSessionsToAuto()
+
+        // PLAN 被用户当作「临时禁写」，迁移不得把它推成 AUTO
+        coVerify(exactly = 0) { dao.upsertAll(any()) }
+        assertEquals(0, changed)
     }
 
     @Test

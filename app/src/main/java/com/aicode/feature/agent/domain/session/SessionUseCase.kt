@@ -87,11 +87,16 @@ class SessionUseCase @Inject constructor(
     /**
      * 一次性把已有根会话的模式切到 AUTO。返回改动数（已是 AUTO 的根会话不计）。
      *
-     * 只处理根会话；子代理会话的模式由 [resolveStricterMode] 按父会话重算，改库无意义。
+     * 排除两类：子代理会话（模式由 [resolveStricterMode] 按父会话重算，改库无意义）；
+     * 停在 PLAN 的会话（PLAN 被用作「临时禁写」，自动切回 AUTO 会把用户手动踩的刹车静默松掉）。
      */
     suspend fun switchRootSessionsToAuto(): Int {
         val targets = chatSessionDao.getAllOnce()
-            .filter { it.parentId == null && it.mode != AgentMode.AUTO.name }
+            .filter {
+                it.parentId == null &&
+                    it.mode != AgentMode.AUTO.name &&
+                    it.mode != AgentMode.PLAN.name
+            }
         if (targets.isEmpty()) return 0
         chatSessionDao.upsertAll(targets.map { it.copy(mode = AgentMode.AUTO.name) })
         return targets.size

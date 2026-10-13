@@ -4,6 +4,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -43,5 +44,17 @@ class AutoModeDefaultMigratorTest {
         migrator(useCase, Flag(applied = true)).applyIfNeeded()
 
         coVerify(exactly = 0) { useCase.switchRootSessionsToAuto() }
+    }
+
+    @Test
+    fun applyIfNeeded_writeFails_doesNotMarkApplied() = runTest {
+        val useCase = mockk<SessionUseCase>(relaxed = true)
+        coEvery { useCase.switchRootSessionsToAuto() } throws IllegalStateException("db closed")
+        val flag = Flag(applied = false)
+
+        migrator(useCase, flag).applyIfNeeded()
+
+        // 标记未置位 → 下次启动重试；若此处误置位，迁移将永久失败
+        assertFalse(flag.markCalled)
     }
 }

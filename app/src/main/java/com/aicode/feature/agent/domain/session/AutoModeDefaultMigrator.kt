@@ -1,6 +1,7 @@
 package com.aicode.feature.agent.domain.session
 
 import com.aicode.core.util.FileLogger
+import com.aicode.core.util.runCatchingCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
@@ -24,11 +25,11 @@ class AutoModeDefaultMigrator @Inject constructor(
     /** 幂等：已跑过直接返回；失败不写标记，下次启动重试。 */
     suspend fun applyIfNeeded() = withContext(Dispatchers.IO) {
         if (flagStore.isApplied()) return@withContext
-        try {
+        runCatchingCancellable {
             val changed = sessionUseCase.switchRootSessionsToAuto()
             flagStore.markApplied()
             FileLogger.i(TAG, "已将 $changed 个根会话默认模式切到 AUTO")
-        } catch (e: Exception) {
+        }.onFailure { e ->
             FileLogger.w(TAG, "切换已有会话默认模式失败（下次启动重试）: ${e.message}")
         }
     }

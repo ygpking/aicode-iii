@@ -9,7 +9,7 @@ import org.junit.Test
 /**
  * planMode 不再走用户授权弹窗：进出 PLAN 都自动放行。
  *
- * 判定发生在 workflow 的 checkToolPermission——它在 policyEngine.evaluate 之后
+ * 判定发生在 workflow 的 `requestPermissionIfNeeded`——它在 policyEngine.evaluate 之后
  * 按 permissionPolicy == AUTO_APPROVE 直接放行，故安全拦截（PLAN 下的写操作、
  * Shizuku 红线）仍先于此处生效。
  */

@@ -292,7 +292,7 @@ class StatefulAgentWorkflow @Inject constructor(
         ) : AgentAction
     }
 
-    private data class PermissionCheckResult(
+    internal data class PermissionCheckResult(
         val approved: Boolean,
         val denyReason: String = "用户拒绝执行该工具",
         val errorCode: String = "USER_REJECTED"
@@ -1725,11 +1725,11 @@ class StatefulAgentWorkflow @Inject constructor(
         AgentMode.PLAN -> "\n\n" + promptProvider.resolvePrompt(MODE_REMINDER_PLAN_FILE)
             .replace(LEADING_COMMENT, "")
             .trim()
-        AgentMode.BUILD -> "\n\n【模式切换】计划已获用户批准，你已切换到 BUILD（构建）模式，可以开始执行计划。"
-        AgentMode.AUTO -> "\n\n【模式切换】计划已获用户批准，你已恢复到 AUTO（自动）模式，可以开始执行计划（工具调用将自动放行）。"
+        AgentMode.BUILD -> "\n\n【模式切换】已退出 PLAN，恢复为 BUILD（构建）模式，可以开始执行计划（写操作按当前模式规则放行）。"
+        AgentMode.AUTO -> "\n\n【模式切换】已退出 PLAN，恢复为 AUTO（自动）模式，可以开始执行计划（工具调用将自动放行）。"
     }
 
-    /** 用户在外部（界面）手动切换模式时拼进工具结果的提示；与 AI 自切的 [buildModeSwitchNotice] 区分，避免误称「计划已获批准」。 */
+    /** 用户在外部（界面）手动切换模式时拼进工具结果的提示；与 AI 自切的 [buildModeSwitchNotice] 区分。 */
     private fun buildExternalModeSwitchNotice(mode: AgentMode): String = when (mode) {
         AgentMode.PLAN -> "\n\n" + promptProvider.resolvePrompt(MODE_REMINDER_PLAN_FILE)
             .replace(LEADING_COMMENT, "")
@@ -1931,7 +1931,11 @@ class StatefulAgentWorkflow @Inject constructor(
         return if (normalized == call.arguments) call else call.copy(arguments = normalized)
     }
 
-    private suspend fun requestPermissionIfNeeded(
+    /**
+     * 权限判定。DENY 必须先于 AUTO_APPROVE 短路——否则 PLAN 下的写拦截会被工具自带的
+     * AUTO_APPROVE 绕开（提取为 internal 以供回归测试钉住该顺序）。
+     */
+    internal suspend fun requestPermissionIfNeeded(
         tool: AgentTool?,
         callId: String,
         arguments: Map<String, JsonElement>,

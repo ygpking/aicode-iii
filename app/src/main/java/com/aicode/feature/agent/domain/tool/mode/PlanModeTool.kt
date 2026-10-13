@@ -6,7 +6,6 @@ import com.aicode.feature.agent.domain.model.AgentContext
 import com.aicode.feature.agent.domain.model.AgentMode
 import com.aicode.feature.agent.domain.tool.AbstractContextualTool
 import com.aicode.feature.agent.domain.tool.ParameterType
-import com.aicode.feature.agent.domain.tool.PendingToolPermission
 import com.aicode.feature.agent.domain.tool.ToolParameter
 import com.aicode.feature.agent.domain.tool.ToolCapability
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
@@ -100,26 +99,6 @@ class PlanModeTool @Inject constructor(
             JsonPrimitive(
                 if (entering) "已进入 PLAN 模式。" else "已退出 PLAN 模式，恢复为 ${effectiveMode.name} 模式。"
             )
-        )
-    }
-
-    override fun buildPermissionRequest(
-        callId: String,
-        args: Map<String, JsonElement>,
-        argsPreview: String
-    ): PendingToolPermission {
-        val entering = args["action"]?.jsonPrimitive?.contentOrNull?.trim()?.equals("enter", ignoreCase = true) ?: true
-        val reason = args["reason"]?.jsonPrimitive?.contentOrNull ?: "无理由"
-        val label = if (entering) "进入 PLAN 模式" else "退出 PLAN 模式"
-
-        return PendingToolPermission(
-            id = callId,
-            toolName = name,
-            title = "计划模式申请",
-            summary = "AI 申请$label",
-            details = "操作：$label\n\n申请理由：$reason",
-            argsPreview = argsPreview,
-            rememberablePatterns = emptyList()
         )
     }
 }
