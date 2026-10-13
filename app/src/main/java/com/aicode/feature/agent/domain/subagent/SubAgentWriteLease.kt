@@ -107,11 +107,19 @@ class SubAgentWriteLease @Inject constructor(
         return na == nb || na.startsWith("$nb/") || nb.startsWith("$na/")
     }
 
-    /** 声明的租约路径是否覆盖目标路径（用于写工具校验）。 */
+    /**
+     * 声明的租约路径是否覆盖目标路径（用于写工具校验）。
+     *
+     * 整工作区声明（`*`/`.`）只覆盖工作区内：`WHOLE_WORKSPACE` 的语义是「独占整个工作区」，
+     * 不是「不受任何限制」。早期写法（短路在前、不判目标）会让声明 `*` 连 `/etc/passwd`
+     * 都判覆盖，已改为先归一再判。
+     */
     private fun covered(declared: String, target: String): Boolean {
-        if (isWholeWorkspace(declared)) return true
-        val nd = normalizeWritePath(declared)
         val nt = normalizeWritePath(target)
+        if (isWholeWorkspace(declared)) {
+            return nt == CONTAINER_WORKSPACE || nt.startsWith("$CONTAINER_WORKSPACE/")
+        }
+        val nd = normalizeWritePath(declared)
         return nt == nd || nt.startsWith("$nd/")
     }
 
@@ -129,19 +137,21 @@ class SubAgentWriteLease @Inject constructor(
      * `app/src/...`（相对工作区），而工具落盘时用的是绝对路径，不补齐前缀同样会误拒
      * （2026-10-13 实测复现）。
      *
-     * 但挂前缀前先做归一后的边界检查：像 `..`、`../.aicode` 这类以 `..` 开头的声明，
-     * 挂到工作区根后归一的结果会**跳出**工作区（`/root`、`/root/.aicode`），等于把家目录
-     * 整棵树纳入租约（凭据目录在内）。此类声明退回不挂前缀，保持相对形态——它不与任何
-     * 绝对路径互为前缀，也就不会误放行。
+     * 但挂前缀前先做归一后的边界检查：像 `..`、`../.aicode` 这类声明，挂到工作区根后
+     * 归一的结果会**跳出**工作区（`/root`、`/root/.aicode`），等于把家目录整棵树纳入租约
+     * （凭据目录在内）。此类声明退回不挂前缀，保持相对形态——它不与任何**绝对**目标互为
+     * 前缀，也就不会因此误放行（相对—相对之间仍可能互配，但越界路径在文件层即被
+     * `WorkspacePathMapper.confineTo` / `confineRemote` 拦住）。
      */
-    private fun normalizeWritePath(raw: String): String {
-        if (raw == "~" || raw.startsWith("~/") || raw.startsWith("/")) {
-            val expanded = if (raw == "~") CONTAINER_HOME else if (raw.startsWith("~/") ) CONTAINER_HOME + raw.substring(1) else raw
-            return collapse(expanded)
+    private fun normalizeWritePath(raw: String): String = when {
+        raw == "~" -> collapse(CONTAINER_HOME)
+        raw.startsWith("~/") -> collapse(CONTAINER_HOME + raw.substring(1))
+        raw.startsWith("/") -> collapse(raw)
+        else -> {
+            val anchored = collapse("$CONTAINER_WORKSPACE/$raw")
+            if (anchored == CONTAINER_WORKSPACE || anchored.startsWith("$CONTAINER_WORKSPACE/")) anchored
+            else collapse(raw)
         }
-        val anchored = collapse("$CONTAINER_WORKSPACE/$raw")
-        val withinWorkspace = anchored == CONTAINER_WORKSPACE || anchored.startsWith("$CONTAINER_WORKSPACE/")
-        return if (withinWorkspace) anchored else collapse(raw)
     }
 
     /** 纯字符串展开：按段消解 `.` 与 `..`，去重复斜杠，让同一路径的不同写法得到同一结果。 */

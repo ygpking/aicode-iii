@@ -184,9 +184,32 @@ class SubAgentWriteLeaseTest {
     fun parentRelativeTargetDoesNotEscapeWorkspace() {
         val bus = busWithActive("s1")
         val lease = SubAgentWriteLease(bus)
-        // 目标側同理：声明相对工作区时，工作区外的目标不应被判为覆盖
+        // 相对声明 + 工作区外的绝对目标不得被判覆盖（钉住上一笔的「相对路径锚定工作区」，
+        // 非本次新增的边界检查：本用例在 main 上就红）
         lease.acquire("s1", listOf("app/src"))
         assertTrue(lease.isWithinLease("s1", "/root/workspace/app/src/Foo.kt"))
         assertFalse(lease.isWithinLease("s1", "/root/.aicode/credentials/x"))
+    }
+
+    @Test
+    fun wholeWorkspaceDeclarationCoversOnlyWorkspace() {
+        val bus = busWithActive("s1", "s2", "s3")
+        // `*` / `.` 的语义是「独占整个工作区」，不是「不受任何限制」：
+        // 早期写法短路在前，声明 `*` 连 /etc/passwd 都判覆盖
+        val star = SubAgentWriteLease(bus)
+        star.acquire("s1", listOf("*"))
+        assertTrue(star.isWithinLease("s1", "/root/workspace/app/x.kt"))
+        assertFalse(star.isWithinLease("s1", "/etc/passwd"))
+        assertFalse(star.isWithinLease("s1", "/root/.aicode/credentials/x"))
+
+        val dot = SubAgentWriteLease(bus)
+        dot.acquire("s2", listOf("."))
+        assertTrue(dot.isWithinLease("s2", "/root/workspace/app/x.kt"))
+        assertFalse(dot.isWithinLease("s2", "/root/.aicode/credentials/x"))
+
+        // 相对目标也落在工作区内，不受影响
+        val rel = SubAgentWriteLease(bus)
+        rel.acquire("s3", listOf("*"))
+        assertTrue(rel.isWithinLease("s3", "app/src/Foo.kt"))
     }
 }
