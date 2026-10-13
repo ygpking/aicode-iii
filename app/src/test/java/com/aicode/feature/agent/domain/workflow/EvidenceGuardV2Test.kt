@@ -64,6 +64,68 @@ class EvidenceGuardV2Test {
         assertEquals(EvidenceGuard.Verdict.PASS, EvidenceGuard.verdict("测试通过。", ok))
     }
 
+    // ── 阻断项：「没跑成」的命令同样不得成为凭证 ─────────────────────
+
+    @Test
+    fun `超时被杀的命令不算验证凭证`() {
+        // 容器引擎在终止进程后追加的提示不在失败特征表里——修前「超时后声称测试通过」会被放行。
+        val timedOut = listOf(
+            rec(
+                "Bash",
+                command = "sh gradlew :app:testUniversalDebugUnitTest",
+                outputTail = "[命令执行超时：超过 120000ms 已被强制终止。长任务（构建/安装/测试）改用 terminal 工具后台执行]"
+            )
+        )
+        assertEquals(EvidenceGuard.Verdict.FAIL, EvidenceGuard.verdict("测试通过。", timedOut))
+    }
+
+    @Test
+    fun `命令不存在的验证不算凭证`() {
+        val missing = listOf(rec("Bash", command = "sh gradlew test", outputTail = "bash: sh: command not found"))
+        assertTrue(EvidenceGuard.evaluate("测试通过。", missing).isNotEmpty())
+    }
+
+    @Test
+    fun `测试框架零收集不算凭证`() {
+        val noTests = listOf(
+            rec("Bash", command = "pytest -q", outputTail = "collected 0 items\nno tests ran in 0.01s")
+        )
+        assertTrue(EvidenceGuard.evaluate("验证通过。", noTests).isNotEmpty())
+    }
+
+    @Test
+    fun `超时的检索命令不算查证凭证`() {
+        // 同一条口径要盖住「查过」（R5），不能只盖「验证通过」。
+        val records = listOf(
+            rec("Bash", command = "rg -n foo src/", outputTail = "[命令执行超时：超过 120000ms 已被强制终止。]")
+        )
+        assertTrue(EvidenceGuard.evaluate("查过了，没有现成的实现。", records).isNotEmpty())
+    }
+
+    @Test
+    fun `超时的 git 对账不算范围凭证`() {
+        val records = listOf(
+            rec("editFile", path = "/root/workspace/a.kt"),
+            rec("Bash", command = "git status --short", outputTail = "[命令执行超时：超过 120000ms 已被强制终止。]"),
+        )
+        assertTrue(
+            EvidenceGuard.evaluate("只改了一个文件，未改其它。", records).any { it.contains("git status") }
+        )
+    }
+
+    @Test
+    fun `没跑成信号识别`() {
+        assertTrue(CommandOutcome.hasUnrunnableSignal("[命令执行超时：超过 120000ms 已被强制终止。]"))
+        assertTrue(CommandOutcome.hasUnrunnableSignal("bash: foo: command not found"))
+        assertTrue(CommandOutcome.hasUnrunnableSignal("collected 0 items"))
+        // 正常输出不得误判
+        assertEquals(false, CommandOutcome.hasUnrunnableSignal("BUILD SUCCESSFUL in 1m 2s"))
+        assertEquals(false, CommandOutcome.hasUnrunnableSignal(null))
+        // 「跑了但失败」与「没跑成」分属两张表，各认各的：
+        assertEquals(false, CommandOutcome.hasUnrunnableSignal("FAILURE: Build failed with an exception."))
+        assertEquals(false, CommandOutcome.hasFailureSignal("[命令执行超时：超过 120000ms 已被强制终止。]"))
+    }
+
     @Test
     fun `失败信号识别`() {
         assertTrue(CommandOutcome.hasFailureSignal("BUILD FAILED in 3s"))
@@ -324,6 +386,57 @@ class EvidenceGuardV2Test {
         assertEquals(emptyList<String>(), TamperDetector.inspect("app/src/main/Foo.kt", before, after))
     }
 
+    // ── R4：只认每个路径最后一次成功的写入（复原即撤销）──────────────
+
+    @Test
+    fun `同路径后续写回不再报削弱`() {
+        // 真机 2026-10-13：全量覆盖压成 1 个用例 → 40 秒后 edit 补回（最终态更强），
+        // 修前该 run 内被连拉三次并达上限上报。
+        val records = listOf(
+            rec("writeFile", path = "app/src/test/FooTest.kt", tampered = true),
+            rec("editFile", path = "app/src/test/FooTest.kt", tampered = false),
+        )
+        assertTrue(EvidenceGuard.evaluate("已修复该问题。", records).none { it.contains("削弱") })
+    }
+
+    @Test
+    fun `最后一次写失败不撤销早先的削弱`() {
+        // 写回没成功落盘 ⇒ 最终态仍是削弱版本，仍须报。
+        val records = listOf(
+            rec("writeFile", path = "app/src/test/FooTest.kt", tampered = true),
+            rec("editFile", path = "app/src/test/FooTest.kt", isError = true, tampered = false),
+        )
+        assertTrue(EvidenceGuard.evaluate("已修复该问题。", records).any { it.contains("削弱") })
+    }
+
+    @Test
+    fun `同路径两次都削弱只报一条`() {
+        val records = listOf(
+            rec("writeFile", path = "app/src/test/FooTest.kt", tampered = true),
+            rec("editFile", path = "app/src/test/FooTest.kt", tampered = true),
+        )
+        assertEquals(1, EvidenceGuard.evaluate("已修复该问题。", records).count { it.contains("削弱") })
+    }
+
+    @Test
+    fun `不同路径各自判削弱`() {
+        val records = listOf(
+            rec("writeFile", path = "app/src/test/A.kt", tampered = true),
+            rec("writeFile", path = "app/src/test/B.kt", tampered = true),
+        )
+        assertEquals(2, EvidenceGuard.evaluate("已修复该问题。", records).count { it.contains("削弱") })
+    }
+
+    @Test
+    fun `复原后裁决不再是 SUSPECT`() {
+        // verdict 若仍看旧的 tampered 标志会误判 SUSPECT——两处口径必须一致。
+        val records = listOf(
+            rec("writeFile", path = "app/src/test/FooTest.kt", tampered = true),
+            rec("editFile", path = "app/src/test/FooTest.kt"),
+        )
+        assertEquals(EvidenceGuard.Verdict.PASS, EvidenceGuard.verdict("已修复该问题。", records))
+    }
+
     // ── 守卫收尾裁决：引用与只读工具不应误伤（真机实证后补）─────────
 
     @Test
@@ -372,6 +485,16 @@ class EvidenceGuardV2Test {
         assertTrue(EvidenceGuard.isWriteTool("writeFile"))
         assertEquals(false, EvidenceGuard.isWriteTool("readFile"))
         assertEquals(false, EvidenceGuard.isWriteTool("memory"))
+    }
+
+    @Test
+    fun `只读工具集判定`() {
+        // 只做复核的子代理：工具集里没有写文件工具 → 守卫整体跳过
+        // （它拿不出写凭证是设计如此，不是谎报）。Bash 不算写工具。
+        assertTrue(EvidenceGuard.isReadOnlyToolset(listOf("readFile", "search", "list", "Bash", "task")))
+        assertEquals(false, EvidenceGuard.isReadOnlyToolset(listOf("readFile", "editFile")))
+        assertEquals(false, EvidenceGuard.isReadOnlyToolset(listOf("writeFile")))
+        assertTrue(EvidenceGuard.isReadOnlyToolset(emptyList()))
     }
 
     // ── 跨回合汇报凭证（账本近期写入窗口）─────────────────────────

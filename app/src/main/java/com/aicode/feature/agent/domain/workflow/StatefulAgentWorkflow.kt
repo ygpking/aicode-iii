@@ -629,7 +629,12 @@ class StatefulAgentWorkflow @Inject constructor(
         val evidenceRecords = mutableListOf<EvidenceGuard.ToolRecord>()
         // 达上限仍未通过的核对结论：收尾时作为用户可见消息发出（不再静默放行）。
         val guardReports = mutableListOf<AgentEvent.EvidenceGuardReport>()
-        val evidenceGuardEnabled = generalSettingsRepository.evidenceGuardEnabledFlow.first()
+        // 只读工具集会话（如只做复核的子代理）整体跳过守卫：写凭证只可能来自
+        // editFile/writeFile，没有这两个工具就永远拿不出 R2/R3 要的凭证，走守卫只会被误伤。
+        val readOnlyToolset = EvidenceGuard.isReadOnlyToolset(tools.map { it.name })
+        if (readOnlyToolset) FileLogger.i(TAG, "只读工具集会话，跳过完工证据守卫（工具数=${tools.size}）")
+        val evidenceGuardEnabled = !readOnlyToolset &&
+            generalSettingsRepository.evidenceGuardEnabledFlow.first()
         // run 级累积预算：限制本次请求内工具输出喂进上下文的字符总量。默认关闭（DISABLED），
         // 启用后超限的后续输出一律落盘、内联只留紧凑预览，需回取时用 retrieveToolResult。
         // 随 run 新建，与轮次预算/熔断/哨兵同一生命周期。
@@ -1582,7 +1587,7 @@ class StatefulAgentWorkflow @Inject constructor(
      *
      * 只留验证类命令（其它命令与「声明是否成立」无关），带上类别与成败。
      * 成败不看 [EvidenceGuard.ToolRecord.isError]（工具层把非零退出包成 Success，恒为 false），
-     * 而看输出有无失败信号（同 [CommandOutcome.hasFailureSignal] 的口径）。
+     * 而看输出有无失败信号或「没跑成」信号（同 [CommandOutcome.isUsableCredentialOutput] 的口径）。
      */
     private fun verifyCommandsOf(records: List<EvidenceGuard.ToolRecord>): List<LedgerCommand> {
         val now = System.currentTimeMillis()
@@ -1595,7 +1600,7 @@ class StatefulAgentWorkflow @Inject constructor(
             LedgerCommand(
                 cmd = cmd.take(EvidenceLedgerRepository.CMD_MAX_CHARS),
                 category = category,
-                ok = !CommandOutcome.hasFailureSignal(rec.outputTail),
+                ok = CommandOutcome.isUsableCredentialOutput(rec.outputTail),
                 ts = now
             )
         }
@@ -1620,14 +1625,16 @@ class StatefulAgentWorkflow @Inject constructor(
      * 把 run 级的工具记录筛成本账本用的**检索**记录。
      *
      * 检索类工具调用或只读检索命令都算——供下一轮「查过了」声明核对凭证（R5）。
-     * 失败的检索不入账：没查成的不能给声明背书。
+     * 检索类工具调用只要没报错就入账（`readFile` 读到的**内容**里含错误字样不代表检索失败）；
+     * 命令分支多判一层输出：没跑成/失败的命令不算「查过」。
      */
     private fun readsOf(records: List<EvidenceGuard.ToolRecord>): List<LedgerRead> {
         val now = System.currentTimeMillis()
         return records.mapNotNull { rec ->
             if (rec.isError) return@mapNotNull null
             val isRead = EvidenceGuard.isReadTool(rec.toolName) ||
-                (rec.command != null && CommandOutcome.isReadonlySearchCommand(rec.command))
+                (rec.command != null && CommandOutcome.isReadonlySearchCommand(rec.command) &&
+                    CommandOutcome.isUsableCredentialOutput(rec.outputTail))
             if (!isRead) return@mapNotNull null
             LedgerRead(
                 tool = rec.toolName,
