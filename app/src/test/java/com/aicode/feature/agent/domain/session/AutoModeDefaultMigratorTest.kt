@@ -22,7 +22,15 @@ class AutoModeDefaultMigratorTest {
         }
     }
 
-    private fun migrator(useCase: SessionUseCase, flag: Flag) = AutoModeDefaultMigrator(useCase, flag)
+    private class ThrowingFlag : AutoModeMigrationFlag {
+        var markCalled = false
+        override suspend fun isApplied(): Boolean = throw IllegalStateException("io")
+        override suspend fun markApplied() {
+            markCalled = true
+        }
+    }
+
+    private fun migrator(useCase: SessionUseCase, flag: AutoModeMigrationFlag) = AutoModeDefaultMigrator(useCase, flag)
 
     @Test
     fun applyIfNeeded_switchesSessionsAndMarksDone() = runTest {
@@ -55,6 +63,18 @@ class AutoModeDefaultMigratorTest {
         migrator(useCase, flag).applyIfNeeded()
 
         // 标记未置位 → 下次启动重试；若此处误置位，迁移将永久失败
+        assertFalse(flag.markCalled)
+    }
+
+    @Test
+    fun applyIfNeeded_flagReadFails_skipsMigrationWithoutMarking() = runTest {
+        val useCase = mockk<SessionUseCase>(relaxed = true)
+        val flag = ThrowingFlag()
+
+        migrator(useCase, flag).applyIfNeeded()
+
+        // 标记不可信时不动用户数据：不迁移、不置位
+        coVerify(exactly = 0) { useCase.switchRootSessionsToAuto() }
         assertFalse(flag.markCalled)
     }
 }

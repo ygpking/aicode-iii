@@ -25,10 +25,16 @@ class SubAgentWriteLease @Inject constructor(
 ) {
     private companion object {
         const val TAG = "SubAgentWriteLease"
-        /** 整工作区租约：声明该值时独占整个工作区，与任何其它写租约冲突。 */
+        /**
+         * 不受限声明：该子代理的写路径**不受任何限制**，工作区内外均可写。
+         * 创建期仍会与其它在跑的子代理判冲突（防两个子代理互相覆盖，与写路径无关）。
+         * 空串在登记/查冲突时已被 `filter { it.isNotEmpty() }` 滤掉（等价于不声明），保留在这里只为包容旧数据。
+         */
         val WHOLE_WORKSPACE = setOf("*", ".", "")
         /** 容器内 `~` 恒为 /root（proot 根里的家目录）。 */
         const val CONTAINER_HOME = "/root"
+        /** 容器内工作区根（`~/workspace`）。相对路径声明的基准。 */
+        const val CONTAINER_WORKSPACE = "$CONTAINER_HOME/workspace"
     }
 
     /** 子代理会话 id → 其声明的写路径（原样保存，比较时归一化）。 */
@@ -59,6 +65,20 @@ class SubAgentWriteLease @Inject constructor(
      */
     @Synchronized
     fun pathsFor(sessionId: String): List<String>? = leasedPaths[sessionId]
+
+    /**
+     * 找出声明里那些「归一后越出工作区、因而不可能覆盖任何文件」的相对路径（如 `..`、`../x`）。
+     *
+     * 为何要显式拒绝：这类声明会被登记成一条覆盖不了任何东西的哑租约，其子代理连工作区内的
+     * 合法写入也全被拒，且日志里只有一条「登记写租约」、看不出所以然。创建期拦下并告知
+     * 「要不受限请传 `*`」，比让它跑到写时才失败可查得多。
+     *
+     * 只针对**相对**声明：绝对路径（`/root/..`）与 `~` 展开后的越界是调用方显式指定，保持原行为。
+     */
+    fun impossibleRelativePaths(writePaths: List<String>): List<String> = writePaths
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !isWholeWorkspace(it) && !it.startsWith("~") && !it.startsWith("/") }
+        .filter { raw -> !isAnchoredInWorkspace(collapse("$CONTAINER_WORKSPACE/$raw")) }
 
     /**
      * 找出与新任务 [writePaths] 冲突的、仍活跃的子代理会话 id。
@@ -105,7 +125,11 @@ class SubAgentWriteLease @Inject constructor(
         return na == nb || na.startsWith("$nb/") || nb.startsWith("$na/")
     }
 
-    /** 声明的租约路径是否覆盖目标路径（用于写工具校验）。 */
+    /**
+     * 声明的租约路径是否覆盖目标路径（用于写工具校验）。
+     *
+     * 整工作区声明（`*` / `.`）表示该子代理的写路径不受限制，此时一律判覆盖（工作区内外均可写）。
+     */
     private fun covered(declared: String, target: String): Boolean {
         if (isWholeWorkspace(declared)) return true
         val nd = normalizeWritePath(declared)
@@ -122,16 +146,39 @@ class SubAgentWriteLease @Inject constructor(
      * 先展开 `~` 再归一化：子代理的 readFile/editFile 返回路径是容器绝对路径（/root/...），
      * 而 write_paths 声明多为 `~/...`——若不展开，`~/workspace/app` 与 `/root/workspace/app`
      * 会被视为不同路径，导致声明正确仍 WRITE_LEASE_DENIED（已实测三连）。
+     *
+     * 相对路径也统一挂到工作区根下：`task(create)` 的 write_paths 常被写成
+     * `app/src/...`（相对工作区），而工具落盘时用的是绝对路径，不补齐前缀同样会误拒
+     * （2026-10-13 实测复现）。
+     *
+     * 但挂前缀前先做归一后的边界检查：像 `..`、`../.aicode` 这类声明，挂到工作区根后
+     * 归一的结果会**跳出**工作区（`/root`、`/root/.aicode`），等于把家目录整棵树纳入租约
+     * （凭据目录在内）。此类声明退回不挂前缀，保持相对形态——它不与任何**绝对**目标互为
+     * 前缀，也就不会因此误放行（相对—相对之间仍可能互配，但越界路径在文件层即被
+     * `WorkspacePathMapper.confineTo` / `confineRemote` 拦住）。
+     *
+     * 注意：这条「退回」只是防御性的兜底——此类声明会在 `task(create)` 时被
+     * [impossibleRelativePaths] 提前拒掉，不会真的落到写工具那一步。
      */
-    private fun normalizeWritePath(raw: String): String {
-        val expanded = when {
-            raw == "~" -> CONTAINER_HOME
-            raw.startsWith("~/") -> CONTAINER_HOME + raw.substring(1)
-            else -> raw
+    private fun normalizeWritePath(raw: String): String = when {
+        raw == "~" -> collapse(CONTAINER_HOME)
+        raw.startsWith("~/") -> collapse(CONTAINER_HOME + raw.substring(1))
+        raw.startsWith("/") -> collapse(raw)
+        else -> {
+            val anchored = collapse("$CONTAINER_WORKSPACE/$raw")
+            if (isAnchoredInWorkspace(anchored)) anchored else collapse(raw)
         }
-        val absolute = expanded.startsWith("/")
+    }
+
+    /** 归一后的绝对路径是否落在工作区根之内（含根本身）。 */
+    private fun isAnchoredInWorkspace(normalized: String): Boolean =
+        normalized == CONTAINER_WORKSPACE || normalized.startsWith("$CONTAINER_WORKSPACE/")
+
+    /** 纯字符串展开：按段消解 `.` 与 `..`，去重复斜杠，让同一路径的不同写法得到同一结果。 */
+    private fun collapse(path: String): String {
+        val absolute = path.startsWith("/")
         val parts = ArrayDeque<String>()
-        for (segment in expanded.split('/')) {
+        for (segment in path.split('/')) {
             when (segment) {
                 "", "." -> Unit
                 ".." -> if (parts.isNotEmpty() && parts.last() != "..") parts.removeLast() else if (!absolute) parts.addLast("..")
