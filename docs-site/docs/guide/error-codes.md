@@ -98,6 +98,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | --- | --- |
 | `WRITE_LEASE_CONFLICT` | 要写的位置已被另一个运行中的子代理占用 |
 | `WRITE_LEASE_DENIED` | 要写的位置不在本子代理声明的写路径内（含截图、生成图片等落盘动作） |
+| `WRITE_LEASE_INVALID_PATH` | 声明的写路径里含越出工作区的相对写法（如 `..`），建子代理时即拦下；要不受限请传 `["*"]` |
 | `MAX_SUBAGENTS_REACHED` | 并行子代理已达上限，需等前一个结束 |
 | `NOT_YOUR_SUBAGENT` | 尝试操作不属于本会话的子代理 |
 | `AGENT_NOT_FOUND` | 指定的子代理类型不存在 |

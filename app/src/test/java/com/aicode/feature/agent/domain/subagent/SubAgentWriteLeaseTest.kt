@@ -195,6 +195,7 @@ class SubAgentWriteLeaseTest {
     fun wholeWorkspaceDeclarationLeavesPathsUnrestricted() {
         val bus = busWithActive("s1", "s2", "s3")
         // `*` / `.` 的语义是「该子代理写路径不受限制」：工作区内外均可写
+        // 本用例钉住用户 2026-10-13 拍板的宽口径；若日后改回收窄，本用例应变红并同步改断言
         val star = SubAgentWriteLease(bus)
         star.acquire("s1", listOf("*"))
         assertTrue(star.isWithinLease("s1", "/root/workspace/app/x.kt"))
@@ -209,5 +210,31 @@ class SubAgentWriteLeaseTest {
         val rel = SubAgentWriteLease(bus)
         rel.acquire("s3", listOf("*"))
         assertTrue(rel.isWithinLease("s3", "app/src/Foo.kt"))
+    }
+
+    @Test
+    fun impossibleRelativePathsAreRejectedAtCreateTime() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        // `..` 类声明会被登记成一条覆盖不了任何东西的哑租约，把该子代理的合法写入也全锁死；
+        // 创建期就应拦下并指向 `*`
+        assertEquals(listOf(".."), lease.impossibleRelativePaths(listOf("..")))
+        assertEquals(listOf("../.aicode"), lease.impossibleRelativePaths(listOf("../.aicode")))
+        assertEquals(listOf("../../etc", "app/../.."), lease.impossibleRelativePaths(listOf("../../etc", "app/../..")))
+        // 混合时只揪出越界项
+        assertEquals(listOf(".."), lease.impossibleRelativePaths(listOf("app/src", "..", "~/workspace/x", "*")))
+    }
+
+    @Test
+    fun normalPathsAreNotFlaggedAsImpossible() {
+        val bus = busWithActive("s1")
+        val lease = SubAgentWriteLease(bus)
+        // 防误报：所有正常写法都不得被判为越界
+        val valid = listOf(
+            "app/src/test/Foo.kt", "app/src", "src", "app/./src", "app/src/../src/Foo.kt",
+            "./app/src", "a", "app/src/test/",
+            "~/workspace/app", "~/.aicode/x", "/root/workspace/app", "/etc/hosts", "*", "."
+        )
+        assertEquals(emptyList<String>(), lease.impossibleRelativePaths(valid))
     }
 }

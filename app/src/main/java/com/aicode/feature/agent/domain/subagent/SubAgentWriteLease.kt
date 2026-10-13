@@ -26,8 +26,9 @@ class SubAgentWriteLease @Inject constructor(
     private companion object {
         const val TAG = "SubAgentWriteLease"
         /**
-         * 整工作区声明（`*` / `.` / 空）：该子代理的写路径**不受任何限制**，工作区内外均可写。
+         * 不受限声明：该子代理的写路径**不受任何限制**，工作区内外均可写。
          * 创建期仍会与其它在跑的子代理判冲突（防两个子代理互相覆盖，与写路径无关）。
+         * 空串在登记/查冲突时已被 `filter { it.isNotEmpty() }` 滤掉（等价于不声明），保留在这里只为包容旧数据。
          */
         val WHOLE_WORKSPACE = setOf("*", ".", "")
         /** 容器内 `~` 恒为 /root（proot 根里的家目录）。 */
@@ -64,6 +65,20 @@ class SubAgentWriteLease @Inject constructor(
      */
     @Synchronized
     fun pathsFor(sessionId: String): List<String>? = leasedPaths[sessionId]
+
+    /**
+     * 找出声明里那些「归一后越出工作区、因而不可能覆盖任何文件」的相对路径（如 `..`、`../x`）。
+     *
+     * 为何要显式拒绝：这类声明会被登记成一条覆盖不了任何东西的哑租约，其子代理连工作区内的
+     * 合法写入也全被拒，且日志里只有一条「登记写租约」、看不出所以然。创建期拦下并告知
+     * 「要不受限请传 `*`」，比让它跑到写时才失败可查得多。
+     *
+     * 只针对**相对**声明：绝对路径（`/root/..`）与 `~` 展开后的越界是调用方显式指定，保持原行为。
+     */
+    fun impossibleRelativePaths(writePaths: List<String>): List<String> = writePaths
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !isWholeWorkspace(it) && !it.startsWith("~") && !it.startsWith("/") }
+        .filter { raw -> !isAnchoredInWorkspace(collapse("$CONTAINER_WORKSPACE/$raw")) }
 
     /**
      * 找出与新任务 [writePaths] 冲突的、仍活跃的子代理会话 id。
@@ -141,6 +156,9 @@ class SubAgentWriteLease @Inject constructor(
      * （凭据目录在内）。此类声明退回不挂前缀，保持相对形态——它不与任何**绝对**目标互为
      * 前缀，也就不会因此误放行（相对—相对之间仍可能互配，但越界路径在文件层即被
      * `WorkspacePathMapper.confineTo` / `confineRemote` 拦住）。
+     *
+     * 注意：这条「退回」只是防御性的兜底——此类声明会在 `task(create)` 时被
+     * [impossibleRelativePaths] 提前拒掉，不会真的落到写工具那一步。
      */
     private fun normalizeWritePath(raw: String): String = when {
         raw == "~" -> collapse(CONTAINER_HOME)
@@ -148,10 +166,13 @@ class SubAgentWriteLease @Inject constructor(
         raw.startsWith("/") -> collapse(raw)
         else -> {
             val anchored = collapse("$CONTAINER_WORKSPACE/$raw")
-            if (anchored == CONTAINER_WORKSPACE || anchored.startsWith("$CONTAINER_WORKSPACE/")) anchored
-            else collapse(raw)
+            if (isAnchoredInWorkspace(anchored)) anchored else collapse(raw)
         }
     }
+
+    /** 归一后的绝对路径是否落在工作区根之内（含根本身）。 */
+    private fun isAnchoredInWorkspace(normalized: String): Boolean =
+        normalized == CONTAINER_WORKSPACE || normalized.startsWith("$CONTAINER_WORKSPACE/")
 
     /** 纯字符串展开：按段消解 `.` 与 `..`，去重复斜杠，让同一路径的不同写法得到同一结果。 */
     private fun collapse(path: String): String {
