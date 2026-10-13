@@ -138,7 +138,7 @@ object AgentModule {
     @Provides
     @Singleton
     fun provideAutoModeMigrationFlag(
-        store: com.aicode.feature.agent.domain.session.AutoModeMigrationFlagStore
+        store: com.aicode.feature.agent.data.AutoModeMigrationFlagStore
     ): com.aicode.feature.agent.domain.session.AutoModeMigrationFlag = store
 
     @Provides

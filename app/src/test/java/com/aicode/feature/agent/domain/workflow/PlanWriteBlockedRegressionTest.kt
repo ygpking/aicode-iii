@@ -1,5 +1,6 @@
 package com.aicode.feature.agent.domain.workflow
 
+import com.aicode.feature.agent.data.local.dao.ChatSessionDao
 import com.aicode.feature.agent.data.local.dao.LlmCallRecordDao
 import com.aicode.feature.agent.data.remote.anthropic.AnthropicApi
 import com.aicode.feature.agent.data.remote.gemini.GeminiApi
@@ -21,6 +22,7 @@ import com.aicode.feature.agent.domain.tool.ToolOutputStore
 import com.aicode.feature.agent.domain.tool.ToolPermissionManager
 import com.aicode.feature.agent.domain.tool.ToolPermissionPolicy
 import com.aicode.feature.agent.domain.tool.ToolRegistry
+import com.aicode.feature.agent.domain.tool.mode.PlanModeTool
 import com.aicode.feature.settings.data.remote.ModelMetadataService
 import com.aicode.feature.settings.data.repository.CompactionModelSettingsRepository
 import com.aicode.feature.settings.data.repository.DefaultModelSettingsRepository
@@ -34,6 +36,7 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -105,6 +108,9 @@ class PlanWriteBlockedRegressionTest {
             sessionId = "s1",
         )
 
+    /** 真工具：capabilities = MODIFY_SESSION_STATE，正是 `planMode` 自身的形态。 */
+    private fun planModeTool() = PlanModeTool(mockk<ChatSessionDao>(relaxed = true))
+
     @Test
     fun planModeWriteTool_isDeniedDespiteAutoApprovePolicy() = runTest {
         val result = workflow().check(AgentMode.PLAN)
@@ -118,5 +124,22 @@ class PlanWriteBlockedRegressionTest {
     fun sameToolOutsidePlan_isApprovedByAutoApprove() = runTest {
         // 对照组：同一工具在 BUILD 下按 AUTO_APPROVE 放行，证明上面那条失败确由 PLAN 拦截所致
         assertTrue(workflow().check(AgentMode.BUILD).approved)
+    }
+
+    @Test
+    fun planModeTool_canStillExitPlanMode() = runTest {
+        // planMode 自身必须能在 PLAN 下调用，否则 AI 进 PLAN 后永远出不来：
+        // 它靠的是 MODIFY_SESSION_STATE 不在可疑能力集合里。若有人做「收紧 PLAN」
+        // 把该能力加进可疑集，上面两条写工具用例不会变红，这条才会。
+        val result = workflow().requestPermissionIfNeeded(
+            tool = planModeTool(),
+            callId = "c2",
+            arguments = mapOf("action" to JsonPrimitive("exit")),
+            argsPreview = "action=exit",
+            mode = AgentMode.PLAN,
+            sessionId = "s1",
+        )
+
+        assertTrue("PLAN 下 planMode 必须可调用，否则 AI 无法退出 PLAN", result.approved)
     }
 }
