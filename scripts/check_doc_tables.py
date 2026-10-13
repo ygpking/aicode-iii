@@ -240,11 +240,11 @@ def self_test() -> int:
     well_formed = len(re.findall(r"#\s*RULE:([^\s`]+)\s*$", scope, re.M))
     if total_markers != well_formed:
         malformed = set(re.findall(r"#\s*RULE:(\S+)", scope)) - anchored
-        for bad in sorted(malformed) or ["(名字与某条合法锚点相同，看不出是哪个)"]:
-            failures += 1
-            print(
-                f"  [FAIL] 疑似锚点但形态不合法：「{bad}」——`# RULE:名字` 后必须是行尾"
-            )
+        # 文案要中性：无法识别的原因可能是不独占行尾、重名（同名畸形锚点会被集合相减
+        # 吞掉）、或名字为空——只断言「形态不合法」会把读者引错方向（实测过）。
+        detail = "、".join(sorted(malformed)) if malformed else "名字可能是空、重名或未独占行尾"
+        failures += 1
+        print(f"  [FAIL] 有 `# RULE:` 字面量未被识别为锚点（{detail}）——锚点须为 `# RULE:名字` 独占行尾")
     declared = set(RULE_TO_SAMPLES)
     for rule in sorted(anchored - declared):
         failures += 1
