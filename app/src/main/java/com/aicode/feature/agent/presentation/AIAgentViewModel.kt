@@ -49,6 +49,7 @@ import com.aicode.feature.agent.domain.model.ReasoningEffort
 import com.aicode.feature.agent.domain.notification.AgentNotificationCenter
 import com.aicode.feature.agent.domain.notification.AgentNotificationFormatter
 import com.aicode.feature.agent.domain.notification.AgentNotificationKind
+import com.aicode.feature.agent.domain.notification.MessageSenderKind
 import com.aicode.feature.agent.domain.notification.NotificationOutcome
 import com.aicode.feature.agent.domain.notification.PendingNotification
 import com.aicode.feature.agent.domain.permission.PermissionChoice
@@ -1087,6 +1088,7 @@ class AIAgentViewModel @Inject constructor(
                     }
                     SubAgentEventType.MESSAGE_FROM_PARENT -> deliverMessageToSubAgent(event)
                     SubAgentEventType.MESSAGE_FROM_SUB -> deliverMessageToParent(event)
+                    SubAgentEventType.MESSAGE_FROM_SIBLING -> deliverMessageToSibling(event)
                 }
             }
         }
@@ -1156,7 +1158,7 @@ class AIAgentViewModel @Inject constructor(
             senderSessionId = event.parentSessionId,
             senderTitle = senderTitle,
             message = event.detail,
-            fromParent = true
+            senderKind = MessageSenderKind.PARENT
         )
     }
 
@@ -1168,7 +1170,29 @@ class AIAgentViewModel @Inject constructor(
             senderSessionId = event.subSessionId,
             senderTitle = senderTitle,
             message = event.detail,
-            fromParent = false
+            senderKind = MessageSenderKind.SUB
+        )
+    }
+
+    /**
+     * 兄弟子代理发来的消息：收件人是 `event.subSessionId`（`messageSibling` 把目标填在这里），
+     * 发送方取 `senderSessionId`——兄弟消息里收件人不是父会话，两者不能混用。
+     */
+    private suspend fun deliverMessageToSibling(event: SubAgentEvent) {
+        val senderId = event.senderSessionId
+        if (senderId == null) {
+            // 唯一生产者 MessageSiblingTool 恒填该字段；真出此状说明有别的来源在发这类事件，
+            // 静默返回会让消息凭空消失又无从查起，故留一条日志。
+            FileLogger.w(TAG, "兄弟消息缺 senderSessionId，已丢弃: to=${event.subSessionId}")
+            return
+        }
+        val senderTitle = sessionUseCase.getSessionById(senderId)?.title ?: "兄弟子代理"
+        deliverAgentMessage(
+            recipientSessionId = event.subSessionId,
+            senderSessionId = senderId,
+            senderTitle = senderTitle,
+            message = event.detail,
+            senderKind = MessageSenderKind.SIBLING
         )
     }
 
@@ -1181,7 +1205,7 @@ class AIAgentViewModel @Inject constructor(
         senderSessionId: String,
         senderTitle: String,
         message: String,
-        fromParent: Boolean
+        senderKind: MessageSenderKind
     ) {
         if (message.isBlank()) return
         if (sessionUseCase.getSessionById(recipientSessionId) == null) return
@@ -1191,7 +1215,7 @@ class AIAgentViewModel @Inject constructor(
             title = senderTitle,
             outcome = NotificationOutcome.COMPLETED,
             message = message,
-            fromParent = fromParent
+            senderKind = senderKind
         )
         deliverSystemEvent(recipientSessionId, item)
     }
@@ -1615,7 +1639,9 @@ class AIAgentViewModel @Inject constructor(
                     allTools.filter { it.name in allowed }
                 }
                 isSub -> allTools.filterNot { it.name == AgentDefinition.NESTED_TOOL }
-                else -> allTools.filterNot { it.name == AgentDefinition.PARENT_MESSAGE_TOOL }
+                else -> allTools.filterNot {
+                    it.name == AgentDefinition.PARENT_MESSAGE_TOOL || it.name == AgentDefinition.SIBLING_MESSAGE_TOOL
+                }
             }
 
             agentWorkflow.executeEvents(

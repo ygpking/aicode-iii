@@ -140,6 +140,9 @@ data class AgentDefinition(
 
         /** 仅子代理可用的工具（子→主发消息）；主会话工具集剔除它。 */
         const val PARENT_MESSAGE_TOOL = "messageParent"
+
+        /** 仅子代理可用的工具（子→兄弟子代理发消息）；主会话工具集剔除它。 */
+        const val SIBLING_MESSAGE_TOOL = "messageSibling"
     }
 }
 
