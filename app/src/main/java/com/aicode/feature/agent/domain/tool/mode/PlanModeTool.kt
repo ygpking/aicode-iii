@@ -28,7 +28,7 @@ class PlanModeTool @Inject constructor(
     }
 
     override val name = "planMode"
-    override val description = "进入或退出 PLAN（计划）模式。action=\"enter\"：进入计划模式，转为只读探索、构思复杂改动方案，不要在 BUILD 模式直接写代码；action=\"exit\"：计划已经完成、要开始动手时退出计划模式。退出后会自动恢复到进入 PLAN 之前的模式（从 AUTO 进入就回到 AUTO，从 BUILD 进入就回到 BUILD），无需你指定目标模式。进入与退出都无需用户批准。注意：AUTO（自动）模式只能由用户在界面上手动进入，本工具无法进入 AUTO；但处于 AUTO 模式时可以 action=\"enter\" 进入 PLAN（这是 AI 退出 AUTO 的唯一路径）。"
+    override val description = "进入或退出 PLAN（计划）模式。action=\"enter\"：进入计划模式，转为只读探索、构思复杂改动方案，不要在 BUILD 模式直接写代码；action=\"exit\"：计划已经完成、要开始动手时退出计划模式。退出后会自动恢复到进入 PLAN 之前的模式（从 AUTO 进入就回到 AUTO，从 BUILD 进入就回到 BUILD），无需你指定目标模式。进入与退出都无需用户批准。注意：AUTO（自动）模式只能由用户在界面上手动进入，本工具无法进入 AUTO；但处于 AUTO 模式时可以 action=\"enter\" 进入 PLAN（这是 AI 退出 AUTO 的唯一路径）。何时该进：判据用已发生的事实，不靠事前估步数——只对本任务中要写文件的部分计数，回看已读取的文件数 + 已改动的文件数，合计到 3 个、或预计还会继续增，就先进 PLAN 定规格再动手；架构选型、多文件改动、实现路径不明确，都算这条；第一次写文件之前进。纯答疑、查证、只读取证、不打算写文件的回合不进 PLAN，直接答。已经因为改动进了 PLAN 的，把「验什么、怎么判」一并写进规格；纯跑一次现成脚本或只读核对类的验证，不必为此单独进 PLAN。改一处、跑一次就能收尾的直接动手，不为小改动走流程。"
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities = setOf(ToolCapability.MODIFY_SESSION_STATE)
 
