@@ -70,17 +70,19 @@ object AgentNotificationFormatter {
         when (kind) {
             AgentNotificationKind.BACKGROUND_TASK -> {
                 appendLine("  <task-id>$sourceId</task-id>")
-                appendLine("  <title>$title</title>")
-                appendLine("  <command>${command ?: ""}</command>")
+                appendLine("  <title>${escapeXml(title)}</title>")
+                appendLine("  <command>${escapeXml(command ?: "")}</command>")
                 appendLine("  <exit-code>${exitCode ?: ""}</exit-code>")
             }
             AgentNotificationKind.SUBAGENT -> {
                 appendLine("  <subagent-id>$sourceId</subagent-id>")
-                appendLine("  <subagent-title>$title</subagent-title>")
+                appendLine("  <subagent-title>${escapeXml(title)}</subagent-title>")
             }
             AgentNotificationKind.AGENT_MESSAGE -> {
                 appendLine("  <from-id>$sourceId</from-id>")
-                appendLine("  <from-title>$title</from-title>")
+                appendLine("  <from-title>${escapeXml(title)}</from-title>")
+                // 发言方类别：UI 提示条据此渲染本地化文案（它拿不到会话树，凭 from-id 分不出是主会话还是兄弟）。
+                appendLine("  <from-kind>${senderKindTag()}</from-kind>")
                 message?.takeIf { it.isNotBlank() }?.let { appendLine("  <message>${escapeXml(it)}</message>") }
             }
             AgentNotificationKind.MODE_CHANGE -> {
@@ -88,7 +90,8 @@ object AgentNotificationFormatter {
             }
         }
         appendLine("  <status>${statusText()}</status>")
-        appendLine("  <summary>${summaryText()}</summary>")
+        // summary 内插了自由文本（标题/命令），同样要转义，否则其中的尖括号会截断块的边界。
+        appendLine("  <summary>${escapeXml(summaryText())}</summary>")
         detail?.takeIf { it.isNotBlank() }?.let { appendLine("  <detail>${escapeXml(it)}</detail>") }
         // 转义尖括号：输出里若含 <status>/<summary> 等字样会污染提示条的正则提取。
         tailOutput?.takeIf { it.isNotBlank() }?.let { appendLine("  <tail-output>${escapeXml(it)}</tail-output>") }
@@ -128,6 +131,13 @@ object AgentNotificationFormatter {
         detail?.takeIf { it.isNotBlank() }?.let { put("detail", JsonPrimitive(it)) }
         tailOutput?.takeIf { it.isNotBlank() }?.let { put("tail_output", JsonPrimitive(it)) }
         put("hint", singleHint())
+    }
+
+    /** 发言方类别标签：仅 XML 形态输出（JSON 形态只给 AI，UI 提示条只读 XML 消息）。 */
+    private fun PendingNotification.senderKindTag(): String = when (senderKind) {
+        MessageSenderKind.PARENT -> "parent"
+        MessageSenderKind.SUB -> "sub"
+        MessageSenderKind.SIBLING -> "sibling"
     }
 
     private fun PendingNotification.statusText(): String = when (kind) {

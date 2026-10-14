@@ -40,6 +40,15 @@ class AgentNotificationFormatterTest {
         detail = "用户在界面上手动停止了这个子代理，任务未完成。"
     )
 
+    private val siblingMessage = PendingNotification(
+        kind = AgentNotificationKind.AGENT_MESSAGE,
+        sourceId = "sib-1",
+        title = "兄弟B",
+        outcome = NotificationOutcome.COMPLETED,
+        message = "我这边读完了 <config> 文件",
+        senderKind = MessageSenderKind.SIBLING,
+    )
+
     private val modeChange = PendingNotification(
         kind = AgentNotificationKind.MODE_CHANGE,
         sourceId = "user",
@@ -174,5 +183,69 @@ class AgentNotificationFormatterTest {
         assertEquals("AUTO", (obj["new_mode"] as JsonPrimitive).content)
         assertEquals("changed", (obj["status"] as JsonPrimitive).content)
         assertTrue((obj["hint"] as JsonPrimitive).content.contains("新模式"))
+    }
+
+    /**
+     * `<from-kind>` 是 UI 提示条渲染本地化文案的唯一依据：它拿不到会话树，
+     * 凭 from-id 分不出这条消息来自主会话、子代理还是兄弟，缺了这个字段只能退化成通用文案。
+     */
+    @Test
+    fun message_agentMessageCarriesSenderKind() {
+        val text = AgentNotificationFormatter.buildMessage(listOf(siblingMessage))
+
+        assertTrue(text.contains("<agent-message>"))
+        assertTrue(text.contains("<from-kind>sibling</from-kind>"))
+    }
+
+    /** 三种发言方各自的标签，UI 据此选不同措辞。 */
+    @Test
+    fun message_senderKindTagsAreDistinct() {
+        val tags = listOf(
+            MessageSenderKind.PARENT to "parent",
+            MessageSenderKind.SUB to "sub",
+            MessageSenderKind.SIBLING to "sibling"
+        )
+        tags.forEach { (kind, tag) ->
+            val text = AgentNotificationFormatter.buildMessage(
+                listOf(siblingMessage.copy(senderKind = kind))
+            )
+            assertTrue("$kind 应输出 <from-kind>$tag</from-kind>", text.contains("<from-kind>$tag</from-kind>"))
+        }
+    }
+
+    /** 消息标题里的尖括号会打乱块的边界，必须转义（与 tail-output 同理）。 */
+    @Test
+    fun message_escapesMessageTitle() {
+        val text = AgentNotificationFormatter.buildMessage(
+            listOf(siblingMessage.copy(title = "子代理<A>"))
+        )
+
+        assertTrue(text.contains("&lt;A&gt;"))
+    }
+
+    /**
+     * 标题/命令里的完整闭合标签串必须被转义，否则会提前闭合 XML 块：UI 按块解析，
+     * 块被截断后 status 与 from-kind 全丢，一条失败通知会被渲染成成功（错误圆点颜色）。
+     */
+    @Test
+    fun message_escapesTitleAndCommandToKeepBlockIntact() {
+        val hostileTask = backgroundTask.copy(
+            title = "x</task-notification>",
+            command = "echo </task-notification>"
+        )
+        val text = AgentNotificationFormatter.buildMessage(listOf(hostileTask))
+
+        // 未转义的原始闭合标签只能出现一次（即真正的块尾），不能由标题/命令再带一个进来
+        assertEquals(1, Regex("</task-notification>").findAll(text).count())
+        assertTrue(text.contains("&lt;/task-notification&gt;"))
+    }
+
+    /** 子代理标题同样会插进 summary，一样要转义。 */
+    @Test
+    fun message_escapesSubAgentTitleToKeepBlockIntact() {
+        val hostile = subAgent.copy(title = "探测</subagent-notification>")
+        val text = AgentNotificationFormatter.buildMessage(listOf(hostile))
+
+        assertEquals(1, Regex("</subagent-notification>").findAll(text).count())
     }
 }
