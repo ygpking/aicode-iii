@@ -1258,8 +1258,11 @@ class StatefulAgentWorkflow @Inject constructor(
                                 if (batchResults.any { !it.isError && EvidenceGuard.isWriteTool(it.toolName) }) {
                                     SubAgentDelegationTracker.recordWriteSuccess(sid)
                                 }
+                                // 与 TaskTool 同一口径：action 参数 required=false，缺省即 create。
+                                // 写死 == "create" 会把「省略 action 的派发」漏记成未派发，进而在下轮误提醒。
                                 val delegated = toolCalls.any { call ->
-                                    call.name == "task" && (call.arguments["action"] as? JsonPrimitive)?.contentOrNull == "create"
+                                    call.name == "task" &&
+                                        ((call.arguments["action"] as? JsonPrimitive)?.contentOrNull?.trim()?.lowercase() ?: "create") == "create"
                                 }
                                 if (delegated) SubAgentDelegationTracker.recordDelegation(sid)
                             }
