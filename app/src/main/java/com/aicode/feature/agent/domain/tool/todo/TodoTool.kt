@@ -41,8 +41,8 @@ class TodoTool @Inject constructor(
     override val description = "用当前完整 items 列表替换会话任务清单。只需提交完整列表，" +
         "无需 action、todo_id 或单项更新。items 可为空数组表示清空；每项为 " +
         "{subject, description, status, priority}。status 可为 pending、in_progress、completed。" +
-        "何时该用：任务已动到第二个文件、或预计还要往前推三步以上时，先列清单再开工，边做边标完成；" +
-        "任务中途才发现还在继续扩张（已读/已改的文件数到了 3 个却还没收尾）时补列。改动只涉及一两处、立刻就完的不列。"
+        "何时该用：本任务已动到第二个文件、或已读/已改文件数到 3 个时，先列清单再开工，边做边标完成；" +
+        "中途才发现已扩张到 3 个却还没收尾时补列。改动只涉及一两处、立刻就完的不列。"
 
     override val permissionPolicy = ToolPermissionPolicy.AUTO_APPROVE
     override val capabilities = setOf(ToolCapability.MODIFY_TODO_STATE)
