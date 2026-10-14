@@ -80,7 +80,9 @@ object AgentNotificationFormatter {
             }
             AgentNotificationKind.AGENT_MESSAGE -> {
                 appendLine("  <from-id>$sourceId</from-id>")
-                appendLine("  <from-title>$title</from-title>")
+                appendLine("  <from-title>${escapeXml(title)}</from-title>")
+                // 发言方类别：UI 提示条据此渲染本地化文案（它拿不到会话树，凭 from-id 分不出是主会话还是兄弟）。
+                appendLine("  <from-kind>${senderKindTag()}</from-kind>")
                 message?.takeIf { it.isNotBlank() }?.let { appendLine("  <message>${escapeXml(it)}</message>") }
             }
             AgentNotificationKind.MODE_CHANGE -> {
@@ -128,6 +130,13 @@ object AgentNotificationFormatter {
         detail?.takeIf { it.isNotBlank() }?.let { put("detail", JsonPrimitive(it)) }
         tailOutput?.takeIf { it.isNotBlank() }?.let { put("tail_output", JsonPrimitive(it)) }
         put("hint", singleHint())
+    }
+
+    /** 发言方类别标签：仅 XML 形态输出（JSON 形态只给 AI，UI 提示条只读 XML 消息）。 */
+    private fun PendingNotification.senderKindTag(): String = when (senderKind) {
+        MessageSenderKind.PARENT -> "parent"
+        MessageSenderKind.SUB -> "sub"
+        MessageSenderKind.SIBLING -> "sibling"
     }
 
     private fun PendingNotification.statusText(): String = when (kind) {
