@@ -222,4 +222,30 @@ class AgentNotificationFormatterTest {
 
         assertTrue(text.contains("&lt;A&gt;"))
     }
+
+    /**
+     * 标题/命令里的完整闭合标签串必须被转义，否则会提前闭合 XML 块：UI 按块解析，
+     * 块被截断后 status 与 from-kind 全丢，一条失败通知会被渲染成成功（错误圆点颜色）。
+     */
+    @Test
+    fun message_escapesTitleAndCommandToKeepBlockIntact() {
+        val hostileTask = backgroundTask.copy(
+            title = "x</task-notification>",
+            command = "echo </task-notification>"
+        )
+        val text = AgentNotificationFormatter.buildMessage(listOf(hostileTask))
+
+        // 未转义的原始闭合标签只能出现一次（即真正的块尾），不能由标题/命令再带一个进来
+        assertEquals(1, Regex("</task-notification>").findAll(text).count())
+        assertTrue(text.contains("&lt;/task-notification&gt;"))
+    }
+
+    /** 子代理标题同样会插进 summary，一样要转义。 */
+    @Test
+    fun message_escapesSubAgentTitleToKeepBlockIntact() {
+        val hostile = subAgent.copy(title = "探测</subagent-notification>")
+        val text = AgentNotificationFormatter.buildMessage(listOf(hostile))
+
+        assertEquals(1, Regex("</subagent-notification>").findAll(text).count())
+    }
 }
