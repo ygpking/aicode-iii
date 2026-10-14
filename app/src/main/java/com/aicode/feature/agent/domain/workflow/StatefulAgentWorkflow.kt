@@ -198,6 +198,9 @@ class StatefulAgentWorkflow @Inject constructor(
          */
         const val TURN_WRAP_UP_NOTICE =
             "（系统提醒：轮次预算已进入新段。若当前方向已明确，直接继续推进；仅当发现方向有误或关键信息缺失时，先停下修正再继续。不要输出进度总结或阶段性报告。）"
+        /** 本会话已直接写文件却从未派发子代理时，注入一次（时机型提醒，条件成立才出现一次）。 */
+        const val SUBAGENT_DELEGATION_NOTICE =
+            "（系统提示：本会话你已开始直接改文件，但尚未派发过子代理。若本任务涉及 2 个及以上文件、或可拆出互不依赖的支线，请停下当前做法，改用 task 派子代理并行推进；若确实只碰 1 个文件且无需跨文件核对，忽略本条。）"
         /** 模型返回空正文且无工具调用时的续写提示（空响应兜底用，注入一次）。 */
         const val EMPTY_RESPONSE_NOTICE =
             "（你刚才的回复为空。请基于现有上下文继续回答，不要重复之前的内容。）"
@@ -766,6 +769,16 @@ class StatefulAgentWorkflow @Inject constructor(
                             }
                             TurnVerdict.Continue -> Unit
                         }
+                        if (!currentContext.isSubAgent) {
+                            currentContext.sessionId?.let { sid ->
+                                if (SubAgentDelegationTracker.shouldNotifyAndMark(sid)) {
+                                    FileLogger.i(TAG, "注入子代理派发提醒（本会话已直接写文件但未派发子代理）")
+                                    state = state.copy(
+                                        messages = state.messages + AgentMessage.UserMessage(content = SUBAGENT_DELEGATION_NOTICE)
+                                    )
+                                }
+                            }
+                        }
                         val providerInUse = aiProvider
                         // 压缩轮：若配置了压缩专用模型，使用独立压缩模型压缩
                         val compactionProvider = resolveCompactionFallbackProvider(currentContext.sessionId) ?: providerInUse
@@ -1238,6 +1251,18 @@ class StatefulAgentWorkflow @Inject constructor(
                                 rawResult += buildModeSwitchNotice(newCtx.mode)
                             }
                             batchResults.add(ToolBatchResult(toolCall.id, toolCall.name, rawResult, isError, runResult.attachments, runResult.images))
+                        }
+
+                        if (!currentContext.isSubAgent) {
+                            currentContext.sessionId?.let { sid ->
+                                if (batchResults.any { !it.isError && EvidenceGuard.isWriteTool(it.toolName) }) {
+                                    SubAgentDelegationTracker.recordWriteSuccess(sid)
+                                }
+                                val delegated = toolCalls.any { call ->
+                                    call.name == "task" && (call.arguments["action"] as? JsonPrimitive)?.contentOrNull == "create"
+                                }
+                                if (delegated) SubAgentDelegationTracker.recordDelegation(sid)
+                            }
                         }
 
                         // 本轮内到达的后台任务/子代理完成通知：搭在本批最后一条工具结果上立即送达，
