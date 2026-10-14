@@ -103,6 +103,8 @@ data class AgentContext(
      * 系统提示词与工具集都按其配置组装（见 [com.aicode.feature.agent.domain.prompt.SystemPromptProvider]）。
      */
     val agentDefinition: AgentDefinition? = null,
+    /** 是否为子代理会话（有父会话但未指定自定义 agent 定义）；true 时按子代理身份组装提示词。 */
+    val isSubAgent: Boolean = false,
     /**
      * 本轮用户消息的持久层 id：由 ViewModel 生成、落库与内存构造共用同一 id。
      * 缺失它时 workflow 内存 UserMessage 的 id 为空串，与 DB 行 id 永远对不上——
