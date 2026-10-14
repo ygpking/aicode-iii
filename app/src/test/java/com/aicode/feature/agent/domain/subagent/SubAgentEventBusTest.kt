@@ -128,6 +128,32 @@ class SubAgentEventBusTest {
         assertEquals(emptySet<String>(), bus.activeSubSessionIds.value)
     }
 
+    /**
+     * 收发消息不改变运行状态：兄弟消息不能顺手把收件人算成活跃（会虚占名额、提前触发上限），
+     * 也不能把它移出活跃集合（会让写租约被误回收）。
+     */
+    @Test
+    fun messageEvents_doNotTouchActiveSet() {
+        listOf(
+            SubAgentEventType.MESSAGE_FROM_PARENT,
+            SubAgentEventType.MESSAGE_FROM_SUB,
+            SubAgentEventType.MESSAGE_FROM_SIBLING
+        ).forEach { type ->
+            val bus = SubAgentEventBus()
+            spawn(bus, "sub-1")
+            bus.emit(
+                SubAgentEvent(
+                    subSessionId = "sub-2",
+                    parentSessionId = "parent",
+                    type = type,
+                    senderSessionId = "sub-1"
+                )
+            )
+
+            assertEquals("$type 不应改变活跃集合", setOf("sub-1"), bus.activeSubSessionIds.value)
+        }
+    }
+
     // —— 会话流归属（多实例去重）——
     // 双 AIAgentViewModel 实例各收到同一份事件时，必须只有一个实例能启动/触发会话流。
 

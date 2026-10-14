@@ -9,7 +9,8 @@ import com.aicode.feature.agent.domain.subagent.SubAgentEventType
 import com.aicode.feature.agent.domain.tool.ToolResult
 import io.mockk.coEvery
 import io.mockk.mockk
-import kotlinx.coroutines.launch
+import io.mockk.slot
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
@@ -39,7 +40,9 @@ class MessageSiblingToolTest {
         session("stranger", "parent-2", "别家子代理")
     )
 
-    private fun newTool(bus: SubAgentEventBus = SubAgentEventBus()): Pair<MessageSiblingTool, SubAgentEventBus> {
+    private fun newTool(
+        bus: SubAgentEventBus = mockk(relaxed = true)
+    ): Pair<MessageSiblingTool, SubAgentEventBus> {
         val useCase = mockk<SessionUseCase>(relaxed = true)
         coEvery { useCase.getSessionById(any()) } answers {
             sessions.firstOrNull { it.id == firstArg() }
@@ -104,21 +107,26 @@ class MessageSiblingToolTest {
         assertEquals("INVALID_ARGS", (result as ToolResult.Error).code)
     }
 
+    /**
+     * 投递出去的事件必须自带发送者身份：收件方的通知文案靠 senderSessionId 区分
+     * 「兄弟发来的」还是「父会话发来的」，缺了它收件子代理会认错发言人。
+     *
+     * 这里直接校验收件总线收到的载荷，不用订阅真实 SharedFlow（replay=0，采集协程的
+     * 调度时机不确定，断言会变成时序竞态）。
+     */
     @Test
     fun emitsSiblingEvent_carryingSender() = runTest {
-        val (tool, bus) = newTool()
-        val events = mutableListOf<SubAgentEvent>()
-        val job = backgroundScope.launch { bus.events.collect { events.add(it) } }
-        testScheduler.advanceUntilIdle()
+        val bus = mockk<SubAgentEventBus>(relaxed = true)
+        val (tool, _) = newTool(bus)
 
         tool.executeWithContext(args("to" to "sib", "message" to "同步结论"), ctx("me"))
-        testScheduler.advanceUntilIdle()
-        job.cancel()
 
-        assertEquals(1, events.size)
-        assertEquals(SubAgentEventType.MESSAGE_FROM_SIBLING, events[0].type)
-        assertEquals("sib", events[0].subSessionId)
-        assertEquals("parent-1", events[0].parentSessionId)
-        assertEquals("me", events[0].senderSessionId)
+        val captured = slot<SubAgentEvent>()
+        verify(exactly = 1) { bus.emit(capture(captured)) }
+        assertEquals(SubAgentEventType.MESSAGE_FROM_SIBLING, captured.captured.type)
+        assertEquals("sib", captured.captured.subSessionId)
+        assertEquals("parent-1", captured.captured.parentSessionId)
+        assertEquals("me", captured.captured.senderSessionId)
+        assertEquals("同步结论", captured.captured.detail)
     }
 }
