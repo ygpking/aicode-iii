@@ -37,7 +37,9 @@ class MessageSiblingToolTest {
         session("parent-2", null, "主会话二"),
         session("me", "parent-1", "兄弟A"),
         session("sib", "parent-1", "兄弟B"),
-        session("stranger", "parent-2", "别家子代理")
+        session("stranger", "parent-2", "别家子代理"),
+        session("twin-1", "parent-1", "同名任务"),
+        session("twin-2", "parent-1", "同名任务")
     )
 
     private fun newTool(
@@ -91,6 +93,27 @@ class MessageSiblingToolTest {
         val (tool, _) = newTool()
         val result = tool.executeWithContext(args("to" to "me", "message" to "自言自语"), ctx("me"))
         assertEquals("INVALID_TARGET", (result as ToolResult.Error).code)
+    }
+
+    /**
+     * 同名兄弟（典型：连派两个「Explore」）不能静默取第一个——消息会送给错的人而发送方不知道。
+     */
+    @Test
+    fun sendToDuplicatedTitle_isRejectedAsAmbiguous() = runTest {
+        val (tool, _) = newTool()
+        val result = tool.executeWithContext(args("to" to "同名任务", "message" to "给谁"), ctx("me"))
+
+        assertEquals("AMBIGUOUS_TARGET", (result as ToolResult.Error).code)
+        assertTrue("应列出候选 id 供改用：${result.message}", "twin-1" in result.message && "twin-2" in result.message)
+    }
+
+    /** 歧义只针对标题回退：id 唯一，按 id 发送不受同名影响。 */
+    @Test
+    fun sendToDuplicatedTitle_byId_stillSucceeds() = runTest {
+        val (tool, _) = newTool()
+        val result = tool.executeWithContext(args("to" to "twin-2", "message" to "给第二个"), ctx("me"))
+
+        assertTrue("按 id 应能投递：$result", result is ToolResult.Success)
     }
 
     @Test

@@ -129,7 +129,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `MISSING_SCRIPT` | 浏览器 | 缺少要执行的脚本 |
 | `MISSING_REASON` / `NOT_IN_PLAN` | 模式切换 | 缺少切换理由，或当前不在计划模式 |
 | `NO_PARENT` | 子代理消息 | 找不到父会话 |
-| `INVALID_TARGET` / `SIBLING_NOT_FOUND` | 子代理消息 | 不能给自己发消息，或在同一个主会话下找不到该兄弟子代理（跨主会话的兄弟互相不可见）；AI 会先向主代理确认兄弟的 id 或标题 |
+| `INVALID_TARGET` / `SIBLING_NOT_FOUND` / `AMBIGUOUS_TARGET` | 子代理消息 | 不能给自己发消息；在同一个主会话下找不到该兄弟子代理（跨主会话的兄弟互相不可见）；或有多个兄弟标题相同、无法确定收件人（报错会列出候选 id）；AI 会先向主代理确认兄弟的 id 或标题 |
 | `SPILL_NOT_FOUND` | 回取工具结果 | 之前落盘的大结果已不存在（可能已被清理） |
 | `A11Y_NOT_ENABLED` / `OPEN_FAILED` / `CLICK_FAILED` / `SWIPE_FAILED` / `INPUT_FAILED` / `SCREENSHOT_FAILED` / `VSCREEN_FAILED` / `CLOSE_FAILED` / `MISSING_ARGS` / `INVALID_ARGS` | 虚拟屏 | 无障碍未开启（见[软件权限](/guide/app-permissions)），或参数缺失（click 缺 text/id/bounds）、bounds 非四整数、打开 / 点击 / 滑动 / 输入 / 截图 / 关闭失败 |
 | `SESSION_NOT_FOUND` / `NO_SESSION` | 多工具通用 | 会话不存在或未绑定会话 |

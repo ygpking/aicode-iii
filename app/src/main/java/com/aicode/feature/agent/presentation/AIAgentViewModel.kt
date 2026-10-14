@@ -1179,7 +1179,13 @@ class AIAgentViewModel @Inject constructor(
      * 发送方取 `senderSessionId`——兄弟消息里收件人不是父会话，两者不能混用。
      */
     private suspend fun deliverMessageToSibling(event: SubAgentEvent) {
-        val senderId = event.senderSessionId ?: return
+        val senderId = event.senderSessionId
+        if (senderId == null) {
+            // 唯一生产者 MessageSiblingTool 恒填该字段；真出此状说明有别的来源在发这类事件，
+            // 静默返回会让消息凭空消失又无从查起，故留一条日志。
+            FileLogger.w(TAG, "兄弟消息缺 senderSessionId，已丢弃: to=${event.subSessionId}")
+            return
+        }
         val senderTitle = sessionUseCase.getSessionById(senderId)?.title ?: "兄弟子代理"
         deliverAgentMessage(
             recipientSessionId = event.subSessionId,

@@ -47,7 +47,7 @@ class MessageSiblingTool @Inject constructor(
         "to" to ToolParameter(
             name = "to",
             type = ParameterType.STRING,
-            description = "收件兄弟子代理：子会话 id，或它的标题（即派发时的 description）。这些信息由主代理在派你时提供",
+            description = "收件兄弟子代理：子会话 id，或它的标题（即派发时的 description）。这些信息由主代理在派你时提供。多个兄弟标题相同时必须改用 id",
             required = true
         ),
         "message" to ToolParameter(
@@ -82,12 +82,24 @@ class MessageSiblingTool @Inject constructor(
         if (to == sessionId) {
             return ToolResult.Error("不能给自己发消息：to 指向的是当前会话", "INVALID_TARGET")
         }
-        val target = siblings.firstOrNull { it.id == to }
-            ?: siblings.firstOrNull { it.title == to }
-            ?: return ToolResult.Error(
-                "找不到兄弟子代理「$to」：它必须与你在同一个主会话下。请向主代理确认兄弟的 id 或标题",
-                "SIBLING_NOT_FOUND"
-            )
+        // 按 id 优先；只有 id 未命中时才回退到标题。
+        // 标题同名（典型：连派两个「Explore」）时必须报错而不是取第一个——静默取错人
+        // 比报错更贵：消息送错对象、发送方毫无感知。
+        val byId = siblings.firstOrNull { it.id == to }
+        val target = byId ?: run {
+            val byTitle = siblings.filter { it.title == to }
+            when (byTitle.size) {
+                1 -> byTitle.first()
+                0 -> return ToolResult.Error(
+                    "找不到兄弟子代理「$to」：它必须与你在同一个主会话下。请向主代理确认兄弟的 id 或标题",
+                    "SIBLING_NOT_FOUND"
+                )
+                else -> return ToolResult.Error(
+                    "有 ${byTitle.size} 个兄弟的标题都是「$to」，无法确定收件人。请向主代理确认要发给哪一个，改用它的子会话 id：${byTitle.joinToString("、") { it.id }}",
+                    "AMBIGUOUS_TARGET"
+                )
+            }
+        }
 
         eventBus.emit(
             SubAgentEvent(
