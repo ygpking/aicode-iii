@@ -248,6 +248,11 @@ class SessionUseCase @Inject constructor(
         return chatSessionDao.getById(id)
     }
 
+    /** 指定父会话的全部子会话（子代理），一次性查询。供需要枚举兄弟子代理的调用方使用。 */
+    suspend fun getSubSessionsByParentOnce(parentId: String): List<ChatSessionEntity> {
+        return chatSessionDao.getSubSessionsByParentOnce(parentId)
+    }
+
     suspend fun updateMode(sessionId: String, mode: String) {
         val s = chatSessionDao.getById(sessionId) ?: return
         val newMode = runCatching { AgentMode.valueOf(mode) }.getOrNull() ?: return

@@ -45,6 +45,7 @@ import com.aicode.feature.agent.domain.tool.question.AskUserQuestionTool
 import com.aicode.feature.agent.domain.tool.todo.TodoTool
 import com.aicode.feature.agent.domain.tool.subagent.TaskTool
 import com.aicode.feature.agent.domain.tool.subagent.MessageParentTool
+import com.aicode.feature.agent.domain.tool.subagent.MessageSiblingTool
 import com.aicode.feature.agent.domain.subagent.SubAgentEventBus
 import com.aicode.feature.agent.domain.prompt.SystemPromptProvider
 import com.aicode.feature.agent.domain.workflow.AgentWorkflow
@@ -313,6 +314,7 @@ object AgentModule {
         retrieveToolResultTool: RetrieveToolResultTool,
         taskTool: TaskTool,
         messageParentTool: MessageParentTool,
+        messageSiblingTool: MessageSiblingTool,
         browserTool: BrowserTool,
         virtualScreenTool: VirtualScreenTool,
         restoreCompactedRangeTool: RestoreCompactedRangeTool,
@@ -341,6 +343,7 @@ object AgentModule {
             register("retrieveToolResult", retrieveToolResultTool)
             register("task", taskTool)
             register("messageParent", messageParentTool)
+            register("messageSibling", messageSiblingTool)
             register("browser", browserTool)
             register("virtualScreen", virtualScreenTool)
             register("restoreCompactedRange", restoreCompactedRangeTool)

@@ -15,14 +15,18 @@ enum class AgentNotificationKind { BACKGROUND_TASK, SUBAGENT, AGENT_MESSAGE, MOD
  */
 enum class NotificationOutcome { COMPLETED, FAILED, STOPPED }
 
+/** 代理间消息的发送方类别：决定收件方看到的描述与回复提示。 */
+enum class MessageSenderKind { PARENT, SUB, SIBLING }
+
 /**
  * 一条待送给 AI 的异步完成通知（后台终端命令 / 子代理）。
  *
  * @property sourceId 终端 tabId 或子代理会话 id，AI 据此调 terminal(read) / task(read) 取完整结果。
  * @property detail 结束原因补充：子代理失败时的错误信息、被终止时的说明；正常完成时为 null。
  * @property message [AgentNotificationKind.AGENT_MESSAGE] 的消息正文。
- * @property fromParent [AgentNotificationKind.AGENT_MESSAGE] 的方向：true 表示发送方是主会话（收件人为子代理），
- *   false 表示发送方是子代理（收件人为主会话）。供 Formatter 生成对应的回复提示。
+ * @property senderKind [AgentNotificationKind.AGENT_MESSAGE] 的发送方类别：PARENT 表示发送方是主会话（收件人为子代理），
+ *   SUB 表示发送方是子代理（收件人为主会话），SIBLING 表示发送方是兄弟子代理（收件人也是子代理）。
+ *   供 Formatter 生成对应的描述与回复提示。
  * @property newMode [AgentNotificationKind.MODE_CHANGE] 的目标模式：用户在工作期间切换后的新模式。
  * @property seq [AgentNotificationCenter] 分配的单调序号，供 peek 后精确 ack；未入队时为 0。
  */
@@ -36,7 +40,7 @@ data class PendingNotification(
     val tailOutput: String? = null,
     val detail: String? = null,
     val message: String? = null,
-    val fromParent: Boolean = false,
+    val senderKind: MessageSenderKind = MessageSenderKind.SUB,
     val newMode: AgentMode? = null,
     val seq: Long = 0
 )

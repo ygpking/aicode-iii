@@ -23,23 +23,29 @@ enum class SubAgentEventType {
     MESSAGE_FROM_PARENT,
 
     /** 子代理向主会话发来一条消息（发送方是子会话）。 */
-    MESSAGE_FROM_SUB
+    MESSAGE_FROM_SUB,
+
+    /** 子代理向兄弟子代理发来一条消息（发送方是同一父会话下的另一子会话）。 */
+    MESSAGE_FROM_SIBLING
 }
 
 /**
  * 子代理生命周期事件。
  *
- * @property subSessionId 子代理会话 id。
+ * @property subSessionId 子代理会话 id（同时也是消息的收件人）。
  * @property parentSessionId 父会话 id（子会话记录里 parentId）。
  * @property type 事件类型。
  * @property detail 附加说明：SPAWNED 为任务指令；COMPLETED/FAILED 为子代理最终输出/错误信息；
- *   MESSAGE_FROM_PARENT / MESSAGE_FROM_SUB 为消息正文。
+ *   MESSAGE_FROM_PARENT / MESSAGE_FROM_SUB / MESSAGE_FROM_SIBLING 为消息正文。
+ * @property senderSessionId 消息发送方会话 id，仅 [SubAgentEventType.MESSAGE_FROM_SIBLING] 使用：
+ *   兄弟消息的发送者既不是父会话也不是收件人本人，需显式带上才能标出「谁发来的」。
  */
 data class SubAgentEvent(
     val subSessionId: String,
     val parentSessionId: String,
     val type: SubAgentEventType,
-    val detail: String = ""
+    val detail: String = "",
+    val senderSessionId: String? = null
 )
 
 /**
@@ -175,7 +181,8 @@ class SubAgentEventBus @Inject constructor() {
             SubAgentEventType.COMPLETED, SubAgentEventType.FAILED, SubAgentEventType.STOPPED -> {
                 _activeSubSessionIds.update { it - event.subSessionId }
             }
-            SubAgentEventType.MESSAGE_FROM_PARENT, SubAgentEventType.MESSAGE_FROM_SUB -> {
+            SubAgentEventType.MESSAGE_FROM_PARENT, SubAgentEventType.MESSAGE_FROM_SUB,
+            SubAgentEventType.MESSAGE_FROM_SIBLING -> {
                 // 收发消息不改变运行状态，活跃集合保持不变。
             }
         }

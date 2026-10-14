@@ -148,8 +148,11 @@ object AgentNotificationFormatter {
             NotificationOutcome.FAILED -> "子代理「$title」已执行失败"
             NotificationOutcome.STOPPED -> "子代理「$title」已被用户手动终止，任务未完成"
         }
-        AgentNotificationKind.AGENT_MESSAGE ->
-            if (fromParent) "主会话发来一条消息" else "子代理「$title」发来一条消息"
+        AgentNotificationKind.AGENT_MESSAGE -> when (senderKind) {
+            MessageSenderKind.PARENT -> "主会话发来一条消息"
+            MessageSenderKind.SUB -> "子代理「$title」发来一条消息"
+            MessageSenderKind.SIBLING -> "兄弟子代理「$title」发来一条消息"
+        }
         AgentNotificationKind.MODE_CHANGE ->
             "用户已将模式切换为 ${newMode?.name ?: "UNKNOWN"}"
     }
@@ -163,12 +166,14 @@ object AgentNotificationFormatter {
             else ->
                 "可用 task(action=\"read\", id=\"$sourceId\") 读取子代理的最后输出。"
         }
-        AgentNotificationKind.AGENT_MESSAGE ->
-            if (fromParent) {
+        AgentNotificationKind.AGENT_MESSAGE -> when (senderKind) {
+            MessageSenderKind.PARENT ->
                 "可用 messageParent(message=\"...\") 回复主会话；若无需回复可忽略，不要为每条消息都回执。"
-            } else {
+            MessageSenderKind.SUB ->
                 "可用 task(action=\"send\", id=\"$sourceId\", message=\"...\") 回复该子代理；若无需回复可忽略。"
-            }
+            MessageSenderKind.SIBLING ->
+                "可用 messageSibling(to=\"$sourceId\", message=\"...\") 回复该兄弟子代理；若无需回复可忽略，不要为每条消息都回执。"
+        }
         AgentNotificationKind.MODE_CHANGE ->
             "请立即按新模式约束继续手头任务，无需回复本条通知。"
     }
