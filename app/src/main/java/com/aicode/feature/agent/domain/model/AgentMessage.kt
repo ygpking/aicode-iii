@@ -103,7 +103,11 @@ data class AgentContext(
      * 系统提示词与工具集都按其配置组装（见 [com.aicode.feature.agent.domain.prompt.SystemPromptProvider]）。
      */
     val agentDefinition: AgentDefinition? = null,
-    /** 是否为子代理会话（有父会话但未指定自定义 agent 定义）；true 时按子代理身份组装提示词。 */
+    /**
+     * 是否为子代理会话：判据是有父会话（`parentId != null`，即子会话）。
+     * 带自定义定义的子代理此值同样为 true，只是 [com.aicode.feature.agent.domain.prompt.SystemPromptProvider.build]
+     * 会先命中 `agentDefinition` 分支按定义组装，行为不受影响。
+     */
     val isSubAgent: Boolean = false,
     /**
      * 本轮用户消息的持久层 id：由 ViewModel 生成、落库与内存构造共用同一 id。
