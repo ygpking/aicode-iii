@@ -1261,9 +1261,13 @@ class StatefulAgentWorkflow @Inject constructor(
                                 // 与 TaskTool 保持同一表达式（.content 而非 .contentOrNull）：
                                 // action 参数 required=false，缺省即 create；写死 == "create" 会把
                                 // 「省略 action 的派发」漏记成未派发，进而在下轮误提醒。
-                                val delegated = toolCalls.any { call ->
-                                    call.name == "task" &&
-                                        ((call.arguments["action"] as? JsonPrimitive)?.content?.trim()?.lowercase() ?: "create") == "create"
+                                // 另只看**成功**的派发：创建失败（并发上限 / 写租约冲突 / 定义不存在）
+                                // 时不算已派发，否则「反复尝试派发但总失败」这个最该介入的场景
+                                // 会被永久静音。
+                                val delegated = batchResults.any { br ->
+                                    if (br.isError || br.toolName != "task") return@any false
+                                    val args = toolCalls.firstOrNull { it.id == br.id }?.arguments
+                                    ((args?.get("action") as? JsonPrimitive)?.content?.trim()?.lowercase() ?: "create") == "create"
                                 }
                                 if (delegated) SubAgentDelegationTracker.recordDelegation(sid)
                             }
