@@ -1628,6 +1628,7 @@ class AIAgentViewModel @Inject constructor(
                 modeBeforePlan = sessionDomain?.modeBeforePlan,
                 reasoningEffort = sessionDomain?.reasoningEffort?.apiValue,
                 agentDefinition = agentDefinition,
+                isSubAgent = sessionEntity?.parentId != null,
                 userMessageId = userMsgId
             )
 

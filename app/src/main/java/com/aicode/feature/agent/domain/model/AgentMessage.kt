@@ -104,6 +104,12 @@ data class AgentContext(
      */
     val agentDefinition: AgentDefinition? = null,
     /**
+     * 是否为子代理会话：判据是有父会话（`parentId != null`，即子会话）。
+     * 带自定义定义的子代理此值同样为 true，只是 [com.aicode.feature.agent.domain.prompt.SystemPromptProvider.build]
+     * 会先命中 `agentDefinition` 分支按定义组装，行为不受影响。
+     */
+    val isSubAgent: Boolean = false,
+    /**
      * 本轮用户消息的持久层 id：由 ViewModel 生成、落库与内存构造共用同一 id。
      * 缺失它时 workflow 内存 UserMessage 的 id 为空串，与 DB 行 id 永远对不上——
      * 新会话首个长 run 触发压缩时 head 全部匹配失败，被误判「head 内无已落库消息」

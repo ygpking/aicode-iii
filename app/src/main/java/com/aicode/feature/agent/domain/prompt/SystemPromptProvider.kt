@@ -309,6 +309,10 @@ class SystemPromptProvider @Inject constructor(
     fun build(agentContext: AgentContext): String {
         agentContext.agentDefinition?.let { return buildForSubAgent(it, agentContext) }
 
+        // 未指定定义但有父会话：仍是子代理，按子代理身份组装，不能直落主代理分支
+        // （那会让它拿到「默认执行者是子代理」等主代理专属规则，而它的工具集已剔除 task）。
+        if (agentContext.isSubAgent) return buildForGenericSubAgent(agentContext)
+
         if (PromptFragmentResolver.isBuiltinDisabled(customDir)) {
             return buildCustomOnly(agentContext)
         }
@@ -352,6 +356,44 @@ class SystemPromptProvider @Inject constructor(
                 append("\n\n")
                 append(timeContent)
             }
+        }
+    }
+
+    /**
+     * 未指定定义时的通用子代理：语义对齐 [AgentDefinition.DEFAULT_INJECT]
+     * （精简基线 + 技能 + 记忆 + 项目规则），按子代理身份组装。
+     * 不注入主代理静态片段，也不注入可用子代理清单（子代理不能嵌套派发）。
+     */
+    private fun buildForGenericSubAgent(agentContext: AgentContext): String {
+        val base = subAgentBaseSource.build(agentContext)
+        val skillsContent = activeSkillsSource.build(agentContext)
+        val memoriesContent = memoryListSource.build(agentContext)
+        val projectRules = projectRuleSource.build(agentContext)
+        val workspaceContent = workspaceSource.build(agentContext)
+        // 与主代理路径同口径：片段里写了 {{AICODE_*}} 就就地展开，并跳过下方对应的自动追加。
+        // subAgents 传 null：子代理不能嵌套派发（工具集已剔除 task），口径同 buildForSubAgent。
+        val renderedBase = renderVariables(
+            base,
+            skillsContent,
+            memoriesContent,
+            null,
+            projectRules,
+            workspaceContent,
+            currentDate()
+        )
+        return buildString {
+            append(renderedBase)
+            append("\n\n")
+            append("当前角色 (subagent)：你是一个由主代理派发的子代理，拥有独立上下文，看不到主对话历史。")
+            append("专注完成本会话交给你的任务，并在最后一条回复里给出完整结论——主代理只能读到你的最后一条回复，中间过程与工具结果它看不到。\n\n")
+
+            if (!usesStandaloneVar(base, SKILLS_VAR)) skillsContent?.let { append(it); append("\n\n") }
+            if (!usesStandaloneVar(base, MEMORY_VAR)) memoriesContent?.let { append(it); append("\n\n") }
+            if (!usesStandaloneVar(base, PROJECT_RULES_VAR)) projectRules?.let { append(it); append("\n\n") }
+
+            append(workspaceContent)
+            append("\n\n")
+            append(currentTimeSource.build(agentContext))
         }
     }
 
