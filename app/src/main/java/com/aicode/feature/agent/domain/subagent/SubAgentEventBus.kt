@@ -14,7 +14,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * 子代理事件类型。前四种为生命周期事件；后两种为收发消息事件，只投递内容，不影响活跃集合。
+ * 子代理事件类型。SPAWNED / COMPLETED / FAILED / STOPPED 为生命周期事件，会增减活跃集合；
+ * 其余为收发消息事件，只投递内容，不影响活跃集合。
  */
 enum class SubAgentEventType {
     SPAWNED, COMPLETED, FAILED, STOPPED,
