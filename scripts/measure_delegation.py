@@ -19,9 +19,15 @@
   后派发 14:53:06），③ 需按会话看。即真实症状不是「从不派发」而是「干完才派」。
 
 用法：
-  python3 scripts/measure_delegation.py                # 最近 3 天
+  python3 scripts/measure_delegation.py                 # 最近 3 天（按文件名日期）
   python3 scripts/measure_delegation.py --days 7
 退出码恒为 0（度量工具，不是门禁）。
+
+注意两个已知口径差异（拿指标当验收数时必须意识到）：
+- 本工具统计写入用 `tool_started`（**含失败写入**），而机制只认**成功**写入 ——
+  指标①因此系统性略高于机制实际覆盖面；改动前后用同一把尺对比无碍。
+- 转档文件（`trace-YYYY-MM-DD.log.1`）与主文件同属一天，按文件名日期取窗口时
+  须把它算进同一天，否则 create 日志与 trace 会跨窗口错位。
 """
 
 import argparse
@@ -40,9 +46,31 @@ RE_TOOL = re.compile(r"^(\S+ \S+)\s+s=([0-9a-f]{8})\b.*tool_started (\w+)")
 WRITE_TOOLS = {"editFile", "writeFile"}
 
 
+DATE_IN_NAME = re.compile(r"(\d{4}-\d{2}-\d{2})")
+
+
+def files_in_window(files, days):
+    """按**文件名里的日期**取最近 N 天（含该日的转档 `.log.1` 等）。
+
+    不用「最近 N 个文件」：转档文件会让 N 文件 ≠ N 天，且 log 与 trace 的
+    窗口错位时，父会话的 create 记录落在窗口外、其写入落在窗口内，会把该
+    父会话误判成 root 且 d=0，虚高指标①。
+    """
+    dated = []
+    for f in files:
+        m = DATE_IN_NAME.search(os.path.basename(f))
+        if m:
+            dated.append((m.group(1), f))
+    if not dated:
+        return sorted(files)[-days:]
+    keep = sorted({d for d, _ in dated}, reverse=True)[:days]
+    return sorted(f for d, f in dated if d in keep)
+
+
 def load_creates(days):
     creates = []          # (ts, sub_sid8, parent_sid8, agent)
-    for f in sorted(glob.glob(os.path.join(LOG_DIR, "log-*.txt")))[-days:]:
+    files = files_in_window(glob.glob(os.path.join(LOG_DIR, "log-*.txt")), days)
+    for f in files:
         with open(f, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 m = RE_CREATE.search(line)
@@ -55,7 +83,8 @@ def load_tools(days):
     tools = defaultdict(int)                 # sid8 -> 工具总数
     writes = defaultdict(int)                # sid8 -> 写文件次数
     first_write, first_any, last_any = {}, {}, {}
-    for f in sorted(glob.glob(os.path.join(TRACE_DIR, "trace-*.log")))[-days:]:
+    files = files_in_window(glob.glob(os.path.join(TRACE_DIR, "trace-*.log*")), days)
+    for f in files:
         with open(f, encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 m = RE_TOOL.match(line)
@@ -73,7 +102,7 @@ def load_tools(days):
 
 def main():
     ap = argparse.ArgumentParser(description="主代理派发行为度量（只读）")
-    ap.add_argument("--days", type=int, default=3, help="取最近 N 个 trace/log 文件")
+    ap.add_argument("--days", type=int, default=3, help="取最近 N 天（按文件名日期，含转档文件）")
     args = ap.parse_args()
 
     creates = load_creates(args.days)
@@ -86,7 +115,7 @@ def main():
 
     print("=" * 78)
     print(f"口径：派发=日志「子代理已创建」；自己写文件=trace 的 editFile/writeFile")
-    print(f"范围：最近 {args.days} 个 trace/log 文件")
+    print(f"范围：最近 {args.days} 天（按文件名日期）")
     print("=" * 78)
     print(f"\n子代理创建总次数: {len(creates)}（覆盖 {len(sub_sids)} 个子会话、{len(per_parent)} 个父会话）")
 
