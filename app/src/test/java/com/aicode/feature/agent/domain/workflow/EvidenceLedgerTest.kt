@@ -184,7 +184,33 @@ class EvidenceLedgerTest {
     @Test
     fun `其他生态的验证命令能归类`() {
         assertEquals("pytest", CommandOutcome.categoryOf("python -m pytest tests/"))
-        assertEquals("check-migrations", CommandOutcome.categoryOf("python3 scripts/check_migrations.py"))
         assertEquals("npm-test", CommandOutcome.categoryOf("npm test"))
+    }
+
+    @Test
+    fun `门禁脚本按脚本名逐个归类`() {
+        // 逐个归类而非合成一个大类：并成 `gate-script` 会把「check_architecture 失败
+        // → 改跑 check_migrations 成功」当成同一任务的先红后绿，反而放松。
+        assertEquals("gate:check_migrations", CommandOutcome.categoryOf("python3 scripts/check_migrations.py"))
+        assertEquals("gate:check_architecture", CommandOutcome.categoryOf("cd x && python3 scripts/check_architecture.py"))
+        assertEquals("gate:verify-all", CommandOutcome.categoryOf("bash scripts/verify-all.sh debug"))
+        // 同一脚本重跑带不同参数仍是同一类别
+        assertEquals(
+            CommandOutcome.categoryOf("python3 scripts/check_doc_tables.py"),
+            CommandOutcome.categoryOf("python3 scripts/check_doc_tables.py --self-test"),
+        )
+        // 不同脚本不得并为一类
+        assertFalse(
+            CommandOutcome.categoryOf("python3 scripts/check_migrations.py") ==
+                CommandOutcome.categoryOf("python3 scripts/check_architecture.py")
+        )
+    }
+
+    @Test
+    fun `含 test 字样但不是测试的命令没有类别`() {
+        // 旧实现按子串归类，会把 `python3 scripts/check_doc_tables.py --self-test`
+        // 归到 gradle-test（因含 "test"），使账本的先红后绿判定跨任务串台。
+        assertEquals(null, CommandOutcome.categoryOf("grep -n '^func Test' foo_test.go"))
+        assertEquals(null, CommandOutcome.categoryOf("sh gradlew tasks"))
     }
 }
