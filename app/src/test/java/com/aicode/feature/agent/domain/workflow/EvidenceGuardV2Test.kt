@@ -276,6 +276,83 @@ class EvidenceGuardV2Test {
         assertEquals(false, CommandOutcome.isVerifyCommand("git log --oneline | grep latest"))
     }
 
+    // ── 验证命令判据（分段 + 段首可执行体）───────────────────────────
+
+    @Test
+    fun `真跑的验证命令形态全部认下`() {
+        val yes = listOf(
+            "./gradlew :app:testUniversalDebugUnitTest",
+            "./gradlew test",
+            "cd ~/workspace && ./gradlew :app:assembleUniversalDebug",
+            // timeout 的时长参数必须先剥掉，否则段首会停在 timeout 上而漏认
+            "cd ~/workspace && timeout 900 sh gradlew test --rerun-tasks",
+            "python3 scripts/check_migrations.py",
+            "python3 scripts/check_architecture.py",
+            "python3 scripts/check_compaction_flow.py",
+            "python3 scripts/check_doc_tables.py --self-test",
+            // 包装器剥掉后 exe 就是脚本名本身，不能只查参数
+            "bash scripts/verify-all.sh debug",
+            "cd x && bash scripts/check-build-freshness.sh debug",
+            "cd x && bash scripts/check-no-hardcoded-strings.sh",
+            "python -m pytest tests/",
+            "pytest -q",
+            "go test ./...",
+            "go vet ./...",
+            "go build -o /tmp/x .",
+            "export CGO_ENABLED=1 CC=gcc && go test ./...",
+            "npm test",
+            "cargo test",
+            "make check",
+            // `-m` 是脚本自己的参数时不得误走「python -m 模块」分支
+            "python3 scripts/check.py -m 5",
+            // 同时有查询词与真任务，算验证
+            "sh gradlew help check",
+        )
+        val missed = yes.filterNot { CommandOutcome.isVerifyCommand(it) }
+        assertEquals(emptyList<String>(), missed)
+    }
+
+    @Test
+    fun `纯字面量里含 test 的命令不当凭证`() {
+        val no = listOf(
+            // 下面两条是六天日志里出现最多的一类假凭证：命令里出现 test 字样，但没有真跑任何测试
+            "cd ~/workspace/workbuddy-android/core-go",
+            "cd ~/workspace/workbuddy-android/core-go\necho \"=== test 文件行数 ===\"",
+            "grep -n '^func Test' foo_test.go",
+            "grep -c '@Test' FooTest.kt",
+            "rg -n \"TestFoo\" *.go",
+            "ls -la foo_test.go",
+            "find . -name \"*test*\"",
+            "wc -l foo_test.go",
+            "cat foo_test.go",
+            "sed -n '1,50p' CommandOutcome.kt",
+            "echo '=== test ==='",
+            "python3 - <<PY\nimport re\nPY",
+            // gradle 的纯查询任务只打印信息，不产生验证结论
+            "sh gradlew tasks",
+            "./gradlew --version",
+            "sh gradlew help",
+            // 门禁脚本形态的收紧面：无 scripts/ 前缀时必须 check|verify|test 后跟 - 或 _
+            "python3 contest.py",
+            "python3 verify.py",
+            "python3 check.py",
+            "ls scripts/*.py",
+            "git status --short",
+            "",
+        )
+        val wrong = no.filter { CommandOutcome.isVerifyCommand(it) }
+        assertEquals(emptyList<String>(), wrong)
+    }
+
+    @Test
+    fun `脚本判据不认无意义前缀`() {
+        // 只有 `scripts/` 下 check/verify/test 开头的脚本算项目门禁；
+        // 否则任意目录里一个 `mytest.py` 都能给「测试通过」背书。
+        assertEquals(false, CommandOutcome.isVerifyCommand("python3 src/latest.py"))
+        assertEquals(false, CommandOutcome.isVerifyCommand("python3 tests_failed.py"))
+        assertEquals(false, CommandOutcome.isVerifyCommand("bash ./build.sh"))
+    }
+
     // ── 测试作弊检测（对照 proof tamper.py 的 6 条规则）───────────────
 
     @Test

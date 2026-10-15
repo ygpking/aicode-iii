@@ -70,4 +70,22 @@ class BuildCommandDetectorTest {
         // 搜「gradle」这个词本身不是构建（误判方向安全，但成本仍应避免）
         assertEquals(false, BuildCommandDetector.isBuildCommand("grep -rn gradle app/build.gradle.kts"))
     }
+
+    /**
+     * 与 [CommandOutcome.isVerifyCommand] 的**分岔哨兵**。
+     *
+     * 两者各有一套同构的「切段 + 剥包装器」逻辑，但判据表不同（两边 wrapper 集已分岔过：
+     * 本文件含 `command`、那边含 `dash`），**结果不同是允许的，无声漂移不允许**。
+     * 这三条钉住当前分岔点：改任一侧的切段/剥壳规则时，另一侧的断言会红，
+     * 提醒回来看差异是有意的还是漏同步。
+     */
+    @Test
+    fun divergesFromVerifyDetectorOnPurpose() {
+        // 真跑验证、但不启动高开销构建（门禁脚本只是跑 python，不需串行）
+        assertEquals(false, BuildCommandDetector.isBuildCommand("cd x && bash scripts/verify-all.sh"))
+        // 两边都认：既会构建也构成验证凭证
+        assertEquals(true, BuildCommandDetector.isBuildCommand("sh gradlew test"))
+        // 启动构建、但不构成验证凭证（build-all 不是门禁脚本形态）
+        assertEquals(true, BuildCommandDetector.isBuildCommand("python3 scripts/build-all.sh"))
+    }
 }
