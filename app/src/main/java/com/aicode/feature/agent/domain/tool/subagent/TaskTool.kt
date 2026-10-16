@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.addJsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -38,8 +39,9 @@ import javax.inject.Inject
  *
  * 通过 `action` 参数区分操作类型：
  * - `create`（默认）：创建一个子代理会话并让 AI 替用户向其发消息，子代理自动开始回复。
- * - `send`：向指定子代理发送一条消息（可反复发送）。运行中的子代理会在下一批工具结果里搭车收到，
- *   已完成的子代理会被重新唤醒；消息按发送顺序送达。
+ * - `send`：向指定子代理发送一条消息（可反复发送）。已完成的子代理会被重新唤醒；
+ *   仍在运行的默认拒收（`SUBAGENT_BUSY`），避免追问被挤进它当前任务里搭车，除非显式传 `force=true`。
+ *   消息按发送顺序送达。
  * - `read`：读取指定子代理的最后输出（最后一条助手回复）。
  * - `stop`：停止指定子代理的执行（取消其 AI 任务）。
  * - `del`：删除指定子代理会话及其全部消息。
@@ -80,7 +82,7 @@ class TaskTool @Inject constructor(
         }
     }
 
-    override val description = "管理子代理的生命周期：创建、发消息、读取结果、停止、删除、列表。子代理拥有独立上下文与完整工具能力，可并行工作。最多同时运行 5 个。子代理完成后你会收到一条后台通知，不要主动轮询。用 send 可在运行中反复向其追加指令/纠偏，或对已完成的子代理继续追问；子代理运行中也可能主动发消息给你。create 可用 agent 参数指定自定义子代理（专属提示词/模型/工具集）。注意：自定义子代理可能仅声明支持 one-shot（一次性任务），对它 send 会被拒绝（CAPABILITY_NOT_DECLARED）；create 的响应里带 interaction_modes 供按型派发。何时该派：「默认执行者是子代理，不是你自己」。派发信号是「可数的客观形态」，不是「我觉得能不能」——命中任一条即为漏派：① 要写/新建 ≥2 个文件（含测试与资源文件）；② 要跨 ≥2 个文件做只读核对才能得出结论；③ 要跑一次不依赖本对话上下文的独立验证/调研；④ 拆得出互不依赖的平行支线（一次派 2~3 路，不串行派 N 次）；⑤ 要一次性查多项互不相干的东西。自己只留需要会话上下文的那部分：定规格、拍板、回读验收。「自己不做的合法理由只有两条（封闭清单）」：① 本回合只碰 1 个文件且不需跨文件核对；② 同一文件的连续调试迭代（改→编译→看报错→再改）。「我清楚确切措辞」「我脑子里有上下文」「这一步很小很快」一律不算理由——它们对每一处都成立，于是整场零派发（实测：一个 PR 改 7 个文件仍全由主代理独做）。命中上面任一信号却自己做就是漏派，没有豁免通道。每个子代理只负责一件事，prompt 里写清目标与完成标准、已知上下文、边界、期望产出。派多个子代理协作时，把各兄弟的 id/标题写进各自的 prompt——子代理之间可用 `messageSibling` 直接互发消息（交换结论、互相分摊任务，对方已完成会被重新唤醒），但它们看不到兄弟列表，不知道 id 就发不出去。"
+    override val description = "管理子代理的生命周期：创建、发消息、读取结果、停止、删除、列表。子代理拥有独立上下文与完整工具能力，可并行工作。最多同时运行 5 个。子代理完成后你会收到一条后台通知，不要主动轮询。用 send 对已完成的子代理继续追问；若目标仍在运行，send 默认被拒（SUBAGENT_BUSY）——它的完成通知到达后再发，确需现在紧急追加才传 force=true。子代理运行中也可能主动发消息给你。create 可用 agent 参数指定自定义子代理（专属提示词/模型/工具集）。注意：自定义子代理可能仅声明支持 one-shot（一次性任务），对它 send 会被拒绝（CAPABILITY_NOT_DECLARED）；create 的响应里带 interaction_modes 供按型派发。何时该派：「默认执行者是子代理，不是你自己」。派发信号是「可数的客观形态」，不是「我觉得能不能」——命中任一条即为漏派：① 要写/新建 ≥2 个文件（含测试与资源文件）；② 要跨 ≥2 个文件做只读核对才能得出结论；③ 要跑一次不依赖本对话上下文的独立验证/调研；④ 拆得出互不依赖的平行支线（一次派 2~3 路，不串行派 N 次）；⑤ 要一次性查多项互不相干的东西。自己只留需要会话上下文的那部分：定规格、拍板、回读验收。「自己不做的合法理由只有两条（封闭清单）」：① 本回合只碰 1 个文件且不需跨文件核对；② 同一文件的连续调试迭代（改→编译→看报错→再改）。「我清楚确切措辞」「我脑子里有上下文」「这一步很小很快」一律不算理由——它们对每一处都成立，于是整场零派发（实测：一个 PR 改 7 个文件仍全由主代理独做）。命中上面任一信号却自己做就是漏派，没有豁免通道。每个子代理只负责一件事，prompt 里写清目标与完成标准、已知上下文、边界、期望产出。派多个子代理协作时，把各兄弟的 id/标题写进各自的 prompt——子代理之间可用 `messageSibling` 直接互发消息（交换结论、互相分摊任务，对方已完成会被重新唤醒），但它们看不到兄弟列表，不知道 id 就发不出去。"
 
     override val parameters: Map<String, ToolParameter> = mapOf(
         "action" to ToolParameter(
@@ -116,7 +118,13 @@ class TaskTool @Inject constructor(
         "message" to ToolParameter(
             name = "message",
             type = ParameterType.STRING,
-            description = "发给子代理的消息正文（send 必填）。可反复调用；运行中的子代理会尽快收到，已完成的会被重新唤醒",
+            description = "发给子代理的消息正文（send 必填）。已完成的子代理会被重新唤醒起新一轮；仍在运行的默认拒收，除非同时传 force=true",
+            required = false
+        ),
+        "force" to ToolParameter(
+            name = "force",
+            type = ParameterType.BOOLEAN,
+            description = "send 可选，默认 false：目标子代理正在运行时拒绝投递（等它完成后发）。置 true 表示明知它在运行仍要紧急追加，消息将搭车在其当前任务的下一批工具结果里送达",
             required = false
         ),
         "write_paths" to ToolParameter(
@@ -254,8 +262,10 @@ class TaskTool @Inject constructor(
     /**
      * 向指定子代理发送一条消息（可反复发送）。
      *
-     * 事件交由 ViewModel 按收件人状态分发：运行中的子代理把消息入通知队列、在下一批工具结果里搭车送达；
-     * 已完成的子代理则被重新唤醒并起新一轮。不在工具层直接投递，以复用同一套忙碌/空闲分发逻辑。
+     * 事件交由 ViewModel 按收件人状态分发：不在工具层直接投递，以复用同一套忙碌/空闲分发逻辑。
+     *
+     * 运行中的目标默认拦截（避免追问被挤进它当前任务搭车送达、而调用方以为已经送达）：
+     * 仅当显式传 `force=true` 时才放行，放行后同样入队列搭车；已完成的子代理则被重新唤醒。
      */
     private suspend fun sendToSubagent(args: Map<String, JsonElement>, context: AgentContext): ToolResult {
         val parentSessionId = context.sessionId ?: return ToolResult.Error("缺少会话上下文", "NO_SESSION")
@@ -287,6 +297,18 @@ class TaskTool @Inject constructor(
             )
         }
 
+        // 硬闸：目标仍在运行时不投递——运行中的消息会被挤进它当前任务搭车送达，
+        // 父代理却收到「已投递」的假回执，于是重复追问。改为默认拒收，等完成通知；
+        // force=true 是紧急追加的显式逃生门。
+        val isRunning = subSessionId in eventBus.activeSubSessionIds.value
+        if (isRunning && !(args["force"]?.jsonPrimitive?.booleanOrNull ?: false)) {
+            return ToolResult.Error(
+                "子代理「${sub.title}」正在运行，消息未发送。它完成后会给你一条完成通知，届时再 send；" +
+                    "若确实需要现在追加，传 force=true（消息将搭车在其当前任务里送达）。",
+                "SUBAGENT_BUSY"
+            )
+        }
+
         eventBus.emit(
             SubAgentEvent(
                 subSessionId = subSessionId,
@@ -295,12 +317,16 @@ class TaskTool @Inject constructor(
                 detail = message
             )
         )
-        FileLogger.i(TAG, "向子代理发送消息: session=$subSessionId parent=$parentSessionId")
+        FileLogger.i(TAG, "向子代理发送消息: session=$subSessionId parent=$parentSessionId running=$isRunning")
         return ToolResult.Success(
             buildJsonObject {
                 put("id", subSessionId)
-                put("state", "delivered")
-                put("message", "消息已投递给子代理。运行中的会在下一批工具结果里收到，已完成的会被重新唤醒；可继续用 send 追加。")
+                put("state", if (isRunning) "queued" else "woken")
+                put(
+                    "message",
+                    if (isRunning) "子代理仍在运行，消息已按其要求强行排入当前任务的搭车队列，将在下一批工具结果里送达。"
+                    else "子代理已结束，消息已投递并将重新唤醒它起新一轮。"
+                )
             }
         )
     }

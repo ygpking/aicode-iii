@@ -103,6 +103,7 @@ AI 调用工具时少传了必需参数，或参数格式不对。多半会被 A
 | `NOT_YOUR_SUBAGENT` | 尝试操作不属于本会话的子代理 |
 | `AGENT_NOT_FOUND` | 指定的子代理类型不存在 |
 | `CAPABILITY_NOT_DECLARED` | 子代理定义仅声明支持 one-shot（一次性任务），对其已完成实例的 `send`（续聊）被拒绝。重新 create 派发新任务，或改用声明支持 `continuable` 的子代理 |
+| `SUBAGENT_BUSY` | 目标子代理仍在运行，`send` 默认被拒（避免追问被挤进它当前任务里）。等它的完成通知后再发；确实要立即追加可传 `force=true` |
 
 ### 其它工具
 
